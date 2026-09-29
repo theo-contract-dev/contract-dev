@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { parseFlags, flag, requirePositional } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
+import { formatUsd } from '../format';
 
 const HELP = `contract.dev watch — watch mainnet contracts on your workspace's dashboard
 
@@ -10,12 +12,19 @@ Usage:
   contract.dev unwatch <address> [--chain <id>]        Stop watching a contract
 
 Flags (watch <address>):
-  --chain <id>     Chain the contract lives on (default: 1)
-  --name <label>   Display name. Omit to use the detected one (the token's name(),
-                   else its verified Etherscan name); change it later with rename.
+  --chain <id>     Chain the contract lives on (default: 1). Names work: ethereum, arbitrum,
+                   avalanche, sepolia.
+  --name <label>   Display name. Omit to use the app's name for the address, else the
+                   token's name(), else its verified name; change it later with rename.
+  --abi <file>     ABI for a contract the explorer holds no verified source for: a JSON
+                   array, or a Foundry / Hardhat artifact (out/X.sol/X.json). Names its
+                   methods, events and reverts across the app. Ignored once the contract
+                   is verified — the explorer's ABI wins. Change it later in the app.
 
 Contracts are watched per (chain, address) — \`--chain\` disambiguates one watched
 on several chains. Watched contracts appear on the home map and /contracts.
+The same commands read as nouns: contracts list · contracts add <address> ·
+contracts rename <address> <name> · contracts remove <address>.
 Requires \`contract.dev login\`.
 `;
 
@@ -30,17 +39,40 @@ export interface WatchedAccount {
   name: string | null;
   contractType?: string | null;
   valueUsd?: number | null;
+  /** the first value read has not landed yet (a just-watched contract) */
+  valueLoading?: boolean;
 }
 
 interface Detection {
   accountType: 'contract' | 'wallet';
   detectedName: string | null;
+  /** the app's own name for the address, offered ahead of the detected one (as the modal does) */
+  labelName?: string | null;
+  /** contracts: the explorer holds a verified ABI */
+  hasAbi?: boolean;
   contractType: string | null;
 }
 
+// Chains by name as well as by id — the names the app uses, plus the usual short forms.
+export const CHAIN_NAMES: Record<string, number> = {
+  ethereum: 1, eth: 1, mainnet: 1,
+  arbitrum: 42161, arb: 42161,
+  avalanche: 43114, avax: 43114,
+  sepolia: 11155111,
+  base: 8453,
+  optimism: 10, op: 10,
+  polygon: 137, matic: 137,
+  bnb: 56, bsc: 56,
+  monad: 143,
+};
+
 export function parseChainId(raw: string, label: string): number {
+  const byName = CHAIN_NAMES[raw.trim().toLowerCase()];
+  if (byName) return byName;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) throw new Error(`${label} must be a positive chain id (got: ${raw})`);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a chain id or a chain name (ethereum, arbitrum, avalanche, sepolia, …) — got: ${raw}`);
+  }
   return value;
 }
 
@@ -76,8 +108,13 @@ export async function watchCommand(args: string[]): Promise<unknown> {
   switch (sub) {
     case 'list':
       return await listSubcommand(args.slice(1));
+    case 'add':
+      return await addSubcommand(args.slice(1));
     case 'rename':
       return await renameCommand(args.slice(1));
+    case 'remove':
+    case 'rm':
+      return await unwatchCommand(args.slice(1));
     case 'help':
     case '-h':
     case '--help':
@@ -89,6 +126,30 @@ export async function watchCommand(args: string[]): Promise<unknown> {
   }
 }
 
+// --abi: a JSON array, or a Foundry / Hardhat artifact object carrying `abi`. Sent as compact
+// array JSON; the API validates the fragments and stores it for the org.
+function readAbiFile(file: string): string {
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (err) {
+    throw new Error(`Could not read --abi file ${file}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`--abi file ${file} is not valid JSON`);
+  }
+  const arr = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object' && Array.isArray((parsed as { abi?: unknown }).abi)
+      ? (parsed as { abi: unknown[] }).abi
+      : null;
+  if (!arr || arr.length === 0) throw new Error(`--abi file ${file} must be a JSON array, or an artifact with a non-empty "abi" array`);
+  return JSON.stringify(arr);
+}
+
 // The modal's flow: detect first (type + name), then add with the result as hints so the
 // server classifies once. A wallet is refused here, before any row exists.
 async function addSubcommand(args: string[]): Promise<WatchedAccount> {
@@ -96,20 +157,26 @@ async function addSubcommand(args: string[]): Promise<WatchedAccount> {
   const address = requirePositional(flags._ as string[], 0, 'address');
   const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
   const name = flag(flags, 'name');
+  const abiFile = flag(flags, 'abi');
+  const abi = abiFile ? readAbiFile(abiFile) : undefined;
 
   const auth = requireAuth();
   const detected = await apiRequest<Detection>(auth, 'POST', '/api/mainnet/accounts/detect', { chainId, address });
   if (detected.accountType !== 'contract') {
     throw new Error(`${address} has no code on chain ${chainId} — it's a wallet. The CLI watches contracts; add wallets in the app.`);
   }
+  if (detected.hasAbi === false && !abi) {
+    console.log(`No verified ABI on the explorer for ${address}. Pass --abi <artifact.json> to name its methods, events and reverts.`);
+  }
 
-  const label = name?.trim() || detected.detectedName || undefined;
+  const label = name?.trim() || detected.labelName || detected.detectedName || undefined;
   const payload = await apiRequest<{ account: WatchedAccount; created: boolean }>(auth, 'POST', '/api/mainnet/accounts', {
     chainId,
     address,
     accountType: 'contract',
     ...(detected.contractType ? { contractType: detected.contractType } : {}),
     ...(label ? { name: label } : {}),
+    ...(abi ? { abi } : {}),
   });
 
   const account = payload.account;
@@ -130,9 +197,40 @@ async function listSubcommand(args: string[]): Promise<WatchedAccount[]> {
     return [];
   }
   for (const account of contracts) {
-    console.log(`${String(account.chainId).padEnd(8)} ${account.address}${account.name ? `  ${account.name}` : ''}`);
+    const tvl = account.valueUsd == null && account.valueLoading ? '…' : formatUsd(account.valueUsd);
+    console.log(`${String(account.chainId).padEnd(8)} ${account.address}  ${(account.name ?? '').padEnd(28)} ${tvl}`);
   }
   return contracts;
+}
+
+// `contract.dev contracts <verb>` — the noun form of watch / rename / unwatch.
+export async function contractsCommand(args: string[]): Promise<unknown> {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case undefined:
+    case 'list':
+      return await listSubcommand(sub === undefined ? args : rest);
+    case 'add':
+    case 'watch':
+      return await addSubcommand(rest);
+    case 'rename':
+      return await renameCommand(rest);
+    case 'remove':
+    case 'rm':
+    case 'unwatch':
+      return await unwatchCommand(rest);
+    case 'help':
+    case '-h':
+    case '--help':
+      console.log(HELP);
+      return;
+    default:
+      if (sub.startsWith('--')) return await listSubcommand(args);
+      if (/^0x[0-9a-fA-F]{40}$/.test(sub)) return await addSubcommand(args);
+      console.error(`Unknown contracts subcommand: ${sub}\n`);
+      console.error(HELP);
+      process.exit(1);
+  }
 }
 
 // `contract.dev rename <address> <name>` — the same PATCH the register's rename uses, so
@@ -161,7 +259,7 @@ export async function renameCommand(args: string[]): Promise<WatchedAccount | vo
   return account;
 }
 
-export async function unwatchCommand(args: string[]): Promise<void> {
+export async function unwatchCommand(args: string[]): Promise<{ ok: true; id: string; address: string; chainId: number } | void> {
   if (args[0] === 'help' || args[0] === '-h' || args[0] === '--help' || args[0] === undefined) {
     console.log(HELP);
     return;
@@ -175,4 +273,5 @@ export async function unwatchCommand(args: string[]): Promise<void> {
   const target = await findWatchedAccount(auth, address, chainId);
   await apiRequest(auth, 'DELETE', `/api/mainnet/accounts/${target.id}`);
   console.log(`Stopped watching ${describeAccount(target)}.`);
+  return { ok: true, id: target.id, address: target.address, chainId: target.chainId };
 }

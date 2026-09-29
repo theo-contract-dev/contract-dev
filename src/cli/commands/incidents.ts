@@ -30,7 +30,31 @@ interface IncidentRow {
   enabled: boolean;
   chainId: number | null;
   address: string | null;
+  /** 'rule' for a custom monitor; controlChange / outboundCalls / revertRate for a default */
+  monitorKind?: string;
+  /** a default monitor's own words for the episode */
+  sentence?: string | null;
+  detail?: string | null;
+  txHash?: string | null;
 }
+
+// A default monitor's episode carries its reading instead of alias-keyed metric values.
+interface BuiltinEvidence {
+  builtin: string;
+  chainId: number;
+  address: string;
+  label: string | null;
+  at: string;
+  sentence: string;
+  detail: string;
+  reading: Record<string, number | string | null>;
+  txHashes: string[];
+}
+
+type InputEvidence = Record<string, { raw: string; at: string | null; block?: string }>;
+
+const isBuiltinEvidence = (e: unknown): e is BuiltinEvidence =>
+  !!e && typeof e === 'object' && typeof (e as BuiltinEvidence).builtin === 'string' && typeof (e as BuiltinEvidence).sentence === 'string';
 
 interface IncidentDetail {
   id: string;
@@ -40,8 +64,8 @@ interface IncidentDetail {
   level: string;
   peakLevel: string;
   alertedAt: string | null;
-  openInputs: Record<string, { raw: string; at: string | null; block?: string }>;
-  alertInputs: Record<string, { raw: string; at: string | null; block?: string }> | null;
+  openInputs: InputEvidence | BuiltinEvidence;
+  alertInputs: InputEvidence | BuiltinEvidence | null;
   ackedAt: string | null;
   ackedBy: { name: string | null; email: string | null } | null;
   notifyCount: number;
@@ -112,7 +136,9 @@ async function listIncidents(args: string[]): Promise<IncidentRow[]> {
     const state = inc.resolvedAt ? `resolved ${inc.resolvedAt}` : 'OPEN';
     const acked = inc.ackedAt ? '  acked' : '';
     const where = inc.chainId != null && inc.address ? `  [chain ${inc.chainId} ${shortHex(inc.address)}]` : '';
-    console.log(`${inc.id}  ${inc.peakLevel.padEnd(7)} ${inc.openedAt}  ${state.padEnd(34)} ${inc.name} — ${inc.exprText}${where}${acked}`);
+    // A default monitor's row says what it saw ("Reverting 6.7% of transactions…"); a rule's says its assertion.
+    const what = inc.sentence ?? inc.exprText;
+    console.log(`${inc.id}  ${inc.peakLevel.padEnd(7)} ${inc.openedAt}  ${state.padEnd(34)} ${inc.name} — ${what}${where}${acked}`);
   }
   return incidents;
 }
@@ -131,11 +157,19 @@ async function showIncident(args: string[]): Promise<IncidentDetail> {
   if (incident.ackedAt) console.log(`  acked:  ${incident.ackedAt}${incident.ackedBy ? ` by ${incident.ackedBy.name ?? incident.ackedBy.email ?? 'a member'}` : ''}`);
   const evidence = incident.alertInputs ?? incident.openInputs;
   console.log(`  evidence (${incident.alertInputs ? 'at escalation' : 'at open'}):`);
-  for (const input of inv.inputs) {
-    const e = evidence?.[input.alias];
-    const m = input.trackedOnchainValue;
-    const now = m ? formatValue(m.liveValue != null ? m.liveValue : m.lastValue) : '—';
-    console.log(`    ${input.alias.padEnd(24)} raw ${e?.raw ?? '—'}${e?.block ? ` @ block ${e.block}` : ''}   now ${now}`);
+  if (isBuiltinEvidence(evidence)) {
+    console.log(`    contract: chain ${evidence.chainId} ${evidence.address}${evidence.label ? ` (${evidence.label})` : ''}`);
+    console.log(`    reading:  ${evidence.sentence}`);
+    if (evidence.detail) console.log(`              ${evidence.detail}`);
+    for (const [k, v] of Object.entries(evidence.reading ?? {})) console.log(`    ${k.padEnd(24)} ${v == null ? '—' : String(v)}`);
+    if (evidence.txHashes.length) console.log(`    tx: ${evidence.txHashes.join(', ')}`);
+  } else {
+    for (const input of inv.inputs) {
+      const e = evidence?.[input.alias];
+      const m = input.trackedOnchainValue;
+      const now = m ? formatValue(m.liveValue != null ? m.liveValue : m.lastValue) : '—';
+      console.log(`    ${input.alias.padEnd(24)} raw ${e?.raw ?? '—'}${e?.block ? ` @ block ${e.block}` : ''}   now ${now}`);
+    }
   }
   console.log(`  deliveries: ${incident.deliveries.length} (${incident.notifyCount} notification${incident.notifyCount === 1 ? '' : 's'})`);
   for (const d of incident.deliveries) {
@@ -145,10 +179,11 @@ async function showIncident(args: string[]): Promise<IncidentDetail> {
   return incident;
 }
 
-async function ackIncident(args: string[], acked: boolean): Promise<void> {
+async function ackIncident(args: string[], acked: boolean): Promise<{ id: string; acked: boolean }> {
   const flags = parseFlags(args);
   const id = requirePositional(flags._ as string[], 0, 'incident id');
   const auth = requireAuth();
   await apiRequest(auth, 'PATCH', `/api/mainnet/incidents/${id}`, { acked });
   console.log(acked ? `Acknowledged ${id} — reminders stop; you'll still hear when it resolves.` : `Un-acknowledged ${id} — reminders resume.`);
+  return { id, acked };
 }

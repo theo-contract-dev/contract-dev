@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { pushContractsCommand } from './commands/push-contracts';
 import { generateWalletCommand } from './commands/generate-wallet';
 import { functionOverrideCommand } from './commands/function-override';
@@ -9,10 +11,11 @@ import { followCommand, unfollowCommand } from './commands/follow';
 import { loginCommand, logoutCommand, whoamiCommand } from './commands/login';
 import { workspaceCommand } from './commands/workspace';
 import { stagenetCommand, stagenetsCommand } from './commands/stagenet';
-import { watchCommand, unwatchCommand, renameCommand } from './commands/watch';
+import { watchCommand, unwatchCommand, renameCommand, contractsCommand } from './commands/watch';
 import { metricsCommand, trackCommand, untrackCommand } from './commands/metrics';
 import { monitorCommand, monitorsCommand, channelsCommand } from './commands/monitor';
 import { incidentsCommand } from './commands/incidents';
+import { statusCommand } from './commands/status';
 import { extractTargetFlags } from './target';
 
 const HELP = `contract.dev — your contracts, from the command line
@@ -20,8 +23,9 @@ const HELP = `contract.dev — your contracts, from the command line
 Account:
   contract.dev login                      Connect the CLI to your contract.dev account (try: login help)
   contract.dev whoami                     Show which account + workspace the CLI acts as
-  contract.dev workspace <sub>            Show/switch the active workspace (try: workspace help)
-  contract.dev logout                     Delete the saved credentials
+  contract.dev workspace <sub>            Show or switch the workspace the CLI acts on (try: workspace help)
+  contract.dev logout                     Revoke the key and delete the saved credentials
+  contract.dev status                     The workspace at a glance: contracts, TVL, transactions, alerts
 
 Watch contracts:
   contract.dev watch <address>            Watch a mainnet contract (try: watch help)
@@ -31,116 +35,125 @@ Watch contracts:
 
 Metrics:
   contract.dev metrics                    List tracked metrics (try: metrics help)
+  contract.dev metrics export <id|label>  A metric's history as CSV or JSON
   contract.dev track <address> <kind>     Track a balance, supply, call result, TVL or method telemetry (try: track help)
   contract.dev untrack <id|label>         Stop tracking
 
 Monitoring:
   contract.dev monitors                   List monitors
   contract.dev monitor add <metric> …     Alert when a metric crosses a line (try: monitor help)
+  contract.dev monitor exclude <default> <address>   Leave a contract out of a default monitor
   contract.dev incidents                  What fired (try: incidents help)
-  contract.dev channels                   Alert destinations
+  contract.dev channels                   Alert destinations (try: channels help)
 
 Stagenets:
   contract.dev stagenets                  List the active workspace's stagenets
   contract.dev stagenet use <name>        Set the active stagenet (stored per workspace)
+  contract.dev stagenet create <name> --chain <id|name>   Create a stagenet (try: stagenet help)
+  contract.dev stagenet reset             Return the stagenet's state to the live chain, keeping your wallets
   --stagenet <name> / --rpc-url <url>     One-off target override on any stagenet command
-  contract.dev push-contracts             Push this directory's compiled contracts (creates/updates Workspaces)
+  contract.dev push-contracts             Push this directory's compiled contracts so deployments get dashboards
   contract.dev generate-wallet            Generate a fresh wallet and fund it with 1,000,000 native tokens
   contract.dev balance <sub>              Change native balances (try: balance help)
   contract.dev erc20-balance <sub>        Change ERC20 balances (try: erc20-balance help)
-  contract.dev state <sub>                Override code / nonce / storage (try: state help)
+  contract.dev state <sub>                Override code / nonce / storage, resync to mainnet (try: state help)
   contract.dev impersonate <sub>          Impersonate an address (try: impersonate help)
   contract.dev follow <sub>               Pin contract state to live mainnet (try: follow help)
   contract.dev unfollow <address>         Stop following (mirrors follow's flags)
   contract.dev function-override <sub>    Override contract function results (try: function-override help)
 
+Nouns work too: contracts list|add|rename|remove · metrics track|untrack · monitor list · incidents list · stagenet list.
+
+Global flags:
+  --json                                  Print the command's result as JSON instead of text
+  --version                               Print the CLI version
   contract.dev help                       Show this help
 `;
 
-async function main() {
-  const args = extractTargetFlags(process.argv.slice(2));
+export function cliVersion(): string {
+  try {
+    // dist/cli/index.js and src/cli/index.ts both sit two levels under the package root.
+    return String(JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8')).version);
+  } catch {
+    return 'unknown';
+  }
+}
+
+// Dispatch one invocation; returns whatever the command returns (what --json prints).
+export async function run(args: string[]): Promise<unknown> {
   const [cmd, ...rest] = args;
 
   switch (cmd) {
     case 'push-contracts':
-      await pushContractsCommand(rest);
-      return;
+      return await pushContractsCommand(rest);
     case 'import-contracts': // pre-rename spelling, kept as a quiet alias
       console.error('Note: `import-contracts` is now `push-contracts`.');
-      await pushContractsCommand(rest);
-      return;
+      return await pushContractsCommand(rest);
     case 'generate-wallet':
-      await generateWalletCommand();
-      return;
+      return await generateWalletCommand(rest);
     case 'function-override':
-      await functionOverrideCommand(rest);
-      return;
+      return await functionOverrideCommand(rest);
     case 'balance':
-      await balanceCommand(rest);
-      return;
+      return await balanceCommand(rest);
     case 'erc20-balance':
-      await erc20BalanceCommand(rest);
-      return;
+      return await erc20BalanceCommand(rest);
     case 'state':
-      await stateCommand(rest);
-      return;
+      return await stateCommand(rest);
     case 'impersonate':
-      await impersonateCommand(rest);
-      return;
+      return await impersonateCommand(rest);
     case 'follow':
-      await followCommand(rest);
-      return;
+      return await followCommand(rest);
     case 'unfollow':
-      await unfollowCommand(rest);
-      return;
+      return await unfollowCommand(rest);
     case 'login':
-      await loginCommand(rest);
-      return;
+      return await loginCommand(rest);
     case 'logout':
-      await logoutCommand();
-      return;
+      return await logoutCommand(rest);
     case 'whoami':
-      await whoamiCommand();
-      return;
+      return await whoamiCommand(rest);
     case 'workspace':
-      await workspaceCommand(rest);
-      return;
+    case 'workspaces':
+      return await workspaceCommand(rest);
+    case 'status':
+      return await statusCommand(rest);
     case 'stagenets':
-      await stagenetsCommand();
-      return;
+      return await stagenetsCommand(rest);
     case 'stagenet':
-      await stagenetCommand(rest);
-      return;
+      return await stagenetCommand(rest);
     case 'watch':
-      await watchCommand(rest);
-      return;
+      return await watchCommand(rest);
+    case 'contracts':
+    case 'contract':
+      return await contractsCommand(rest);
     case 'unwatch':
-      await unwatchCommand(rest);
-      return;
+      return await unwatchCommand(rest);
     case 'rename':
-      await renameCommand(rest);
-      return;
+      return await renameCommand(rest);
     case 'metrics':
-      await metricsCommand(rest);
-      return;
+    case 'metric':
+      return await metricsCommand(rest);
     case 'track':
-      await trackCommand(rest);
-      return;
+      return await trackCommand(rest);
     case 'untrack':
-      await untrackCommand(rest);
-      return;
+      return await untrackCommand(rest);
     case 'monitors':
-      await monitorsCommand(rest);
-      return;
+      return await monitorsCommand(rest);
     case 'monitor':
-      await monitorCommand(rest);
-      return;
+      return await monitorCommand(rest);
     case 'incidents':
-      await incidentsCommand(rest);
-      return;
+    case 'incident':
+      return await incidentsCommand(rest);
     case 'channels':
-      await channelsCommand(rest);
-      return;
+    case 'channel':
+      return await channelsCommand(rest);
+    case 'version':
+    case '--version':
+    case '-v':
+    case '-V': {
+      const version = cliVersion();
+      console.log(`contract.dev ${version}`);
+      return { version };
+    }
     case 'help':
     case '-h':
     case '--help':
@@ -154,7 +167,28 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(`Error: ${err instanceof Error ? err.message : err}`);
-  process.exit(1);
-});
+async function main() {
+  const raw = process.argv.slice(2);
+  // --json anywhere on the line: the command runs silently and its result prints as JSON.
+  const json = raw.includes('--json');
+  const args = extractTargetFlags(raw.filter((a) => a !== '--json'));
+  const realLog = console.log;
+  if (json) console.log = () => {};
+  try {
+    const result = await run(args);
+    if (json) {
+      console.log = realLog;
+      console.log(JSON.stringify(result ?? { ok: true }, null, 2));
+    }
+  } catch (err) {
+    console.log = realLog;
+    const message = err instanceof Error ? err.message : String(err);
+    if (json) console.log(JSON.stringify({ error: message }, null, 2));
+    console.error(`Error: ${message}`);
+    process.exit(1);
+  }
+}
+
+if (require.main === module) {
+  main();
+}

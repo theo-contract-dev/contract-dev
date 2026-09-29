@@ -33,7 +33,7 @@ Options:
 
 Notes:
   Exact-input overrides take precedence over wildcard overrides on the same selector.
-  See https://docs.contract.dev/tools/function-overrides
+  See https://docs.contract.dev/cli/function-override
 `;
 
 export async function functionOverrideCommand(args: string[]): Promise<void> {

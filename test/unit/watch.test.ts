@@ -1,4 +1,4 @@
-import { watchCommand, unwatchCommand } from '../../src/cli/commands/watch';
+import { watchCommand, unwatchCommand, contractsCommand } from '../../src/cli/commands/watch';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
 
 const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
@@ -22,6 +22,18 @@ describe('watch / unwatch (mainnet contracts)', () => {
         expect(calls[0].body).toEqual({ chainId: 8453, address: USDC });
         expect(calls[1].body).toEqual({ chainId: 8453, address: USDC, accountType: 'contract', contractType: 'ERC20', name: 'USD Coin' });
         expect(printed()[0]).toBe(`Watching USD Coin (${USDC.toLowerCase()}) on chain 8453`);
+    });
+
+    it("prefers the app's own name for the address over the detected one, as the modal does", async () => {
+        const calls = mockApi({
+            'POST /api/mainnet/accounts/detect': () => ({ payload: { accountType: 'contract', detectedName: 'FiatTokenProxy', labelName: 'Circle · USDC', contractType: 'ERC20', hasAbi: true } }),
+            'POST /api/mainnet/accounts': (c) => ({
+                status: 201,
+                payload: { created: true, account: { id: 'wc1', chainId: 1, chainIds: [1], address: USDC.toLowerCase(), accountType: 'contract', name: c.body.name } },
+            }),
+        });
+        await watchCommand([USDC]);
+        expect(calls[1].body.name).toBe('Circle · USDC');
     });
 
     it('--name overrides the detected name; no detected name means no label', async () => {
@@ -53,20 +65,34 @@ describe('watch / unwatch (mainnet contracts)', () => {
         await expect(watchCommand(['0xAbC', '--chain', '999999'])).rejects.toThrow('Unsupported chainId');
     });
 
-    it('list asks for contracts only and prints chain, address, name', async () => {
+    it('list asks for contracts only and prints chain, address, name, TVL (dash = unknown, … = not read yet)', async () => {
         const calls = mockApi({
             'GET /api/mainnet/accounts': () => ({
                 payload: {
                     accounts: [
-                        { id: 'a1', chainId: 1, chainIds: [1], address: '0xaaa', accountType: 'contract', name: 'USDC' },
-                        { id: 'a2', chainId: 8453, chainIds: [8453], address: '0xbbb', accountType: 'contract', name: null },
+                        { id: 'a1', chainId: 1, chainIds: [1], address: '0xaaa', accountType: 'contract', name: 'USDC', valueUsd: 1234567 },
+                        { id: 'a2', chainId: 42161, chainIds: [42161], address: '0xbbb', accountType: 'contract', name: null, valueUsd: null },
+                        { id: 'a3', chainId: 42161, chainIds: [42161], address: '0xccc', accountType: 'contract', name: 'New', valueUsd: null, valueLoading: true },
                     ],
                 },
             }),
         });
-        await watchCommand(['list', '--chain', '8453']);
-        expect(calls[0].path).toBe('/api/mainnet/accounts?accountType=contract&chainId=8453');
-        expect(printed()).toEqual(['1        0xaaa  USDC', '8453     0xbbb']);
+        await watchCommand(['list', '--chain', 'arbitrum']);
+        expect(calls[0].path).toBe('/api/mainnet/accounts?accountType=contract&chainId=42161');
+        expect(printed()).toEqual([
+            `1        0xaaa  ${'USDC'.padEnd(28)} $1.23M`,
+            `42161    0xbbb  ${''.padEnd(28)} —`,
+            `42161    0xccc  ${'New'.padEnd(28)} …`,
+        ]);
+    });
+
+    it('the contracts noun routes to the same commands', async () => {
+        const calls = mockApi({
+            'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
+        });
+        await contractsCommand(['list']);
+        expect(calls[0].path).toBe('/api/mainnet/accounts?accountType=contract');
+        expect(printed()[0]).toBe('No watched contracts.');
     });
 
     it('unwatch resolves the id from the list and deletes it', async () => {

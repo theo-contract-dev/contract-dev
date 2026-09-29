@@ -5,6 +5,7 @@ import { parseFlags, requirePositional, requireFlag, parseAmount } from './_args
 interface CodeResult { address: string; }
 interface NonceResult { address: string; nonce: string; }
 interface StorageResult { address: string; slot: string; }
+interface ResyncResult { address: string; slotsCleared: number; }
 
 const HELP = `contract.dev state — override on-chain state on your Stagenet
 
@@ -12,6 +13,7 @@ Usage:
   contract.dev state set-code <address> <bytecode>
   contract.dev state set-nonce <address> <nonce>
   contract.dev state set-storage <address> --slot <0x..> --value <0x..>
+  contract.dev state resync <address>          Drop every local override on a mainnet contract so it reads live again
 
 Notes:
   set-code accepts 0x-prefixed bytecode. Pass "0x" to wipe the code.
@@ -19,16 +21,20 @@ Notes:
   set-storage --slot accepts a decimal slot number ("5") or 0x hex (≤32 bytes,
     left-padded). Note "10" is slot ten, not 0x10. --value must be a full
     32-byte hex word (0x + 64 hex chars) — encode explicitly.
+  resync is the inverse of set-code / set-storage for a contract that exists on the
+    replicated chain: its code, account record and written storage go back to live.
 `;
 
 export async function stateCommand(
   args: string[],
-): Promise<CodeResult | NonceResult | StorageResult | void> {
+): Promise<CodeResult | NonceResult | StorageResult | ResyncResult | void> {
   const [sub, ...rest] = args;
 
   switch (sub) {
     case 'set-code':
       return await setCodeSubcommand(rest);
+    case 'resync':
+      return await resyncSubcommand(rest);
     case 'set-nonce':
       return await setNonceSubcommand(rest);
     case 'set-storage':
@@ -44,6 +50,15 @@ export async function stateCommand(
       console.error(HELP);
       process.exit(1);
   }
+}
+
+async function resyncSubcommand(args: string[]): Promise<ResyncResult> {
+  const flags = parseFlags(args);
+  const address = requirePositional(flags._, 0, 'address');
+  const rpcUrl = await resolveStagenetRpcUrl();
+  const result = await callRpc<ResyncResult>(rpcUrl, 'dev_resyncAccount', [address]);
+  console.log(`Resynced ${result.address} to the live chain (${result.slotsCleared} written slot${result.slotsCleared === 1 ? '' : 's'} cleared).`);
+  return result;
 }
 
 async function setCodeSubcommand(args: string[]): Promise<CodeResult> {

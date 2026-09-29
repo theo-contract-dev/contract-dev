@@ -18,8 +18,9 @@ Usage:
   contract.dev login --no-browser       Print the activation URL instead of opening it
 
 The CLI shows a one-time code and opens the activation page. Approving there saves
-credentials bound to your account and chosen workspace to
-~/.contract.dev/credentials.json.
+credentials to ~/.contract.dev/credentials.json, bound to your account and to the
+workspace that is active in the app at that moment. To act on another workspace,
+make it the active one in the app and log in again (\`contract.dev workspace use\`).
 `;
 
 interface DeviceStart {
@@ -41,6 +42,8 @@ export interface WhoamiPayload {
   email?: string | null;
   org?: { id: string; name: string; slug?: string } | null;
   workspaces?: Array<{ id: string; name: string; slug?: string }>;
+  /** the API key this request authenticated with — what `logout` revokes */
+  apiKeyId?: string | null;
 }
 
 function openBrowser(url: string): void {
@@ -131,7 +134,7 @@ export async function loginCommand(args: string[]): Promise<void> {
       console.log(`Logged in${poll.email ? ` as ${poll.email}` : ''}`);
       if (who?.workspaces && who.workspaces.length > 1 && who.org) {
         console.log(
-          `Active workspace: ${who.org.name}. You have ${who.workspaces.length} — switch with \`contract.dev workspace use <name>\`.`,
+          `Credentials are bound to ${who.org.name}. You belong to ${who.workspaces.length} workspaces — \`contract.dev workspace use <name>\` logs in to another.`,
         );
       }
       return;
@@ -141,7 +144,11 @@ export async function loginCommand(args: string[]): Promise<void> {
   throw new Error('Timed out waiting for approval. Re-run `contract.dev login`.');
 }
 
-export async function whoamiCommand(): Promise<void> {
+export async function whoamiCommand(args: string[] = []): Promise<WhoamiPayload | void> {
+  if (args[0] === 'help' || args[0] === '-h' || args[0] === '--help') {
+    console.log(HELP);
+    return;
+  }
   const auth = resolveAuth();
   if (!auth) {
     console.error('Not logged in. Run `contract.dev login`.');
@@ -149,13 +156,33 @@ export async function whoamiCommand(): Promise<void> {
   }
   const payload = await apiRequest<WhoamiPayload>(auth, 'GET', '/api/cli/whoami');
   console.log(`${payload.email ?? 'unknown user'}${payload.org?.name ? ` (workspace: ${payload.org.name})` : ''}`);
-  console.log(`Auth: ${auth.source === 'env' ? 'environment credentials' : credentialsPath()} → ${auth.apiUrl}`);
+  console.log(`Auth: ${auth.source === 'env' ? 'environment credentials' : credentialsPath()} → ${auth.apiUrl}${payload.apiKeyId ? `  (key ${payload.apiKeyId})` : ''}`);
+  return payload;
 }
 
-export async function logoutCommand(): Promise<void> {
+// Logging out revokes the key on the server first, so it does not outlive this machine —
+// best-effort: an unreachable server still ends with the local file gone. Environment
+// credentials are left alone (they may be a CI key shared beyond this shell).
+export async function logoutCommand(args: string[] = []): Promise<{ removed: boolean; revoked: boolean } | void> {
+  if (args[0] === 'help' || args[0] === '-h' || args[0] === '--help') {
+    console.log(HELP);
+    return;
+  }
+  const stored = loadCredentials();
+  let revoked = false;
+  if (stored) {
+    try {
+      await apiRequest({ apiKey: stored.apiKey, apiUrl: stored.apiUrl, source: 'file' }, 'POST', '/api/cli/logout');
+      revoked = true;
+      console.log('Revoked the API key.');
+    } catch (err) {
+      console.log(`Could not revoke the API key (${err instanceof Error ? err.message : String(err)}). Revoke it under APIs in the app.`);
+    }
+  }
   const removed = clearCredentials();
   console.log(removed ? `Removed ${credentialsPath()}` : 'No saved credentials to remove.');
   if (process.env.CONTRACT_DEV_API_KEY) {
     console.log('Note: environment credentials are set in this shell and still authenticate.');
   }
+  return { removed, revoked };
 }

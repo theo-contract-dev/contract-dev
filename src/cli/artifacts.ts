@@ -273,7 +273,7 @@ function buildMissingArtifactsError(project: ProjectInfo): string {
       `    contract.dev push-contracts --contracts src/protocol --artifacts build/artifacts/src/protocol`,
       ``,
       `Otherwise, run \`${buildCmd}\` first.`,
-      `See https://docs.contract.dev/sdk-and-cli/cli/import-contracts#dynamic-paths`,
+      `See https://docs.contract.dev/cli/push-contracts#source-and-artifact-directories`,
     );
   } else {
     // Foundry default, or every path came from the config and just needs a build.

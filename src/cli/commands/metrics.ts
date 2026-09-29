@@ -41,10 +41,14 @@ Usage:
   contract.dev metrics resume <id|label>
   contract.dev metrics decimals <id|label> <n|clear>        Display scale — re-interprets the stored history
                                                             (monitor thresholds on it were typed against the old scale)
-  contract.dev track …                                      Start tracking (try: track help)
-  contract.dev untrack <id|label>
+  contract.dev metrics export <id|label> [--range 24h|7d|30d|90d|all] [--format csv|json]
+                                                            The metric's history: at, value, block, tx (default: csv)
+  contract.dev track …                                      Start tracking (try: track help; also: metrics track …)
+  contract.dev untrack <id|label>                           Stop tracking (also: metrics untrack …)
 
-A metric may be referred to by its id or, when unambiguous, its label.
+A metric may be referred to by its id or, when unambiguous, its label. \`--chain\` takes a
+chain id or name (ethereum, arbitrum, avalanche, sepolia). Tracking a value that is already
+tracked returns the existing metric.
 `;
 
 // The serialized TrackedOnchainValue row the app's API returns (lastValueRaw decoded to lastValue).
@@ -347,6 +351,14 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
       return await patchMetric(rest, 'resume');
     case 'decimals':
       return await patchMetric(rest, 'decimals');
+    case 'export':
+      return await exportMetric(rest);
+    case 'track':
+      return await trackCommand(rest);
+    case 'untrack':
+    case 'remove':
+    case 'rm':
+      return await untrackCommand(rest);
     case 'help':
     case '-h':
     case '--help':
@@ -420,6 +432,32 @@ async function showMetric(args: string[]): Promise<SeriesPayload> {
   return payload;
 }
 
+// `metrics export`: every point of the window, one row per reading — for a spreadsheet or a
+// script. CSV by default; --format json prints the series payload. Newest 2,000 readings.
+async function exportMetric(args: string[]): Promise<SeriesPayload> {
+  const flags = parseFlags(args);
+  const ref = requirePositional(flags._ as string[], 0, 'metric id or label');
+  const range = flag(flags, 'range') ?? 'all';
+  if (!['24h', '7d', '30d', '90d', 'all'].includes(range)) throw new Error('--range must be one of 24h, 7d, 30d, 90d, all');
+  const format = flag(flags, 'format') ?? 'csv';
+  if (format !== 'csv' && format !== 'json') throw new Error('--format must be csv or json');
+
+  const auth = requireAuth();
+  const metric = await resolveMetric(auth, ref);
+  const payload = await apiRequest<SeriesPayload>(auth, 'GET', `/api/mainnet/tracked-metrics/${metric.id}/series?range=${range}`);
+  if (format === 'json') {
+    console.log(JSON.stringify(payload, null, 2));
+    return payload;
+  }
+  const csv = (v: unknown) => {
+    const s = v == null ? '' : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  console.log('at,value,block,tx');
+  for (const p of payload.points) console.log([p.at, p.value, p.blockNumber, p.txHash].map(csv).join(','));
+  return payload;
+}
+
 async function patchMetric(args: string[], action: 'rename' | 'pause' | 'resume' | 'decimals'): Promise<TrackedMetric> {
   const flags = parseFlags(args);
   const positional = flags._ as string[];
@@ -474,7 +512,7 @@ async function patchMetric(args: string[], action: 'rename' | 'pause' | 'resume'
   return trackedMetric;
 }
 
-export async function untrackCommand(args: string[]): Promise<void> {
+export async function untrackCommand(args: string[]): Promise<Array<{ id: string; label: string | null }> | void> {
   if (args[0] === 'help' || args[0] === '-h' || args[0] === '--help' || args[0] === undefined) {
     console.log(METRICS_HELP);
     return;
@@ -483,9 +521,12 @@ export async function untrackCommand(args: string[]): Promise<void> {
   const refs = flags._ as string[];
   if (refs.length === 0) throw new Error('Missing required metric id or label');
   const auth = requireAuth();
+  const removed: Array<{ id: string; label: string | null }> = [];
   for (const ref of refs) {
     const metric = await resolveMetric(auth, ref);
     await apiRequest(auth, 'DELETE', `/api/mainnet/tracked-metrics/${metric.id}`);
     console.log(`Untracked ${metric.label ?? metric.kind} (${metric.id}) — its history and any monitors reading it are gone.`);
+    removed.push({ id: metric.id, label: metric.label });
   }
+  return removed;
 }

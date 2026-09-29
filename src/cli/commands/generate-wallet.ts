@@ -16,7 +16,20 @@ export interface GeneratedWallet {
   privateKey: string;
 }
 
-export async function generateWalletCommand(): Promise<GeneratedWallet> {
+const HELP = `contract.dev generate-wallet — generate a fresh wallet and fund it on your Stagenet
+
+Usage:
+  contract.dev generate-wallet          Print a new address + private key, funded with 1,000,000 native tokens
+
+The private key is shown once and never stored. Targets the active stagenet
+(override with --stagenet <name> or --rpc-url <url>).
+`;
+
+export async function generateWalletCommand(args: string[] = []): Promise<GeneratedWallet | void> {
+  if (args[0] === 'help' || args[0] === '-h' || args[0] === '--help') {
+    console.log(HELP);
+    return;
+  }
   const rpcUrl = await resolveStagenetRpcUrl();
 
   const wallet = Wallet.createRandom();

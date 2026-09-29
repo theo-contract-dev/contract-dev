@@ -27,6 +27,28 @@ describe('track', () => {
         expect(printed()[0]).toMatch(/Tracking Treasury · Native balance on chain 1 \(id: m1\)/);
     });
 
+    it('a repeat track answers with the existing metric', async () => {
+        mockApi({
+            'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
+            'POST /api/mainnet/tracked-metrics': (c) => ({ status: 200, payload: { trackedMetric: { id: 'm1', chainId: 1, address: c.body.address, kind: c.body.kind, label: c.body.label ?? null, params: null, enabled: true }, created: false } }),
+        });
+        await trackCommand([VAULT, 'native-balance', '--label', 'Bal']);
+        expect(printed()[0]).toMatch(/^Already tracking Bal on chain 1 \(id: m1\)/);
+    });
+
+    it('export prints the history as csv, or the payload as json', async () => {
+        const metric = { id: 'm1', chainId: 1, address: VAULT, kind: 'nativeBalance', label: 'Bal', params: null, enabled: true, lastValue: 2 };
+        mockApi({
+            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [metric] } }),
+            'GET /api/mainnet/tracked-metrics/m1/series': () => ({
+                payload: { trackedMetric: metric, points: [{ at: '2026-09-27T09:00:00Z', value: 1.5, blockNumber: 10, txHash: '0xabc' }, { at: '2026-09-27T10:00:00Z', value: 2 }], prev: null },
+            }),
+        });
+        await metricsCommand(['export', 'Bal', '--range', '7d']);
+        expect(printed()).toEqual(['at,value,block,tx', '2026-09-27T09:00:00Z,1.5,10,0xabc', '2026-09-27T10:00:00Z,2,,']);
+        await expect(metricsCommand(['export', 'Bal', '--format', 'xml'])).rejects.toThrow(/--format/);
+    });
+
     it('falls back to short hex when the subject is not watched; --label wins outright', async () => {
         const calls = mockApi({
             'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),

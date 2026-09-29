@@ -24,7 +24,7 @@ Notes:
   Follow whole accounts only for contracts holding pure market state. For shared
   contracts like tokens — where balanceOf holds user balances too — follow specific
   state with --balance-of / --slots so user balances keep persisting.
-  Docs: https://docs.contract.dev/platform-features/mainnet-follow
+  Docs: https://docs.contract.dev/stagenets/mainnet-replay/mainnet-follow
 `;
 
 export interface FollowedState {

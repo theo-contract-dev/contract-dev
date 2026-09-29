@@ -7,7 +7,7 @@ with a Stagenet from your terminal.
 ## Install
 
 ```bash
-npm install contract.dev
+npm install -g contract.dev      # or run it without installing: npx contract.dev <command>
 ```
 
 ## Setup
@@ -15,27 +15,34 @@ npm install contract.dev
 ```bash
 contract.dev login                   # device-code sign-in, opens the browser
 contract.dev whoami                  # the account + workspace the CLI acts as
-contract.dev workspace use my-team   # switch the workspace the CLI acts on
+contract.dev workspace list          # the workspaces you belong to
+contract.dev workspace use my-team   # switch: logs in again for that workspace
+contract.dev status                  # the workspace at a glance
+contract.dev logout                  # revokes the key, deletes the local file
 ```
 
-No config files. The CLI keeps your credentials plus the active workspace in
-`~/.contract.dev/credentials.json`. Credentials are workspace-scoped — re-run
-`login` with another workspace active to act on it.
+No config files. The CLI keeps its credentials in `~/.contract.dev/credentials.json`.
+Credentials are bound to one workspace — the one active in the app when you approve
+the login — so `workspace use` runs the login again; make the target workspace the
+active one in the app before approving.
 
 ## Watch contracts
 
 The workspace's watchlist — the contracts on the home map and /contracts:
 
 ```bash
-contract.dev watch 0xA0b8... --chain 1                  # named from the token's name() / its verified Etherscan name
-contract.dev watch 0xPool... --chain 8453 --name "WETH/USDC pool"
-contract.dev watch list [--chain 8453]
-contract.dev rename 0xA0b8... "USDC (proxy)" --chain 1  # the name every AccountCell shows; "" clears it
+contract.dev watch 0xA0b8... --chain 1                  # named from the app's address book, else the token's name() / its verified name
+contract.dev watch 0xVault... --chain 43114 --name "Vault"
+contract.dev watch 0xNew... --abi out/Vault.sol/Vault.json   # no verified source? name its methods, events and reverts
+contract.dev watch list [--chain 43114]
+contract.dev rename 0xA0b8... "USDC (proxy)" --chain 1  # the name shown everywhere in the app; "" clears it
 contract.dev unwatch 0xA0b8... --chain 1
 ```
 
 Contracts are watched per (chain, address); `--chain` disambiguates one
-watched on several chains. Wallets are added in the app.
+watched on several chains and takes a name (`arbitrum`) as well as an id. Watching is
+available on Ethereum (1), Arbitrum (42161), Avalanche (43114) and Sepolia (11155111).
+The CLI watches contracts only. The same commands read as nouns: `contracts list|add|rename|remove`.
 
 ## Track metrics
 
@@ -44,7 +51,7 @@ and the thing a monitor judges. Kinds follow the app's Track Metric picker:
 
 ```bash
 contract.dev track 0xToken... total-supply --label "USDC supply"
-contract.dev track 0xSafe...  native-balance --chain 8453
+contract.dev track 0xSafe...  native-balance --chain 43114
 contract.dev track 0xSafe...  erc20-balance --token 0xToken...
 contract.dev track 0xToken... balance-of --holder 0xSafe...
 contract.dev track 0xVault... function --function "convertToAssets(uint256) returns (uint256)" --args 1e18 --decimals 18
@@ -56,9 +63,9 @@ contract.dev track 0xPool...  revert-rate --except 0xBot1...,0xBot2...
 
 `function` reads are ABI-encoded locally from the human-readable signature;
 `--word` picks one value of a multi-value return, `int` returns are decoded as
-signed automatically, `--calldata 0x…` bypasses encoding. The trace-backed
-kinds (`calls`, `reverts`, `revert-rate`, `callers`, `gas-p95`) come from the
-trace store and are only offered on chains the collector follows.
+signed automatically, `--calldata 0x…` bypasses encoding. The method kinds
+(`calls`, `reverts`, `revert-rate`, `callers`, `gas-p95`) are available on the
+same four chains as watching.
 
 ```bash
 contract.dev metrics [--address 0x... --chain 1]        # id, kind, chain, address, label, current value
@@ -66,8 +73,11 @@ contract.dev metrics show "USDC supply" --range 7d      # the metric + its histo
 contract.dev metrics rename <id|label> "New label"
 contract.dev metrics pause <id|label> / resume <id|label>
 contract.dev metrics decimals <id|label> 6              # display scale — re-interprets stored history
+contract.dev metrics export <id|label> --range 90d      # the history as CSV (--format json for JSON)
 contract.dev untrack <id|label> [...]                   # also removes monitors that read it
 ```
+
+Tracking a value that is already tracked returns the existing metric.
 
 Anywhere a metric is named, its id or (unambiguous) label works.
 
@@ -77,7 +87,8 @@ A monitor is an alert rule on a tracked metric, an optional warning tier on the
 healthy side of it, and the destinations it pages:
 
 ```bash
-contract.dev channels                                   # alert destinations (connect them in the app's Settings)
+contract.dev channels                                   # alert destinations (connect them in the app under Monitoring → Destinations)
+contract.dev channels test telegram                     # test / enable / disable / remove <id|label>
 contract.dev monitor add "Treasury · Native balance" --below 25000 --warn 30000 --to telegram
 contract.dev monitor add "Vault reserves" --below-metric "Vault liabilities" --warn-pct 5 --to "#alerts"
 contract.dev monitors                                   # status, rule, open incident
@@ -89,7 +100,17 @@ contract.dev monitor pause <id|name> / resume / rename / unsnooze / delete
 
 `--to` takes channel ids, labels (`#alerts`) or kinds (`telegram`, when the
 workspace has one) — required on `add`, since a monitor with nowhere to send
-alerts nobody.
+alerts nobody. A new monitor is named after its metric unless you pass `--name`.
+
+The three default monitors every watched contract gets — `control-change`,
+`dependency-failure`, `revert-spike` — are listed by `monitors` and take
+`pause` / `resume` / `snooze` / `set --to` by that slug:
+
+```bash
+contract.dev monitor exclude revert-spike 0xPool... --chain arbitrum   # leave a contract out
+contract.dev monitor include revert-spike 0xPool... --chain arbitrum
+contract.dev monitor show revert-spike                  # the contracts it covers, each one's state
+```
 
 ```bash
 contract.dev incidents [--days 30] [--limit 50]         # what fired (open episodes are always included)
@@ -100,8 +121,11 @@ contract.dev incidents ack <id> / unack <id>            # stop the reminders; th
 ## Stagenets
 
 ```bash
-contract.dev stagenets               # list the active workspace's stagenets
-contract.dev stagenet use avax-fork  # pick the one to target (stored per workspace)
+contract.dev stagenets                                    # list the active workspace's stagenets
+contract.dev stagenet create eth-staging --chain ethereum # fork a chain at latest; becomes the active stagenet
+contract.dev stagenet use avax-fork                       # pick the one to target (stored per workspace)
+contract.dev stagenet reset [--every 12h|off] [--show]    # return its state to the live chain, keeping your wallets
+contract.dev stagenet delete eth-staging --yes
 ```
 
 One-off overrides on any stagenet command: `--stagenet <name>`, or `--rpc-url <url>`
@@ -115,47 +139,50 @@ From your Foundry/Hardhat project root, after `forge build` or `npx hardhat comp
 contract.dev push-contracts
 ```
 
-Each contract becomes a pending Workspace, matched to deployments by bytecode.
-Re-run after each rebuild — unchanged contracts are no-ops. Source/artifact dirs
-are auto-detected; pass `--contracts <dir>` / `--artifacts <dir>` when your
-hardhat.config computes paths dynamically.
+Pushed contracts are matched to deployments by bytecode, so each deployment gets
+a dashboard with its name and ABI attached. Re-run after each rebuild — a push
+that changes nothing is a no-op. Source/artifact dirs are auto-detected; pass
+`--contracts <dir>` / `--artifacts <dir>` when your hardhat.config computes paths
+dynamically.
 
 ## Commands
 
 ```
 contract.dev login                Connect the CLI to your contract.dev account
 contract.dev whoami               Show the signed-in account + workspace
-contract.dev workspace            Show/switch the active workspace
-contract.dev logout               Delete the saved credentials
+contract.dev workspace            Show or switch the workspace the CLI acts on
+contract.dev logout               Revoke the key and delete the saved credentials
+contract.dev status               The workspace at a glance
 
 contract.dev watch                Watch mainnet contracts
 contract.dev rename               Rename a watched contract
 contract.dev unwatch              Stop watching a contract
 
-contract.dev metrics              List / show / rename / pause / resume tracked metrics
+contract.dev metrics              List / show / export / rename / pause / resume tracked metrics
 contract.dev track                Track an on-chain value
 contract.dev untrack              Stop tracking
 
 contract.dev monitors             List monitors
-contract.dev monitor              Add / show / set / pause / snooze / delete a monitor
+contract.dev monitor              Add / show / set / pause / snooze / delete a monitor; exclude / include on a default
 contract.dev incidents            List / show / ack alert episodes
-contract.dev channels             List alert destinations
+contract.dev channels             List / test / enable / disable / remove alert destinations
 
 contract.dev stagenets            List the workspace's stagenets
-contract.dev stagenet use         Set the active stagenet
+contract.dev stagenet             use / create / delete / reset a stagenet
 contract.dev push-contracts       Push compiled artifacts
 contract.dev generate-wallet      Generate + fund a wallet
 contract.dev balance              Change native balances
 contract.dev erc20-balance        Change ERC20 balances
-contract.dev state                Override code / nonce / storage
+contract.dev state                Override code / nonce / storage; resync a contract to mainnet
 contract.dev impersonate          Impersonate an address
 contract.dev follow               Pin contract state to live mainnet
 contract.dev unfollow             Stop following
 contract.dev function-override    Override contract function results
 ```
 
-Run `contract.dev <command> help` for per-command flags.
+Run `contract.dev <command> help` for per-command flags. `--json` on any command prints its
+result as JSON; `--version` prints the version.
 
 ## Docs
 
-Full reference: [docs.contract.dev](https://docs.contract.dev/sdk-and-cli).
+Full reference: [docs.contract.dev/cli](https://docs.contract.dev/cli).

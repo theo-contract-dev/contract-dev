@@ -1,4 +1,4 @@
-import { monitorCommand, monitorsCommand, channelsCommand, resolveChannelIds } from '../../src/cli/commands/monitor';
+import { monitorCommand, monitorsCommand, channelsCommand, resolveChannelIds, findChannel } from '../../src/cli/commands/monitor';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
 
 const VAULT = '0x1111111111111111111111111111111111111111';
@@ -200,5 +200,72 @@ describe('monitors / monitor show / set / lifecycle', () => {
         expect(new Date(writes[3].body.snoozedUntil).getTime()).toBeGreaterThan(Date.now() + 119 * 60_000);
         expect(writes[4].body).toEqual({ snoozedUntil: null });
         await expect(monitorCommand(['snooze', 'inv1', '2020-01-01'])).rejects.toThrow(/in the future/);
+    });
+});
+
+describe('default monitors and destinations', () => {
+    useEnvAuth();
+
+    const CONTRACT = '0x4444444444444444444444444444444444444444';
+    const builtin = {
+        id: 'b1', kind: 'revertRate', name: 'Revert spike', exprAst: { type: 'builtin', kind: 'revertRate' }, exprText: 'The share of transactions…', warnExprAst: null, warnExprText: null,
+        enabled: true, status: 'healthy', channelIds: [], inputs: [], snoozedUntil: null, maxInputAgeSec: null, notifyAll: true,
+        params: { excluded: ['1:0x5555555555555555555555555555555555555555'] },
+        subjects: [{ chainId: 1, address: CONTRACT, state: 'alerting', openIncidentId: 'inc9', level: 'alert', since: '2026-09-27T09:00:00Z', sentence: 'Reverting 6.7% of transactions in the last hour' }],
+    };
+    const channels = [
+        { id: 'ch1', kind: 'telegram', enabled: true, label: null, target: '-100123' },
+        { id: 'ch2', kind: 'discord_bot', enabled: false, label: '#alerts', target: 'Acme' },
+    ];
+
+    it('exclude adds the contract to the default monitor\'s excluded list; include takes it back out', async () => {
+        const calls = mockApi({
+            'GET /api/mainnet/invariants': () => ({ payload: { invariants: [builtin] } }),
+            'PATCH /api/mainnet/invariants/b1': (c) => ({ payload: { invariant: { ...builtin, params: c.body.params } } }),
+        });
+        await monitorCommand(['exclude', 'revert-spike', CONTRACT, '--chain', 'ethereum']);
+        expect(calls.find((c) => c.method === 'PATCH')!.body).toEqual({ params: { excluded: ['1:0x5555555555555555555555555555555555555555', `1:${CONTRACT}`] } });
+        expect(printed().at(-1)).toBe('Excluded 0x4444…4444 on chain 1 from Revert spike.');
+
+        await monitorCommand(['include', 'Revert spike', '0x5555555555555555555555555555555555555555']);
+        expect(calls.filter((c) => c.method === 'PATCH').at(-1)!.body).toEqual({ params: { excluded: [] } });
+    });
+
+    it('exclude refuses a custom monitor and reports an already-excluded contract without a write', async () => {
+        const rule = { ...builtin, id: 'r1', kind: null, name: 'Floor', params: null, subjects: undefined };
+        const calls = mockApi({ 'GET /api/mainnet/invariants': () => ({ payload: { invariants: [builtin, rule] } }) });
+        await expect(monitorCommand(['exclude', 'Floor', CONTRACT])).rejects.toThrow(/custom monitor/);
+        await monitorCommand(['exclude', 'revert-spike', '0x5555555555555555555555555555555555555555']);
+        expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+        expect(printed().at(-1)).toMatch(/already excluded/);
+    });
+
+    it('show on a default monitor lists the contracts it covers and the excluded ones', async () => {
+        mockApi({
+            'GET /api/mainnet/invariants': () => ({ payload: { invariants: [builtin] } }),
+            'GET /api/mainnet/invariants/b1': () => ({ payload: { invariant: { ...builtin, incidents: [] } } }),
+            'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
+        });
+        await monitorCommand(['show', 'dependency-failure'.replace('dependency-failure', 'revert-spike')]);
+        const out = printed().join('\n');
+        expect(out).toMatch(/sends to: every destination/);
+        expect(out).toMatch(/covers: 1 contract\n {4}alerting {2}chain 1 {9}0x4444444444444444444444444444444444444444 {2}Reverting 6\.7%/);
+        expect(out).toMatch(/excluded: 1:0x5555555555555555555555555555555555555555/);
+    });
+
+    it('channels test / disable / enable / remove act on one destination by id, label or kind', async () => {
+        const calls = mockApi({
+            'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
+            'POST /api/cli/alert-channels/ch1/test': () => ({ payload: { ok: true } }),
+            'PATCH /api/cli/alert-channels/ch2': (c) => ({ payload: { channels: channels.map((ch) => (ch.id === 'ch2' ? { ...ch, enabled: c.body.enabled } : ch)) } }),
+            'DELETE /api/cli/alert-channels/ch1': () => ({ payload: { channels: channels.slice(1) } }),
+        });
+        await channelsCommand(['test', 'telegram']);
+        expect(printed().at(-1)).toBe('Test alert sent to telegram -100123.');
+        await channelsCommand(['enable', '#alerts']);
+        expect(calls.filter((c) => c.method === 'PATCH').at(-1)!.body).toEqual({ enabled: true });
+        await channelsCommand(['remove', 'ch1']);
+        expect(calls.some((c) => c.method === 'DELETE' && c.path === '/api/cli/alert-channels/ch1')).toBe(true);
+        expect(() => findChannel(channels, 'nope')).toThrow(/No alert destination matches/);
     });
 });

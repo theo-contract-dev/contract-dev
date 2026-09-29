@@ -1,6 +1,7 @@
 import { parseFlags, flag, requirePositional } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { resolveMetric, formatValue, shortHex, TrackedMetric } from './metrics';
+import { parseChainId } from './watch';
 import {
   buildBoundExpr,
   buildCompareExpr,
@@ -24,6 +25,8 @@ Usage:
   contract.dev monitor snooze <id|name> <30m|2h|1d|iso>   Mute pages until then (still evaluates)
   contract.dev monitor unsnooze <id|name>
   contract.dev monitor delete <id|name>
+  contract.dev monitor exclude <default> <address> [--chain <id>]   Leave a contract out of a default monitor
+  contract.dev monitor include <default> <address> [--chain <id>]   Put it back
   contract.dev channels                                   Alert destinations — what --to accepts
 
 Rules (exactly one):
@@ -43,15 +46,24 @@ Destinations:
 <metric> is a tracked metric's id or label (\`contract.dev metrics\`). Examples:
   contract.dev monitor add "Treasury · Native balance" --below 25000 --warn 30000 --to telegram
   contract.dev monitor add vault_reserves --below-metric vault_liabilities --warn-pct 5 --to "#alerts"
+
+Default monitors — control-change, dependency-failure, revert-spike — take pause / resume /
+snooze / unsnooze / set --to / exclude / include by that slug or by name; they have no
+thresholds to edit and cannot be deleted.
 `;
 
 const CHANNELS_HELP = `contract.dev channels — the workspace's alert destinations
 
 Usage:
-  contract.dev channels        List destinations (id, kind, label, target)
+  contract.dev channels                    List destinations (id, kind, label, target)
+  contract.dev channels test <id|label>    Send a test alert to one destination
+  contract.dev channels disable <id|label> Stop sending to it (kept, can be enabled again)
+  contract.dev channels enable <id|label>
+  contract.dev channels remove <id|label>  Disconnect it
 
-Connect Telegram, Discord or Slack from the app's Settings; this lists what's there so
-\`contract.dev monitor add --to …\` can name it.
+Connect Telegram, Discord or Slack in the app under Monitoring → Destinations; this lists
+what's there so \`contract.dev monitor add --to …\` can name it. Test, enable, disable and
+remove need an owner or admin, as in the app.
 `;
 
 export interface AlertChannel {
@@ -62,9 +74,28 @@ export interface AlertChannel {
   target: string;
 }
 
+export interface BuiltinSubject {
+  chainId: number;
+  address: string;
+  state: string;
+  openIncidentId: string | null;
+  level: 'warning' | 'alert' | null;
+  since: string | null;
+  sentence: string | null;
+}
+
+export const BUILTIN_KINDS = new Set(['controlChange', 'outboundCalls', 'revertRate']);
+export const isBuiltinMonitor = (m: { kind?: string | null }) => !!m.kind && BUILTIN_KINDS.has(m.kind);
+
 export interface Invariant {
   id: string;
   name: string;
+  /** null for a custom rule; controlChange / outboundCalls / revertRate for a default */
+  kind?: string | null;
+  /** a default's settings: the contracts left out, as "<chainId>:<address>" */
+  params?: { excluded?: string[] } | null;
+  /** a default's contracts, each with its state (present on list and show) */
+  subjects?: BuiltinSubject[] | null;
   exprAst: InvariantExpr;
   exprText: string;
   warnExprAst: InvariantExpr | null;
@@ -89,14 +120,65 @@ export async function listChannels(auth: ResolvedAuth): Promise<AlertChannel[]> 
   return channels ?? [];
 }
 
-export async function channelsCommand(args: string[] = []): Promise<AlertChannel[] | void> {
-  if (args[0] === 'help' || args[0] === '-h' || args[0] === '--help') {
-    console.log(CHANNELS_HELP);
-    return;
+// One destination by id, label (with or without its '#'), target, or kind when the workspace
+// has exactly one of that kind — disabled ones included, so `enable` can name them.
+export function findChannel(all: AlertChannel[], raw: string): AlertChannel {
+  const ref = raw.trim();
+  const lower = ref.toLowerCase();
+  const bare = lower.replace(/^#/, '');
+  const hit = all.find((c) => c.id === ref || (c.label ?? '').toLowerCase().replace(/^#/, '') === bare || c.target.toLowerCase() === lower);
+  if (hit) return hit;
+  const byKind = all.filter((c) => c.kind.toLowerCase() === lower || c.kind.toLowerCase().replace(/_bot$/, '') === lower);
+  if (byKind.length === 1) return byKind[0];
+  if (byKind.length > 1) throw new Error(`${byKind.length} ${ref} destinations — name one by label: ${byKind.map((c) => c.label ?? c.id).join(', ')}`);
+  throw new Error(`No alert destination matches "${ref}" (run \`contract.dev channels\`).`);
+}
+
+const describeChannel = (c: AlertChannel) => `${c.kind} ${c.label ?? c.target}`;
+
+export async function channelsCommand(args: string[] = []): Promise<AlertChannel[] | unknown> {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case 'help':
+    case '-h':
+    case '--help':
+      console.log(CHANNELS_HELP);
+      return;
+    case 'test':
+    case 'enable':
+    case 'disable':
+    case 'remove':
+    case 'rm': {
+      const flags = parseFlags(rest);
+      const ref = requirePositional(flags._ as string[], 0, 'destination (id or label)');
+      const auth = requireAuth();
+      const channel = findChannel(await listChannels(auth), ref);
+      if (sub === 'test') {
+        await apiRequest(auth, 'POST', `/api/cli/alert-channels/${channel.id}/test`);
+        console.log(`Test alert sent to ${describeChannel(channel)}.`);
+        return { ok: true, id: channel.id };
+      }
+      if (sub === 'remove' || sub === 'rm') {
+        await apiRequest(auth, 'DELETE', `/api/cli/alert-channels/${channel.id}`);
+        console.log(`Removed ${describeChannel(channel)}. Monitors that sent there no longer do.`);
+        return { ok: true, id: channel.id };
+      }
+      const enabled = sub === 'enable';
+      await apiRequest(auth, 'PATCH', `/api/cli/alert-channels/${channel.id}`, { enabled });
+      console.log(`${enabled ? 'Enabled' : 'Disabled'} ${describeChannel(channel)}.`);
+      return { ok: true, id: channel.id, enabled };
+    }
+    case undefined:
+    case 'list':
+      break;
+    default:
+      console.error(`Unknown channels subcommand: ${sub}\n`);
+      console.error(CHANNELS_HELP);
+      process.exit(1);
   }
   const channels = await listChannels(requireAuth());
   if (!channels.length) {
-    console.log('No alert destinations. Connect Telegram, Discord or Slack in the app (Settings → Alerts).');
+    console.log('No alert destinations. Connect Telegram, Discord or Slack in the app under Monitoring → Destinations.');
     return [];
   }
   for (const c of channels) {
@@ -125,7 +207,7 @@ export function resolveChannelIds(allChannels: AlertChannel[], refs: string[]): 
       continue;
     }
     const disabled = allChannels.find((c) => !c.enabled && matches(c));
-    if (disabled) throw new Error(`"${ref}" is a disabled destination — re-enable it in the app's Settings first.`);
+    if (disabled) throw new Error(`"${ref}" is a disabled destination — re-enable it under Monitoring → Destinations first.`);
     const byKind = channels.filter((c) => c.kind.toLowerCase() === lower || c.kind.toLowerCase().replace(/_bot$/, '') === lower);
     if (byKind.length === 1) {
       ids.add(byKind[0].id);
@@ -142,14 +224,18 @@ export function resolveChannelIds(allChannels: AlertChannel[], refs: string[]): 
 
 export const metricName = (m: TrackedMetric | null | undefined) => (m ? m.label ?? m.kind : 'value');
 
-// A monitor by id, or by name when exactly one matches (case-insensitive).
+// A monitor by id, or by name when exactly one matches (case-insensitive). A default
+// monitor also answers to its slug — control-change, dependency-failure, revert-spike — the
+// name of its page in the app.
+const slugOf = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
 export async function resolveMonitor(auth: ResolvedAuth, ref: string): Promise<Invariant> {
   const { invariants } = await apiRequest<{ invariants: Invariant[] }>(auth, 'GET', '/api/mainnet/invariants');
   const all = invariants ?? [];
   const byId = all.find((m) => m.id === ref);
   if (byId) return byId;
   const lower = ref.trim().toLowerCase();
-  const byName = all.filter((m) => m.name.toLowerCase() === lower);
+  const byName = all.filter((m) => m.name.toLowerCase() === lower || slugOf(m.name) === lower);
   if (byName.length === 1) return byName[0];
   if (byName.length > 1) throw new Error(`${byName.length} monitors are named "${ref}" — use an id: ${byName.map((m) => m.id).join(', ')}`);
   throw new Error(`No monitor matches "${ref}" (run \`contract.dev monitors\` to list them).`);
@@ -262,6 +348,10 @@ export async function monitorCommand(args: string[]): Promise<unknown> {
     case 'delete':
     case 'remove':
       return await deleteMonitor(rest);
+    case 'exclude':
+      return await excludeSubcommand(rest, true);
+    case 'include':
+      return await excludeSubcommand(rest, false);
     case 'list':
       return await monitorsCommand(rest);
     case 'help':
@@ -389,7 +479,19 @@ async function showMonitor(args: string[]): Promise<Invariant> {
     const c = channels.find((ch) => ch.id === id);
     return c ? `${c.kind} ${c.label ?? c.target}` : id;
   });
-  console.log(`  sends to: ${destinations.length ? destinations.join(', ') : invariant.notifyAll ? 'every destination (legacy)' : 'nobody'}`);
+  console.log(`  sends to: ${destinations.length ? destinations.join(', ') : invariant.notifyAll ? 'every destination' : 'nobody'}`);
+  if (isBuiltinMonitor(invariant)) {
+    const subjects = invariant.subjects;
+    const excluded = invariant.params?.excluded ?? [];
+    if (subjects == null) console.log('  covers: unknown — the contracts could not be read right now');
+    else {
+      console.log(`  covers: ${subjects.length} contract${subjects.length === 1 ? '' : 's'}`);
+      for (const s of subjects) {
+        console.log(`    ${s.state.padEnd(9)} chain ${String(s.chainId).padEnd(9)} ${s.address}${s.sentence ? `  ${s.sentence}` : ''}`);
+      }
+    }
+    if (excluded.length) console.log(`  excluded: ${excluded.join(', ')}`);
+  }
   const incidents = invariant.incidents ?? [];
   console.log(`  episodes: ${incidents.length}${incidents.length ? ' (newest first)' : ''}`);
   for (const inc of incidents.slice(0, 10)) {
@@ -451,11 +553,43 @@ async function patchMonitor(args: string[], action: 'rename' | 'pause' | 'resume
   return invariant;
 }
 
-async function deleteMonitor(args: string[]): Promise<void> {
+// `monitor exclude|include <default> <address> [--chain <id>]`: edit a default monitor's
+// excluded list — the one setting a default has besides on/off and destinations. Sent whole,
+// as the API takes it (params.excluded replaces).
+async function excludeSubcommand(args: string[], exclude: boolean): Promise<Invariant> {
+  const flags = parseFlags(args);
+  const positional = flags._ as string[];
+  const ref = requirePositional(positional, 0, 'default monitor (control-change, dependency-failure or revert-spike)');
+  const address = requirePositional(positional, 1, 'contract address');
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error(`contract address must be a 0x address (got: ${address})`);
+  const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
+
+  const auth = requireAuth();
+  const existing = await resolveMonitor(auth, ref);
+  if (!isBuiltinMonitor(existing)) {
+    throw new Error(`"${existing.name}" is a custom monitor — only default monitors cover contracts. Delete or edit its rule instead.`);
+  }
+  const key = `${chainId}:${address.toLowerCase()}`;
+  const current = new Set((existing.params?.excluded ?? []).map((k) => k.toLowerCase()));
+  if (exclude === current.has(key)) {
+    console.log(`${shortHex(address)} on chain ${chainId} is already ${exclude ? 'excluded from' : 'covered by'} ${existing.name}.`);
+    return existing;
+  }
+  if (exclude) current.add(key);
+  else current.delete(key);
+  const { invariant } = await apiRequest<{ invariant: Invariant }>(auth, 'PATCH', `/api/mainnet/invariants/${existing.id}`, {
+    params: { excluded: Array.from(current) },
+  });
+  console.log(exclude ? `Excluded ${shortHex(address)} on chain ${chainId} from ${invariant.name}.` : `${invariant.name} covers ${shortHex(address)} on chain ${chainId} again.`);
+  return invariant;
+}
+
+async function deleteMonitor(args: string[]): Promise<{ ok: true; id: string } | void> {
   const flags = parseFlags(args);
   const ref = requirePositional(flags._ as string[], 0, 'monitor (id or name)');
   const auth = requireAuth();
   const existing = await resolveMonitor(auth, ref);
   await apiRequest(auth, 'DELETE', `/api/mainnet/invariants/${existing.id}`);
   console.log(`Deleted monitor "${existing.name}" (${existing.id}) and its episode history.`);
+  return { ok: true, id: existing.id };
 }
