@@ -118,6 +118,44 @@ contract.dev incidents show <id>                        # evidence, deliveries, 
 contract.dev incidents ack <id> / unack <id>            # stop the reminders; the all-clear still comes
 ```
 
+## Read your data
+
+Everything the dashboard shows, from the terminal. `<contract>` is an address or a
+watched contract's name (`steth` finds "Lido: stETH"); leave it out for the whole
+workspace. Windows are `--range 24h|7d|30d|90d` (Free workspaces keep 24 hours).
+
+```bash
+contract.dev activity steth                     # transactions that reached it, newest first
+contract.dev activity steth --calls             # every call into it, internal ones included (--events, --transfers)
+contract.dev activity --failed --chain arbitrum # what reverted, across the workspace
+contract.dev methods steth                      # calls per method: reverts, callers, gas
+contract.dev methods steth transfer             # one method: callers, revert reasons, arguments, recent calls
+contract.dev methods steth transfer --paths     # the contracts calls come through
+contract.dev flows steth                        # value in and out: by token, by counterparty
+contract.dev flows steth --in --limit 100       # every counterparty sending in, largest first
+contract.dev counterparty 0x1b7a…               # one counterparty's dealings with your contracts
+contract.dev users steth                        # active wallets, how they arrive, the busiest (--routes, --wallets)
+contract.dev tvl                                # value held: now, its change, by chain and token
+contract.dev contracts show steth               # one contract at a glance: proxy, owner, token, last 24h
+contract.dev contracts stats --range 7d         # every contract side by side
+contract.dev positions <contract>               # positions in lending markets and vaults
+contract.dev holders <contract>                 # a token's holders
+contract.dev dependencies steth                 # the contracts it calls out to
+```
+
+And any transaction, address or block on Ethereum, Arbitrum, Avalanche or Sepolia:
+
+```bash
+contract.dev tx 0x03d2… --trace --state         # decoded call, fees, transfers, logs; call tree; state changes
+contract.dev address 0x889e…                    # balance, identity, recent transactions
+contract.dev block 26093226 --chain ethereum
+contract.dev wallet 0x47ac… [--approvals|--txs]
+contract.dev source steth --out ./steth-src     # verified source, written to files
+```
+
+`--json` prints everything the matching dashboard tab has (series included), for
+scripts and agents. API keys get 120 requests a minute on these.
+
 ## Stagenets
 
 ```bash
@@ -161,6 +199,22 @@ contract.dev unwatch              Stop watching a contract
 contract.dev metrics              List / show / export / rename / pause / resume tracked metrics
 contract.dev track                Track an on-chain value
 contract.dev untrack              Stop tracking
+
+contract.dev activity             Transactions, calls, events and transfers on your contracts
+contract.dev methods              Calls per method; one method in full; the paths into it
+contract.dev flows                Value in and out, by token and counterparty
+contract.dev counterparty         One counterparty's dealings with your contracts
+contract.dev users                Active wallets, how they arrive, the busiest
+contract.dev tvl                  Value held, its change, what it is made of
+contract.dev contracts            show <contract> / stats: one contract, or all side by side
+contract.dev positions            A contract's lending and vault positions
+contract.dev holders              A token's holders
+contract.dev dependencies         The contracts a contract calls out to
+contract.dev tx                   A transaction; --trace, --state
+contract.dev address              An address: balance, identity, recent transactions
+contract.dev block                A block and its transactions
+contract.dev wallet               A wallet's tokens, approvals, transactions
+contract.dev source               A contract's verified source
 
 contract.dev monitors             List monitors
 contract.dev monitor              Add / show / set / pause / snooze / delete a monitor; exclude / include on a default

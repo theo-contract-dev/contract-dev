@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { contractStats, showContract } from './inspect';
 import { parseFlags, flag, requirePositional } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { formatUsd } from '../format';
@@ -10,6 +11,8 @@ Usage:
   contract.dev watch list [--chain <id>]               List watched contracts
   contract.dev rename <address> <name> [--chain <id>]  Rename a watched contract (clears with "")
   contract.dev unwatch <address> [--chain <id>]        Stop watching a contract
+  contract.dev contracts show <address|name>          One contract at a glance: what it is, what it holds, its last 24h
+  contract.dev contracts stats [--range]               Every watched contract side by side: value, transactions, volume
 
 Flags (watch <address>):
   --chain <id>     Chain the contract lives on (default: 1). Names work: ethereum, arbitrum,
@@ -219,6 +222,11 @@ export async function contractsCommand(args: string[]): Promise<unknown> {
     case 'rm':
     case 'unwatch':
       return await unwatchCommand(rest);
+    case 'show':
+    case 'info':
+      return await showContract(rest);
+    case 'stats':
+      return await contractStats(rest);
     case 'help':
     case '-h':
     case '--help':

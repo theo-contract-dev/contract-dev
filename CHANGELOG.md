@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.3.0 — 2026-10-01
+
+Needs the app deploy that lets a staff key name a workspace (`lib/apiAuth`, `lib/workspaceOverride`)
+and lets an API key read the dashboard's data routes (every `/api/mainnet/*` route answers a key, with a
+per-key limit of 120 requests a minute).
+
+### Added
+- Everything the dashboard shows, from the terminal. `<contract>` is an address or a watched contract's name:
+  - `activity [<contract>] [--calls|--events|--transfers] [--failed] [--reads|--all] [--direct|--routed]` — the Activity tab.
+  - `methods [<contract>]`, `methods <contract> <method> [--paths]` — calls per method; one method in full; the paths into it.
+  - `flows [<contract>] [--in|--out] [--token]`, `counterparty <address>` — value in and out, by token and counterparty.
+  - `users [<contract>] [--routes|--wallets]` — active wallets, how they arrive, the busiest.
+  - `tvl [<contract>]`, `positions <contract>`, `holders <contract>` — value held and what it is made of.
+  - `contracts show <contract>`, `contracts stats`, `dependencies <contract>`.
+  - `tx <hash> [--trace] [--state]`, `address <0x…>`, `block <n>`, `wallet <0x…> [--approvals|--txs]`, `source <contract> [--out]`.
+  - `--range 24h|7d|30d|90d` and `--chain` throughout; `--json` gives the full payload the dashboard renders.
+- `--workspace <id|slug>` on any command, and `CONTRACT_DEV_WORKSPACE`: act on a named workspace instead of
+  the one the credentials are bound to. The server honours it for contract.dev staff (a root admin on any
+  workspace, hand-over staff on a workspace they belong to) and refuses any other key, so nothing changes for
+  everyone else: the key still decides the workspace, and `workspace use` still logs in again.
+
 ## 1.2.0 — 2026-09-29
 
 Needs the app deploy that adds `/api/cli/alert-channels/*`, `/api/cli/logout`, bearer auth on

@@ -16,6 +16,13 @@ import { metricsCommand, trackCommand, untrackCommand } from './commands/metrics
 import { monitorCommand, monitorsCommand, channelsCommand } from './commands/monitor';
 import { incidentsCommand } from './commands/incidents';
 import { statusCommand } from './commands/status';
+import { activityCommand } from './commands/activity';
+import { methodsCommand } from './commands/methods';
+import { flowsCommand, counterpartyCommand } from './commands/flows';
+import { usersCommand } from './commands/users';
+import { tvlCommand, positionsCommand, holdersCommand } from './commands/tvl';
+import { dependenciesCommand } from './commands/inspect';
+import { txCommand, addressCommand, blockCommand, walletCommand, sourceCommand } from './commands/explorer';
 import { extractTargetFlags } from './target';
 
 const HELP = `contract.dev — your contracts, from the command line
@@ -38,6 +45,25 @@ Metrics:
   contract.dev metrics export <id|label>  A metric's history as CSV or JSON
   contract.dev track <address> <kind>     Track a balance, supply, call result, TVL or method telemetry (try: track help)
   contract.dev untrack <id|label>         Stop tracking
+
+Data (what the dashboard shows; <contract> is an address or a watched contract's name):
+  contract.dev activity [<contract>]      Transactions, calls, events and transfers, newest first (try: activity help)
+  contract.dev methods [<contract>]       Calls per method: reverts, callers, gas; one method in full (try: methods help)
+  contract.dev flows [<contract>]         Value in and out: by token, by counterparty (try: flows help)
+  contract.dev users [<contract>]         Active wallets, how they arrive, the busiest (try: users help)
+  contract.dev tvl [<contract>]           Value held: now, its change, what it is made of (try: tvl help)
+  contract.dev contracts show <contract>  One contract at a glance · contracts stats: all of them side by side
+  contract.dev positions <contract>       Positions in lending markets and vaults
+  contract.dev holders <contract>         A token's holders
+  contract.dev dependencies <contract>    The contracts it calls out to
+  contract.dev counterparty <address>     One counterparty's dealings with your contracts
+
+Explorer (any address on a supported chain):
+  contract.dev tx <hash>                  A transaction; --trace for the call tree, --state for what it changed
+  contract.dev address <0x…>              Balance, identity and recent transactions
+  contract.dev block <number>             A block and its transactions
+  contract.dev wallet <0x…>               Tokens; --approvals, --txs
+  contract.dev source <contract>          Verified source; --out <dir> writes the files
 
 Monitoring:
   contract.dev monitors                   List monitors
@@ -66,6 +92,7 @@ Nouns work too: contracts list|add|rename|remove · metrics track|untrack · mon
 
 Global flags:
   --json                                  Print the command's result as JSON instead of text
+  --workspace <id|slug>                   Act on a named workspace instead of the one the login is bound to (contract.dev staff)
   --version                               Print the CLI version
   contract.dev help                       Show this help
 `;
@@ -146,6 +173,38 @@ export async function run(args: string[]): Promise<unknown> {
     case 'channels':
     case 'channel':
       return await channelsCommand(rest);
+    case 'activity':
+      return await activityCommand(rest);
+    case 'methods':
+    case 'method':
+      return await methodsCommand(rest);
+    case 'flows':
+    case 'flow':
+      return await flowsCommand(rest);
+    case 'counterparty':
+      return await counterpartyCommand(rest);
+    case 'users':
+      return await usersCommand(rest);
+    case 'tvl':
+    case 'value':
+      return await tvlCommand(rest);
+    case 'positions':
+      return await positionsCommand(rest);
+    case 'holders':
+      return await holdersCommand(rest);
+    case 'dependencies':
+    case 'deps':
+      return await dependenciesCommand(rest);
+    case 'tx':
+      return await txCommand(rest);
+    case 'address':
+      return await addressCommand(rest);
+    case 'block':
+      return await blockCommand(rest);
+    case 'wallet':
+      return await walletCommand(rest);
+    case 'source':
+      return await sourceCommand(rest);
     case 'version':
     case '--version':
     case '-v':

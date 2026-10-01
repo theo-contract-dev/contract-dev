@@ -1,4 +1,4 @@
-import { apiRequest, loadCredentials, requireAuth } from './credentials';
+import { apiRequest, loadCredentials, requireAuth, setWorkspaceOverride } from './credentials';
 
 export interface StagenetSummary {
   id: string;
@@ -13,7 +13,7 @@ export interface StagenetsPayload {
   stagenets: StagenetSummary[];
 }
 
-// Per-invocation targeting overrides. The entrypoint strips --stagenet/--rpc-url
+// Per-invocation targeting overrides. The entrypoint strips --stagenet/--rpc-url/--workspace
 // from argv before command dispatch, so subcommand parsers never see them.
 let stagenetOverride: string | undefined;
 let rpcUrlOverride: string | undefined;
@@ -42,6 +42,11 @@ export function extractTargetFlags(args: string[]): string[] {
       rpcUrlOverride = rpcUrl;
       continue;
     }
+    const workspace = grab('workspace');
+    if (workspace !== undefined) {
+      setWorkspaceOverride(workspace);
+      continue;
+    }
     rest.push(arg);
   }
   return rest;
@@ -51,6 +56,7 @@ export function extractTargetFlags(args: string[]): string[] {
 export function resetTargetOverrides(): void {
   stagenetOverride = undefined;
   rpcUrlOverride = undefined;
+  setWorkspaceOverride(undefined);
 }
 
 export async function fetchStagenets(): Promise<StagenetsPayload> {

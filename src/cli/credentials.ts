@@ -80,6 +80,20 @@ export function resolveAuth(): ResolvedAuth | null {
   return { apiKey: stored.apiKey, apiUrl: process.env.CONTRACT_DEV_API_URL || stored.apiUrl, source: 'file' };
 }
 
+// A workspace named for this invocation (--workspace <id|slug>, or CONTRACT_DEV_WORKSPACE):
+// every request asks the server to act on it instead of the workspace the key is bound to.
+// The server honours that for contract.dev staff and refuses any other key, so for everyone
+// else the key alone still decides the workspace.
+let workspaceOverride: string | undefined;
+
+export function setWorkspaceOverride(ref: string | undefined): void {
+  workspaceOverride = ref?.trim() || undefined;
+}
+
+export function workspaceOverrideRef(): string | undefined {
+  return workspaceOverride ?? (process.env.CONTRACT_DEV_WORKSPACE?.trim() || undefined);
+}
+
 export function requireAuth(): ResolvedAuth {
   const auth = resolveAuth();
   if (!auth) {
@@ -119,12 +133,14 @@ export async function apiRequest<T>(
   options: RequestOptions = {},
 ): Promise<T> {
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const workspace = workspaceOverrideRef();
   const attempt = () =>
     fetch(`${auth.apiUrl}${path}`, {
       method,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${auth.apiKey}`,
+        ...(workspace ? { 'X-Contract-Dev-Workspace': workspace } : {}),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(timeoutMs),
@@ -149,6 +165,11 @@ export async function apiRequest<T>(
 
   const payload: any = await response.json().catch(() => null);
   if (response.status === 401) {
+    if (workspace) {
+      throw new Error(
+        `These credentials cannot act on workspace "${workspace}". Log in with it active in the app instead (\`contract.dev workspace use ${workspace}\`).`,
+      );
+    }
     throw new Error('API key was rejected. Run `contract.dev login` again.');
   }
   if (!response.ok) {
