@@ -17,7 +17,16 @@ describe('status', () => {
             }),
             'GET /api/mainnet/vitals': () => ({ payload: { org: { contracts: 2, chains: 2, tvlUsd: 2_500_000, txTotal: 1234, txFailed: 12 } } }),
             'GET /api/mainnet/invariants': () => ({
-                payload: { invariants: [{ id: 'i1', name: 'A', enabled: true, status: 'healthy' }, { id: 'i2', name: 'B', enabled: true, status: 'alerting' }, { id: 'i3', name: 'C', enabled: false, status: 'disabled' }] },
+                payload: {
+                    // the server's words: ok, breached, warning, warming, stale; an enabled flag for paused ones
+                    invariants: [
+                        { id: 'i1', name: 'A', enabled: true, status: 'ok' },
+                        { id: 'i2', name: 'B', enabled: true, status: 'breached' },
+                        { id: 'i3', name: 'C', enabled: false, status: 'ok' },
+                        { id: 'i4', name: 'D', enabled: true, status: 'warming' },
+                        { id: 'i5', name: 'E', enabled: true, status: 'stale' },
+                    ],
+                },
             }),
             'GET /api/mainnet/incidents': () => ({
                 payload: { days: 1, incidents: [{ id: 'inc1', name: 'B', exprText: 'b >= 1', level: 'alert', openedAt: '2026-09-27T09:00:00Z', resolvedAt: null, chainId: 1, address: '0xaaa' }] },
@@ -27,7 +36,7 @@ describe('status', () => {
         });
         const report = (await statusCommand([]))!;
         expect(report).toMatchObject({ contracts: 2, chains: 2, tvlUsd: 2_500_000, tx24h: 1234, failed24h: 12, metrics: 3 });
-        expect(report.monitors).toEqual({ total: 3, healthy: 1, warning: 0, alerting: 1, disabled: 1 });
+        expect(report.monitors).toEqual({ total: 5, healthy: 2, warning: 0, alerting: 1, warming: 1, disabled: 1 });
         expect(report.openAlerts).toHaveLength(1);
         const out = printed();
         expect(out[0]).toBe('Workspace:     Acme (acme)');

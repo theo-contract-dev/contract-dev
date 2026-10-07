@@ -17,10 +17,10 @@ interface PushContractsResult {
   linkedDeployments?: Array<{ name: string; address: string; backfilledCalls: number }>;
 }
 
-const HELP = `contract.dev push-contracts — push this directory's compiled contracts to your stagenet
+const HELP = `contract-dev push-contracts — push this directory's compiled contracts to your stagenet
 
 Usage:
-  contract.dev push-contracts [--contracts <dir>] [--artifacts <dir>]
+  contract-dev push-contracts [--contracts <dir>] [--artifacts <dir>]
 
 Run it from your Foundry/Hardhat project root after \`forge build\` /
 \`npx hardhat compile\`. Paths are auto-detected from foundry.toml /

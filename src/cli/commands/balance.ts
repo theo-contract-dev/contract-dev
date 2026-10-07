@@ -15,21 +15,21 @@ interface ERC20BalanceResult {
   balance: string;
 }
 
-const HELP = `contract.dev balance — change native token balances on your Stagenet
+const HELP = `contract-dev balance — change native token balances on your Stagenet
 
 Usage:
-  contract.dev balance add <address> <amount>     Add amount (wei) to an account
-  contract.dev balance set <address> <amount>     Overwrite an account's balance
+  contract-dev balance add <address> <amount>     Add amount (wei) to an account
+  contract-dev balance set <address> <amount>     Overwrite an account's balance
 
 Amount accepts decimal ("1000000000000000000"), 0x-hex ("0xde0b6b3a7640000"),
 or a unit suffix ("1 ether", "1000000 wei").
 `;
 
-const ERC20_HELP = `contract.dev erc20-balance — change ERC20 balances on your Stagenet
+const ERC20_HELP = `contract-dev erc20-balance — change ERC20 balances on your Stagenet
 
 Usage:
-  contract.dev erc20-balance add <holder> <token> <amount>   Add amount to holder
-  contract.dev erc20-balance set <holder> <token> <amount>   Overwrite holder's balance
+  contract-dev erc20-balance add <holder> <token> <amount>   Add amount to holder
+  contract-dev erc20-balance set <holder> <token> <amount>   Overwrite holder's balance
 
 Amount is in the token's smallest unit (decimal or 0x-hex).
 Writes the balanceOf storage slot. The token's totalSupply is NOT adjusted.

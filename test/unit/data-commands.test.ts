@@ -120,6 +120,47 @@ describe('data commands', () => {
         await expect(run(['methods', 'steth', 'deposit'])).rejects.toThrow(/overloaded: deposit\(\) \(0x11111111\), deposit\(uint256\) \(0x22222222\)/);
     });
 
+    it('flows on an ERC-20 adds the token\'s own senders and receivers, holder to holder', async () => {
+        const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+        const now = Date.now();
+        const calls = mockApi({
+            'GET /api/mainnet/accounts': () => ({
+                payload: { accounts: [{ id: 'a3', chainId: 1, chainIds: [1], address: USDC, accountType: 'contract', name: 'USDC', valueUsd: 0, standards: ['erc20'] }] },
+            }),
+            'GET /api/mainnet/console/flows': () => ({ payload: { range: '24h', totals: { inUsd: 0, outUsd: 0, transfers: 0, counterparties: 0 }, tokens: [], rows: [], buckets: [] } }),
+            'GET /api/mainnet/contract/token-parties': () => ({
+                payload: {
+                    flow: {
+                        inUsd: 812_000_000,
+                        outUsd: 812_000_000,
+                        inN: 48_210,
+                        outN: 48_210,
+                        unpricedN: 0,
+                        peers: 0,
+                        calls: 0,
+                        reverts: 0,
+                        top: {
+                            in: [{ address: '0x28c6c06298d514db089934071355e5743bf21d60', label: 'Binance 14', role: 'exchange', usd: 120_000_000, n: 900, unpriced: 0, reverts: 0, lastTs: now - 60_000 }],
+                            out: [{ address: '0x9fb6c242fffd11a5594ac58ab97b9eaa52a8eefe', label: null, role: 'unknown', usd: 50_000_000, n: 40, unpriced: 0, reverts: 0, lastTs: now - 120_000 }],
+                        },
+                    },
+                    unavailable: null,
+                },
+            }),
+        });
+        await run(['flows', 'usdc']);
+        expect(query(calls.find((c) => c.path.startsWith('/api/mainnet/contract/token-parties'))!)).toEqual({ chainId: '1', address: USDC });
+        const out = printed();
+        expect(out).toContain('\nThe token itself, holder to holder · last 24h');
+        expect(out).toContain('  $812.00M moved in 48,210 transfers');
+        const senders = out.indexOf('\n  Top senders');
+        const receivers = out.indexOf('\n  Top receivers');
+        expect(senders).toBeGreaterThan(0);
+        expect(receivers).toBeGreaterThan(senders);
+        expect(out[senders + 2]).toMatch(/^ {4}1\s+Binance 14\s+exchange\s+\$120\.00M\s+900\s+1m\s+0x28c6/);
+        expect(out[receivers + 2]).toMatch(/^ {4}1\s+0x9fb6…eefe\s+unknown\s+\$50\.00M\s+40\s+2m\s+0x9fb6/);
+    });
+
     it('flows --in pages through the counterparties into the contract', async () => {
         const calls = mockApi({
             'GET /api/mainnet/accounts': accounts,
@@ -222,6 +263,32 @@ describe('data commands', () => {
         const calls = mockApi({ 'GET /api/mainnet/explorer/tx': () => ({ status: 404, payload: { error: 'Transaction not found' } }) });
         await expect(run(['tx', `0x${'c'.repeat(64)}`, '--chain', 'arbitrum'])).rejects.toThrow(`No transaction 0x${'c'.repeat(64)} on Arbitrum.`);
         expect(calls).toHaveLength(1);
+    });
+
+    it('events reads the Events tab for a contract and lists what never fired', async () => {
+        const calls = mockApi({
+            'GET /api/mainnet/accounts': accounts,
+            'GET /api/mainnet/console/events': () => ({
+                payload: {
+                    range: '24h',
+                    rows: [
+                        { topic0: '0xaa', name: 'Transfer', signature: 'Transfer(address,address,uint256)', dormant: false, fired: 632, txs: 400, firstAt: null, lastAt: Date.now() - 120_000, spark: [1, 2, 3], prev: { fired: 600 }, contracts: [{ chainId: 1, address: STETH }], contractCount: 1 },
+                        { topic0: '0xbb', name: 'Paused', signature: 'Paused()', dormant: true, fired: 0, txs: 0, firstAt: null, lastAt: null, spark: [], prev: null, contracts: [], contractCount: 0 },
+                    ],
+                    totals: { fired: 632, events: 1, txs: 400, contracts: 1 },
+                    buckets: [1, 2, 3],
+                    prevTotals: { fired: 600 },
+                    abiResolved: true,
+                },
+            }),
+        });
+        await run(['events', 'steth']);
+        expect(query(calls[1])).toEqual({ range: '24h', chainId: '1', address: STETH });
+        const out = printed();
+        expect(out[0]).toBe('Lido: stETH · Ethereum · events · last 24h');
+        expect(out[1]).toBe('632 events fired (+5.3% on the previous 24h) · 1 kind · in 400 transactions');
+        expect(out.some((l) => /^Transfer\(address,address,uint256\)\s+632\s+\+5\.3%\s+400\s+2m/.test(l))).toBe(true);
+        expect(out.at(-1)).toBe('\nDeclared but not fired: Paused');
     });
 
     it('a rate-limited key gets the server\'s words, with no retry', async () => {

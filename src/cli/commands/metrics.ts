@@ -3,11 +3,11 @@ import { parseFlags, flag, requirePositional, requireFlag } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { parseChainId, WatchedAccount } from './watch';
 
-const TRACK_HELP = `contract.dev track — track an on-chain value as a metric (charted on /metrics, usable by monitors)
+const TRACK_HELP = `contract-dev track — track an on-chain value as a metric (charted on /metrics, usable by monitors)
 
 Usage:
-  contract.dev track <address> <kind> [--chain <id>] [--label "<name>"] [kind flags]
-  contract.dev untrack <id|label> [...]          Stop tracking (also removes monitors that read it)
+  contract-dev track <address> <kind> [--chain <id>] [--label "<name>"] [kind flags]
+  contract-dev untrack <id|label> [...]          Stop tracking (also removes monitors that read it)
 
 Kinds:
   native-balance                                 The address's native balance
@@ -25,26 +25,26 @@ Kinds:
                   [--only a,b | --except a,b]      filter by caller.
 
 Examples:
-  contract.dev track 0xA0b8… total-supply --label "USDC supply"
-  contract.dev track 0xVault… function --function "totalAssets() returns (uint256)" --decimals 18
-  contract.dev track 0xPool… calls --method "swap(address,bool,int256,uint160,bytes)" --window 15m
+  contract-dev track 0xA0b8… total-supply --label "USDC supply"
+  contract-dev track 0xVault… function --function "totalAssets() returns (uint256)" --decimals 18
+  contract-dev track 0xPool… calls --method "swap(address,bool,int256,uint160,bytes)" --window 15m
 `;
 
-const METRICS_HELP = `contract.dev metrics — the workspace's tracked metrics
+const METRICS_HELP = `contract-dev metrics — the workspace's tracked metrics
 
 Usage:
-  contract.dev metrics [--address <addr>] [--chain <id>]    List metrics (id, kind, chain, address, label, value)
-  contract.dev metrics show <id|label> [--range 24h|7d|30d|90d|all] [--limit <n>]
+  contract-dev metrics [--address <addr>] [--chain <id>]    List metrics (id, kind, chain, address, label, value)
+  contract-dev metrics show <id|label> [--range 24h|7d|30d|90d|all] [--limit <n>]
                                                             The metric and its recent history
-  contract.dev metrics rename <id|label> "<label>"
-  contract.dev metrics pause <id|label>                     Stop sampling (keeps history)
-  contract.dev metrics resume <id|label>
-  contract.dev metrics decimals <id|label> <n|clear>        Display scale — re-interprets the stored history
+  contract-dev metrics rename <id|label> "<label>"
+  contract-dev metrics pause <id|label>                     Stop sampling (keeps history)
+  contract-dev metrics resume <id|label>
+  contract-dev metrics decimals <id|label> <n|clear>        Display scale — re-interprets the stored history
                                                             (monitor thresholds on it were typed against the old scale)
-  contract.dev metrics export <id|label> [--range 24h|7d|30d|90d|all] [--format csv|json]
+  contract-dev metrics export <id|label> [--range 24h|7d|30d|90d|all] [--format csv|json]
                                                             The metric's history: at, value, block, tx (default: csv)
-  contract.dev track …                                      Start tracking (try: track help; also: metrics track …)
-  contract.dev untrack <id|label>                           Stop tracking (also: metrics untrack …)
+  contract-dev track …                                      Start tracking (try: track help; also: metrics track …)
+  contract-dev untrack <id|label>                           Stop tracking (also: metrics untrack …)
 
 A metric may be referred to by its id or, when unambiguous, its label. \`--chain\` takes a
 chain id or name (ethereum, arbitrum, avalanche, sepolia). Tracking a value that is already
@@ -323,7 +323,7 @@ export async function resolveMetric(auth: ResolvedAuth, ref: string): Promise<Tr
   if (byLabel.length > 1) {
     throw new Error(`${byLabel.length} metrics are labelled "${ref}" — use an id: ${byLabel.map((m) => m.id).join(', ')}`);
   }
-  throw new Error(`No tracked metric matches "${ref}" (run \`contract.dev metrics\` to list them).`);
+  throw new Error(`No tracked metric matches "${ref}" (run \`contract-dev metrics\` to list them).`);
 }
 
 export function formatValue(value: number | null | undefined): string {
@@ -388,7 +388,7 @@ async function listMetrics(args: string[]): Promise<TrackedMetric[]> {
     `/api/mainnet/tracked-metrics${query.length ? `?${query.join('&')}` : ''}`,
   );
   if (!trackedMetrics?.length) {
-    console.log('No tracked metrics. Start one with `contract.dev track <address> <kind>`.');
+    console.log('No tracked metrics. Start one with `contract-dev track <address> <kind>`.');
     return [];
   }
   for (const m of trackedMetrics) {
@@ -404,6 +404,8 @@ interface SeriesPayload {
   trackedMetric: TrackedMetric;
   points: Array<{ at: string; value: number | null; blockNumber?: number; txHash?: string }>;
   prev: { at: string; value: number | null } | null;
+  /** the window the server actually served — narrower than asked when the plan clamps it */
+  range?: string;
 }
 
 async function showMetric(args: string[]): Promise<SeriesPayload> {
@@ -424,7 +426,8 @@ async function showMetric(args: string[]): Promise<SeriesPayload> {
   if (m.params && Object.keys(m.params).length) console.log(`  params: ${JSON.stringify(m.params)}`);
   console.log(`  value: ${formatValue(currentValue(m))}${m.lastValueAt ? `   last change: ${m.lastValueAt}` : ''}${m.enabled ? '' : '   (paused)'}`);
   const shown = payload.points.slice(-limit);
-  console.log(`  history (${range}): ${payload.points.length} point${payload.points.length === 1 ? '' : 's'}${shown.length < payload.points.length ? `, showing the last ${shown.length}` : ''}`);
+  const served = payload.range ?? range;
+  console.log(`  history (${served}${served !== range ? `, the widest window on this plan` : ''}): ${payload.points.length} point${payload.points.length === 1 ? '' : 's'}${shown.length < payload.points.length ? `, showing the last ${shown.length}` : ''}`);
   if (payload.prev && shown.length === 0) console.log(`  carried in from ${payload.prev.at}: ${formatValue(payload.prev.value)}`);
   for (const p of shown) {
     console.log(`  ${p.at}  ${formatValue(p.value).padStart(20)}${p.blockNumber != null ? `  block ${p.blockNumber}` : ''}${p.txHash ? `  ${p.txHash}` : ''}`);
@@ -445,6 +448,7 @@ async function exportMetric(args: string[]): Promise<SeriesPayload> {
   const auth = requireAuth();
   const metric = await resolveMetric(auth, ref);
   const payload = await apiRequest<SeriesPayload>(auth, 'GET', `/api/mainnet/tracked-metrics/${metric.id}/series?range=${range}`);
+  if (payload.range && payload.range !== range) console.error(`Note: ${payload.range} is the widest window on this plan; exporting that.`);
   if (format === 'json') {
     console.log(JSON.stringify(payload, null, 2));
     return payload;

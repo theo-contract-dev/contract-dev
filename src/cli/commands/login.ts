@@ -11,16 +11,16 @@ import {
   saveCredentials,
 } from '../credentials';
 
-const HELP = `contract.dev login — connect the CLI to your contract.dev account
+const HELP = `contract-dev login — connect the CLI to your contract.dev account
 
 Usage:
-  contract.dev login                    Device-code sign-in (opens the browser)
-  contract.dev login --no-browser       Print the activation URL instead of opening it
+  contract-dev login                    Device-code sign-in (opens the browser)
+  contract-dev login --no-browser       Print the activation URL instead of opening it
 
 The CLI shows a one-time code and opens the activation page. Approving there saves
 credentials to ~/.contract.dev/credentials.json, bound to your account and to the
 workspace that is active in the app at that moment. To act on another workspace,
-make it the active one in the app and log in again (\`contract.dev workspace use\`).
+make it the active one in the app and log in again (\`contract-dev workspace use\`).
 `;
 
 interface DeviceStart {
@@ -117,7 +117,7 @@ export async function loginCommand(args: string[]): Promise<void> {
     }
     if (poll?.status === 'pending') continue;
     if (poll?.status === 'denied') throw new Error('Login request was denied in the browser.');
-    if (poll?.status === 'expired') throw new Error('The code expired before approval. Re-run `contract.dev login`.');
+    if (poll?.status === 'expired') throw new Error('The code expired before approval. Re-run `contract-dev login`.');
     if (poll?.status === 'approved' && poll.key) {
       const credentials = { apiKey: poll.key, apiUrl, email: poll.email ?? undefined };
       saveCredentials(credentials);
@@ -134,14 +134,14 @@ export async function loginCommand(args: string[]): Promise<void> {
       console.log(`Logged in${poll.email ? ` as ${poll.email}` : ''}`);
       if (who?.workspaces && who.workspaces.length > 1 && who.org) {
         console.log(
-          `Credentials are bound to ${who.org.name}. You belong to ${who.workspaces.length} workspaces — \`contract.dev workspace use <name>\` logs in to another.`,
+          `Credentials are bound to ${who.org.name}. You belong to ${who.workspaces.length} workspaces — \`contract-dev workspace use <name>\` logs in to another.`,
         );
       }
       return;
     }
     throw new Error('Unexpected response from the login endpoint.');
   }
-  throw new Error('Timed out waiting for approval. Re-run `contract.dev login`.');
+  throw new Error('Timed out waiting for approval. Re-run `contract-dev login`.');
 }
 
 export async function whoamiCommand(args: string[] = []): Promise<WhoamiPayload | void> {
@@ -151,7 +151,7 @@ export async function whoamiCommand(args: string[] = []): Promise<WhoamiPayload 
   }
   const auth = resolveAuth();
   if (!auth) {
-    console.error('Not logged in. Run `contract.dev login`.');
+    console.error('Not logged in. Run `contract-dev login`.');
     process.exit(1);
   }
   const payload = await apiRequest<WhoamiPayload>(auth, 'GET', '/api/cli/whoami');

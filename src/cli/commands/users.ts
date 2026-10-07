@@ -4,13 +4,13 @@ import { chainFlag, limitFlag, lookupNames, nameKey, parseRange, RANGES, resolve
 import type { ResolvedAuth } from '../credentials';
 import { chainLabel, fmtAge, fmtChange, fmtInt, fmtPct, nameOr, plural, shortAddr, sparkline, table } from '../view';
 
-const HELP = `contract.dev users — the wallets using your contracts
+const HELP = `contract-dev users — the wallets using your contracts
 
 Usage:
-  contract.dev users [<contract>] [flags]       Active wallets and their transactions, against the previous window,
+  contract-dev users [<contract>] [flags]       Active wallets and their transactions, against the previous window,
                                                 how they reach your contracts, and the busiest of them
-  contract.dev users [<contract>] --routes      Every route in: called directly, or through which contracts
-  contract.dev users [<contract>] --wallets     The wallets themselves, busiest first
+  contract-dev users [<contract>] --routes      Every route in: called directly, or through which contracts
+  contract-dev users [<contract>] --wallets     The wallets themselves, busiest first
 
 Flags:
   --range 24h|7d|30d|90d   Window (default 24h; Free workspaces keep 24h)

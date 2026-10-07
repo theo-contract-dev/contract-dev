@@ -4,12 +4,12 @@ import { chainFlag, limitFlag, lookupNames, nameKey, parseRange, RANGES, resolve
 import type { WatchedAccount } from './watch';
 import { DASH, chainLabel, fmtAge, fmtChange, fmtInt, fmtPct, nameOr, plural, shortAddr, sparkline, table } from '../view';
 
-const HELP = `contract.dev methods — what is being called on your contracts, method by method
+const HELP = `contract-dev methods — what is being called on your contracts, method by method
 
 Usage:
-  contract.dev methods [<contract>] [flags]           Every method called in the window: calls, reverts, callers, gas
-  contract.dev methods <contract> <method>            One method in full: callers, revert reasons, arguments, recent calls
-  contract.dev methods <contract> <method> --paths    How calls reach it: the contracts in front of it
+  contract-dev methods [<contract>] [flags]           Every method called in the window: calls, reverts, callers, gas
+  contract-dev methods <contract> <method>            One method in full: callers, revert reasons, arguments, recent calls
+  contract-dev methods <contract> <method> --paths    How calls reach it: the contracts in front of it
 
 Flags:
   --range 24h|7d|30d|90d   Window (default 24h; Free workspaces keep 24h)
@@ -184,7 +184,7 @@ async function resolveSelector(auth: ResolvedAuth, contract: WatchedAccount, ref
   if (byName.length === 1) return { selector: byName[0].selector.toLowerCase(), label: byName[0].signature };
   if (byName.length > 1) throw new Error(`"${ref}" is overloaded: ${byName.map((f) => `${f.signature} (${f.selector})`).join(', ')}. Name one by signature or selector.`);
   if (fns.length === 0) throw new Error(`No verified functions for ${contract.name ?? contract.address}. Name the method by its selector (0x…).`);
-  throw new Error(`${contract.name ?? contract.address} has no method "${ref}". \`contract.dev methods ${contract.address}\` lists what is called.`);
+  throw new Error(`${contract.name ?? contract.address} has no method "${ref}". \`contract-dev methods ${contract.address}\` lists what is called.`);
 }
 
 async function showMethod(auth: ResolvedAuth, contract: WatchedAccount, ref: string, range: string, limit: number): Promise<MethodDetail> {

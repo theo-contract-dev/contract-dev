@@ -2,15 +2,15 @@ import { apiRequest, requireAuth } from '../credentials';
 import { formatInt, formatUsd } from '../format';
 import { shortHex } from './metrics';
 import type { WatchedAccount } from './watch';
-import type { Invariant } from './monitor';
+import { monitorState, type Invariant } from './monitor';
 import type { WhoamiPayload } from './login';
 import type { StagenetsPayload } from '../target';
 import { activeStagenetFor } from '../target';
 
-const HELP = `contract.dev status — the workspace at a glance
+const HELP = `contract-dev status — the workspace at a glance
 
 Usage:
-  contract.dev status          Contracts, TVL, 24h transactions, metrics, monitors, open alerts, stagenets
+  contract-dev status          Contracts, TVL, 24h transactions, metrics, monitors, open alerts, stagenets
 
 Add --json for the same figures as JSON.
 `;
@@ -40,7 +40,7 @@ export interface StatusReport {
   tx24h: number | null;
   failed24h: number | null;
   metrics: number;
-  monitors: { total: number; healthy: number; warning: number; alerting: number; disabled: number };
+  monitors: { total: number; healthy: number; warning: number; alerting: number; warming: number; disabled: number };
   openAlerts: Array<{ id: string; name: string; level: string; since: string; what: string; chainId: number | null; address: string | null }>;
   stagenets: Array<{ id: string; name: string; forkChainId: number | null; active: boolean; online: boolean }>;
 }
@@ -71,13 +71,8 @@ export async function statusCommand(args: string[] = []): Promise<StatusReport |
   const rowTvl = contracts.some((c) => c.valueUsd != null) ? contracts.reduce((sum, c) => sum + (c.valueUsd ?? 0), 0) : null;
 
   const invariants = invariantsRes.invariants ?? [];
-  const monitors = { total: invariants.length, healthy: 0, warning: 0, alerting: 0, disabled: 0 };
-  for (const inv of invariants) {
-    if (!inv.enabled) monitors.disabled += 1;
-    else if (inv.status === 'alerting') monitors.alerting += 1;
-    else if (inv.status === 'warning') monitors.warning += 1;
-    else if (inv.status === 'healthy') monitors.healthy += 1;
-  }
+  const monitors = { total: invariants.length, healthy: 0, warning: 0, alerting: 0, warming: 0, disabled: 0 };
+  for (const inv of invariants) monitors[monitorState(inv)] += 1;
 
   const open = (incidentsRes.incidents ?? []).filter((i) => !i.resolvedAt);
   const activeId = stagenetsRes ? activeStagenetFor(stagenetsRes.workspace?.id)?.id : undefined;
@@ -114,14 +109,14 @@ export async function statusCommand(args: string[] = []): Promise<StatusReport |
   console.log(`Transactions:  ${formatInt(report.tx24h)} in 24h · ${formatInt(report.failed24h)} failed${vitals?.updating ? '  (updating)' : ''}`);
   console.log(`Metrics:       ${formatInt(report.metrics)} tracked`);
   console.log(
-    `Monitors:      ${formatInt(monitors.total)} · ${formatInt(monitors.healthy)} healthy · ${formatInt(monitors.warning)} warning · ${formatInt(monitors.alerting)} alerting${monitors.disabled ? ` · ${formatInt(monitors.disabled)} disabled` : ''}`,
+    `Monitors:      ${formatInt(monitors.total)} · ${formatInt(monitors.healthy)} healthy · ${formatInt(monitors.warning)} warning · ${formatInt(monitors.alerting)} alerting${monitors.warming ? ` · ${formatInt(monitors.warming)} warming up` : ''}${monitors.disabled ? ` · ${formatInt(monitors.disabled)} disabled` : ''}`,
   );
   console.log(`Open alerts:   ${formatInt(report.openAlerts.length)}`);
   for (const a of report.openAlerts.slice(0, 10)) {
     const where = a.chainId != null && a.address ? `  [chain ${a.chainId} ${shortHex(a.address)}]` : '';
     console.log(`  ${a.level.padEnd(7)} ${a.name} — ${a.what}${where}  since ${a.since}`);
   }
-  if (report.openAlerts.length > 10) console.log(`  … ${report.openAlerts.length - 10} more (contract.dev incidents)`);
+  if (report.openAlerts.length > 10) console.log(`  … ${report.openAlerts.length - 10} more (contract-dev incidents)`);
   if (stagenetsRes) {
     const names = report.stagenets.map((s) => `${s.name}${s.active ? '*' : ''}${s.online ? '' : ' (offline)'}`);
     console.log(`Stagenets:     ${formatInt(report.stagenets.length)}${names.length ? ` · ${names.join(', ')}` : ''}`);

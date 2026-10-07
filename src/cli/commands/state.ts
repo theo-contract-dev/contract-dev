@@ -7,13 +7,13 @@ interface NonceResult { address: string; nonce: string; }
 interface StorageResult { address: string; slot: string; }
 interface ResyncResult { address: string; slotsCleared: number; }
 
-const HELP = `contract.dev state — override on-chain state on your Stagenet
+const HELP = `contract-dev state — override on-chain state on your Stagenet
 
 Usage:
-  contract.dev state set-code <address> <bytecode>
-  contract.dev state set-nonce <address> <nonce>
-  contract.dev state set-storage <address> --slot <0x..> --value <0x..>
-  contract.dev state resync <address>          Drop every local override on a mainnet contract so it reads live again
+  contract-dev state set-code <address> <bytecode>
+  contract-dev state set-nonce <address> <nonce>
+  contract-dev state set-storage <address> --slot <0x..> --value <0x..>
+  contract-dev state resync <address>          Drop every local override on a mainnet contract so it reads live again
 
 Notes:
   set-code accepts 0x-prefixed bytecode. Pass "0x" to wipe the code.

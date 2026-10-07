@@ -3,13 +3,13 @@ import { requireAuth, apiRequest } from '../credentials';
 import { chainFlag, limitFlag, lookupNames, nameKey, parseRange, resolveContract, servedRangeNote } from '../data';
 import { DASH, chainLabel, fmtAge, fmtInt, fmtUsd, nameOr, plural, shortAddr, sparkline, table, Column } from '../view';
 
-const HELP = `contract.dev activity — what reached your watched contracts, newest first
+const HELP = `contract-dev activity — what reached your watched contracts, newest first
 
 Usage:
-  contract.dev activity [<contract>] [flags]       Transactions that reached the workspace's contracts
-  contract.dev activity <contract> --calls         Every call into the contract, internal calls included
-  contract.dev activity <contract> --events        Logs the contract emitted
-  contract.dev activity <contract> --transfers     Tokens and coin moving in and out of it
+  contract-dev activity [<contract>] [flags]       Transactions that reached the workspace's contracts
+  contract-dev activity <contract> --calls         Every call into the contract, internal calls included
+  contract-dev activity <contract> --events        Logs the contract emitted
+  contract-dev activity <contract> --transfers     Tokens and coin moving in and out of it
 
 Flags:
   --range 24h|7d          Window (default 24h)
@@ -109,7 +109,7 @@ const VIEW_FLAGS: Record<string, string> = { calls: 'calls', events: 'events', t
 const UNAVAILABLE: Record<string, string> = {
   store: 'Data unavailable. Retry in a moment.',
   chain: 'Chain not collected: activity is recorded for Ethereum, Arbitrum, Avalanche and Sepolia.',
-  none: 'No watched contracts in scope. Watch one with `contract.dev watch <address>`.',
+  none: 'No watched contracts in scope. Watch one with `contract-dev watch <address>`.',
 };
 
 export async function activityCommand(args: string[]): Promise<ActivityFeed | void> {

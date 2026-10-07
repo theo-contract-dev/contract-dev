@@ -12,15 +12,15 @@ interface FunctionOverride {
   createdAt: string;
 }
 
-const HELP = `contract.dev function-override — override the return value of a contract function
+const HELP = `contract-dev function-override — override the return value of a contract function
 
 Usage:
-  contract.dev function-override add <address> --abi <abi> --returns <json> [--input-params <json>]
-  contract.dev function-override list [--contract <address>]
-  contract.dev function-override update <id> --returns <json>
-  contract.dev function-override enable <id>
-  contract.dev function-override disable <id>
-  contract.dev function-override remove <id>
+  contract-dev function-override add <address> --abi <abi> --returns <json> [--input-params <json>]
+  contract-dev function-override list [--contract <address>]
+  contract-dev function-override update <id> --returns <json>
+  contract-dev function-override enable <id>
+  contract-dev function-override disable <id>
+  contract-dev function-override remove <id>
 
 Options:
   --abi <abi>             JSON ABI fragment or human-readable signature

@@ -16,10 +16,10 @@ export interface GeneratedWallet {
   privateKey: string;
 }
 
-const HELP = `contract.dev generate-wallet — generate a fresh wallet and fund it on your Stagenet
+const HELP = `contract-dev generate-wallet — generate a fresh wallet and fund it on your Stagenet
 
 Usage:
-  contract.dev generate-wallet          Print a new address + private key, funded with 1,000,000 native tokens
+  contract-dev generate-wallet          Print a new address + private key, funded with 1,000,000 native tokens
 
 The private key is shown once and never stored. Targets the active stagenet
 (override with --stagenet <name> or --rpc-url <url>).

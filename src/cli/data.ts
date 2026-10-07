@@ -71,7 +71,7 @@ export function matchContract(contracts: WatchedAccount[], ref: string, chainId?
     const lower = ref.toLowerCase();
     const hit = pick(onChain.filter((c) => c.address.toLowerCase() === lower), ref);
     if (hit) return hit;
-    throw new Error(`${ref} is not watched in this workspace${chainId !== undefined ? ` on ${chainLabel(chainId)}` : ''}. Watch it with \`contract.dev watch ${ref}\`.`);
+    throw new Error(`${ref} is not watched in this workspace${chainId !== undefined ? ` on ${chainLabel(chainId)}` : ''}. Watch it with \`contract-dev watch ${ref}\`.`);
   }
 
   const q = ref.trim().toLowerCase();
@@ -84,7 +84,7 @@ export function matchContract(contracts: WatchedAccount[], ref: string, chainId?
     pick(named.filter((c) => word.test(c.name!.toLowerCase())), `"${ref}"`) ??
     pick(named.filter((c) => c.name!.toLowerCase().includes(q)), `"${ref}"`);
   if (hit) return hit;
-  throw new Error(`No watched contract is called "${ref}". \`contract.dev contracts\` lists them.`);
+  throw new Error(`No watched contract is called "${ref}". \`contract-dev contracts\` lists them.`);
 }
 
 export async function resolveContract(auth: ResolvedAuth, ref: string, chainId?: number): Promise<WatchedAccount> {

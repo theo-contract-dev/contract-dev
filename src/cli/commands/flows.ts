@@ -3,12 +3,14 @@ import { requireAuth, apiRequest } from '../credentials';
 import { chainFlag, isAddress, limitFlag, lookupNames, nameKey, parseRange, RANGES, resolveContract, servedRangeNote } from '../data';
 import { chainLabel, fmtAge, fmtInt, fmtUsd, fmtUsdSigned, nameOr, plural, shortAddr, sparkline, table } from '../view';
 
-const HELP = `contract.dev flows — value moving in and out of your contracts
+const HELP = `contract-dev flows — value moving in and out of your contracts
 
 Usage:
-  contract.dev flows [<contract>] [flags]          Totals, by token, and the biggest counterparties
-  contract.dev flows [<contract>] --in | --out     Every counterparty on one side, largest first
-  contract.dev counterparty <address> [--range]    One counterparty's dealings with your contracts
+  contract-dev flows [<contract>] [flags]          Totals, by token, and the biggest counterparties
+  contract-dev flows [<contract>] --in | --out     Every counterparty on one side, largest first
+  contract-dev flows <token>                       A token's page adds the token's own movements: its top senders
+                                                   and receivers over the last 24h, holder to holder
+  contract-dev counterparty <address> [--range]    One counterparty's dealings with your contracts
 
 Flags:
   --range 24h|7d|30d|90d   Window (default 24h; Free workspaces keep 24h)
@@ -19,6 +21,10 @@ Flags:
 
 <contract> is an address or a watched contract's name. In and out are from your contracts'
 side. Add --json for everything the Flows tab has, the hourly series included.
+
+An ERC-20's own transfers never touch its own balance, so for a token the in-and-out view is
+near-empty and the senders and receivers of the token itself are the figure that matters —
+the home map shows the same swap. Mints, burns and self-transfers are left out.
 `;
 
 interface FlowBucket {
@@ -48,6 +54,32 @@ export interface FlowsPayload {
   tokens: Array<{ token: string | null; symbol: string | null; chainId: number; inUsd: number; outUsd: number; transfers: number }>;
   rows: CounterpartyRow[];
   buckets: FlowBucket[];
+}
+
+/** A wallet that sent or received the token: a peer of the home map's value row. */
+interface TokenPeer {
+  address: string;
+  label: string | null;
+  role: string;
+  usd: number;
+  n: number;
+  /** Transfers counted without a price. */
+  unpriced: number;
+  lastTs: number;
+}
+
+/** An ERC-20's top senders and receivers of the token itself over the map's 24h window. */
+export interface TokenParties {
+  flow: {
+    /** The sent side's whole window, in USD at the current price. */
+    inUsd: number;
+    outUsd: number;
+    inN: number;
+    outN: number;
+    unpricedN: number;
+    top: { in: TokenPeer[]; out: TokenPeer[] };
+  } | null;
+  unavailable: 'store' | 'chain' | null;
 }
 
 interface CounterpartiesPage {
@@ -144,7 +176,44 @@ export async function flowsCommand(args: string[]): Promise<unknown> {
   console.log('\nTop counterparties');
   if (!rows.length) console.log('  No transfers in the window.');
   else printCounterparties(rows, 0, '  ');
-  return flows;
+
+  // A token's own movements, holder to holder: the home map's value row for a token node.
+  if (!contract?.standards?.includes('erc20')) return flows;
+  const parties = await apiRequest<TokenParties>(auth, 'GET', `/api/mainnet/contract/token-parties?chainId=${contract.chainId}&address=${contract.address.toLowerCase()}`, undefined, {
+    timeoutMs: 60_000,
+  }).catch(() => null);
+  console.log('\nThe token itself, holder to holder · last 24h');
+  if (!parties) console.log('  Transfers unavailable. Retry in a moment.');
+  else if (parties.unavailable === 'chain') console.log('  Chain not collected');
+  else if (parties.unavailable || !parties.flow) console.log('  Transfers unavailable. Retry in a moment.');
+  else {
+    const f = parties.flow;
+    const priced = f.unpricedN === 0;
+    console.log(`  ${priced ? `${fmtUsd(f.inUsd)} moved in ` : ''}${plural(f.inN, 'transfer')}${priced ? '' : ' (unpriced)'}`);
+    for (const [title, peers] of [['Top senders', f.top.in], ['Top receivers', f.top.out]] as const) {
+      console.log(`\n  ${title}`);
+      if (!peers.length) {
+        console.log('    No transfers in the window.');
+        continue;
+      }
+      for (const line of table(
+        peers.slice(0, limit).map((r, i) => ({ ...r, rank: i + 1 })),
+        [
+          { header: '#', value: (r) => String(r.rank), align: 'right' },
+          { header: 'Wallet', value: (r) => nameOr(r.label, r.address), max: 36 },
+          { header: 'Kind', value: (r) => r.role },
+          ...(priced ? [{ header: 'Value', value: (r: TokenPeer) => fmtUsd(r.usd), align: 'right' as const }] : []),
+          { header: 'Transfers', value: (r) => fmtInt(r.n), align: 'right' },
+          { header: 'Last', value: (r) => fmtAge(r.lastTs), align: 'right' },
+          { header: 'Address', value: (r) => r.address },
+        ],
+        '    ',
+      )) {
+        console.log(line);
+      }
+    }
+  }
+  return { ...flows, tokenTransfers: parties };
 }
 
 function printCounterparties(rows: CounterpartyRow[], offset: number, indent = ''): void {

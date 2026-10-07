@@ -88,7 +88,7 @@ export function activeStagenetFor(workspaceId: string | undefined): { id: string
 // Resolution order for every stagenet command:
 //   1. --rpc-url / CONTRACT_DEV_RPC_URL — direct URL, works with no login at all
 //   2. --stagenet / CONTRACT_DEV_STAGENET — name or id, resolved via the API
-//   3. the workspace's active stagenet, set with `contract.dev stagenet use`
+//   3. the workspace's active stagenet, set with `contract-dev stagenet use`
 export async function resolveStagenetRpcUrl(): Promise<string> {
   const direct = rpcUrlOverride ?? process.env.CONTRACT_DEV_RPC_URL;
   if (direct) return direct;
@@ -104,7 +104,7 @@ export async function resolveStagenetRpcUrl(): Promise<string> {
     if (!active) {
       const available = payload.stagenets.map((s) => s.name).join(', ') || 'none yet';
       throw new Error(
-        `No stagenet selected. Run \`contract.dev stagenet use <name>\` or pass --stagenet <name>. Available: ${available}`,
+        `No stagenet selected. Run \`contract-dev stagenet use <name>\` or pass --stagenet <name>. Available: ${available}`,
       );
     }
     // Prefer the pinned id (rename-proof); fall back to matching the stored name.

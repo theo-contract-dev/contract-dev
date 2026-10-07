@@ -12,17 +12,17 @@ import {
 } from '../target';
 import { parseChainId } from './watch';
 
-const HELP = `contract.dev stagenet — choose, create and reset the stagenet the CLI targets
+const HELP = `contract-dev stagenet — choose, create and reset the stagenet the CLI targets
 
 Usage:
-  contract.dev stagenets                       List the active workspace's stagenets
-  contract.dev stagenet                        Show the active stagenet
-  contract.dev stagenet use <ref>              Set it (ref = name or id; stored per workspace)
-  contract.dev stagenet create <name> --chain <id|name>   Create a stagenet forking that chain, and make it active
-  contract.dev stagenet delete <ref> --yes     Delete a stagenet — its state is gone for good
-  contract.dev stagenet reset                  Return the stagenet's state to the live chain now, keeping your wallets
-  contract.dev stagenet reset --every <6h|12h|1d|off>   Reset on a schedule (off stops it)
-  contract.dev stagenet reset --show           Show the schedule and the last reset
+  contract-dev stagenets                       List the active workspace's stagenets
+  contract-dev stagenet                        Show the active stagenet
+  contract-dev stagenet use <ref>              Set it (ref = name or id; stored per workspace)
+  contract-dev stagenet create <name> --chain <id|name>   Create a stagenet forking that chain, and make it active
+  contract-dev stagenet delete <ref> --yes     Delete a stagenet — its state is gone for good
+  contract-dev stagenet reset                  Return the stagenet's state to the live chain now, keeping your wallets
+  contract-dev stagenet reset --every <6h|12h|1d|off>   Reset on a schedule (off stops it)
+  contract-dev stagenet reset --show           Show the schedule and the last reset
 
 Chains a stagenet can fork: ethereum, base, polygon, optimism, arbitrum, avalanche, bnb, monad.
 
@@ -112,7 +112,7 @@ export async function stagenetsCommand(args: string[] = []): Promise<StagenetSum
   }
   const payload = await fetchStagenets();
   if (!payload.stagenets.length) {
-    console.log('No stagenets in this workspace yet — create one with `contract.dev stagenet create <name> --chain <id|name>`.');
+    console.log('No stagenets in this workspace yet — create one with `contract-dev stagenet create <name> --chain <id|name>`.');
     return [];
   }
   const activeId = resolveActive(payload)?.id;
@@ -158,7 +158,7 @@ async function showActive(): Promise<StagenetSummary | void> {
   const active = resolveActive(payload);
   if (!active) {
     const available = payload.stagenets.map((s) => s.name).join(', ') || 'none yet';
-    console.log(`No active stagenet. Set one with \`contract.dev stagenet use <name>\`. Available: ${available}`);
+    console.log(`No active stagenet. Set one with \`contract-dev stagenet use <name>\`. Available: ${available}`);
     return;
   }
   console.log(`${active.name}  — ${describeChain(active)}${active.rpcUrl ? '' : '  (offline)'}`);
@@ -216,7 +216,7 @@ async function createStagenet(args: string[]): Promise<{ id: string; name: strin
 
   console.log(`Created ${name} (${id}) — fork of ${fork.name}${created.status ? `, ${created.status}` : ''}. It is now the active stagenet.`);
   if (row?.rpcUrl) console.log(`  rpc: ${row.rpcUrl}`);
-  else console.log('  rpc: not ready yet — `contract.dev stagenet` shows it once the stagenet is online.');
+  else console.log('  rpc: not ready yet — `contract-dev stagenet` shows it once the stagenet is online.');
   return { id, name, forkChainId, rpcUrl: row?.rpcUrl ?? null, status: created.status ?? null };
 }
 

@@ -5,16 +5,18 @@ import { requireAuth, apiRequest, ResolvedAuth } from '../credentials';
 import { chainFlag, isAddress, limitFlag, resolveContract, workspaceContracts } from '../data';
 import { DASH, chainLabel, fmtAge, fmtCompact, fmtInt, fmtUsd, nameOr, plural, shortAddr, table } from '../view';
 import { relPath } from '../format';
+import { feedPanelRows, loadFeed, type ChainlinkFeedFacts } from './oracles';
 
-const HELP = `contract.dev explorer lookups — any transaction, address or block on a supported chain
+const HELP = `contract-dev explorer lookups — any transaction, address or block on a supported chain
 
 Usage:
-  contract.dev tx <hash> [--chain] [--trace] [--state]   A transaction: outcome, decoded call, fees, transfers, logs;
+  contract-dev tx <hash> [--chain] [--trace] [--state]   A transaction: outcome, decoded call, fees, transfers, logs;
                                                          --trace for its call tree, --state for what it changed
-  contract.dev address <0x…> [--chain] [--limit]         An address: balance, what it is, its recent transactions
-  contract.dev block <number> [--chain] [--limit]        A block and its transactions
-  contract.dev wallet <0x…> [--chain] [--approvals|--txs]   A wallet's tokens, its open approvals, or its transactions
-  contract.dev source <contract|0x…> [--chain] [--out <dir>]  A contract's verified source; --out writes the files
+  contract-dev address <0x…> [--chain] [--limit]         An address: balance, what it is, its recent transactions;
+                                                         a Chainlink feed says what it reads now and its published terms
+  contract-dev block <number> [--chain] [--limit]        A block and its transactions
+  contract-dev wallet <0x…> [--chain] [--approvals|--txs]   A wallet's tokens, its open approvals, or its transactions
+  contract-dev source <contract|0x…> [--chain] [--out <dir>]  A contract's verified source; --out writes the files
 
 Chains: Ethereum, Arbitrum, Avalanche and Sepolia. Without --chain, tx looks on each of them,
 address and source use the chain a watched contract is on (else Ethereum), and block reads
@@ -208,6 +210,8 @@ interface AddressPayload {
   nonce: number;
   isContract: boolean;
   identity: { name: string | null; verified: boolean; proxy: boolean; implementation: string | null; deployer: string | null; deployedAt: number | null } | null;
+  /** The Chainlink feed at this address when it is one; undefined = the route ran out of time, so the CLI asks itself. */
+  feed?: ChainlinkFeedFacts | null;
   txs: Array<{ hash: string; blockNumber: number; timestamp: number; from: string; to: string | null; valueWei: string; methodName: string | null; selector: string | null; failed: boolean }>;
 }
 
@@ -237,6 +241,14 @@ export async function addressCommand(args: string[]): Promise<AddressPayload | v
   if (id?.deployer) rows.push(['Deployed', `${id.deployedAt ? `${new Date(id.deployedAt).toISOString().slice(0, 10)} ` : ''}by ${id.deployer}`]);
   const width = Math.max(...rows.map(([k]) => k.length));
   for (const [k, v] of rows) console.log(`  ${k.padEnd(width)}  ${v}`);
+  // A Chainlink feed (its proxy, SVR proxy or aggregator) says what it is and what it reads now, as the address page does.
+  const feed = a.feed !== undefined ? a.feed : a.isContract ? await loadFeed(auth, chainId, address).catch(() => null) : null;
+  if (feed) {
+    console.log('');
+    const panel = feedPanelRows(feed);
+    const w = Math.max(...panel.map(([k]) => k.length));
+    for (const [k, v] of panel) console.log(`  ${k.padEnd(w)}  ${v}`);
+  }
   const txs = (a.txs ?? []).slice(0, limit);
   if (txs.length) {
     console.log('\nRecent transactions');
@@ -252,7 +264,7 @@ export async function addressCommand(args: string[]): Promise<AddressPayload | v
       console.log(line);
     }
   }
-  return a;
+  return { ...a, feed };
 }
 
 // ── block ────────────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@ import { resolveStagenetRpcUrl } from '../target';
 import { callRpc } from '../rpc';
 import { parseFlags, requirePositional, flag } from './_args';
 
-const HELP = `contract.dev follow — pin contract state to LIVE mainnet (mainnet follow)
+const HELP = `contract-dev follow — pin contract state to LIVE mainnet (mainnet follow)
 
 A followed account or slot always READS the live value from the chain your
 Stagenet forks — even after transactions on the Stagenet have written to it.
@@ -12,13 +12,13 @@ of the block ("each block resets to mainnet"). Use it to stop market state
 on a long-lived Stagenet, while your own wallets/contracts keep persisting.
 
 Usage:
-  contract.dev follow <address>                          Follow a whole contract — all storage plus balance/nonce/code
+  contract-dev follow <address>                          Follow a whole contract — all storage plus balance/nonce/code
                                                          (pools, settlements, oracles)
-  contract.dev follow <token> --balance-of <holder>      Follow one holder's balance on a token (slot auto-discovered)
-  contract.dev follow <address> --slots <s1,s2,…>        Follow specific storage slots: 0x hex keys or decimal
+  contract-dev follow <token> --balance-of <holder>      Follow one holder's balance on a token (slot auto-discovered)
+  contract-dev follow <address> --slots <s1,s2,…>        Follow specific storage slots: 0x hex keys or decimal
                                                          slot numbers ("1,2,5" — note "10" is slot ten, not 0x10)
-  contract.dev unfollow <address> [same flags]           Stop following (mirrors the flags above)
-  contract.dev follow list                               Print everything currently followed
+  contract-dev unfollow <address> [same flags]           Stop following (mirrors the flags above)
+  contract-dev follow list                               Print everything currently followed
 
 Notes:
   Follow whole accounts only for contracts holding pure market state. For shared
@@ -49,7 +49,7 @@ export async function followCommand(args: string[]): Promise<unknown> {
   switch (first) {
     case 'stop':
       // The old spelling — point at the top-level command instead of guessing.
-      throw new Error('`follow stop` has been renamed — use: contract.dev unfollow <address> [same flags]');
+      throw new Error('`follow stop` has been renamed — use: contract-dev unfollow <address> [same flags]');
     case 'list':
     case 'ls':
       return await listSubcommand();
@@ -65,18 +65,18 @@ export async function followCommand(args: string[]): Promise<unknown> {
   }
 }
 
-const UNFOLLOW_HELP = `contract.dev unfollow — stop following mainnet state
+const UNFOLLOW_HELP = `contract-dev unfollow — stop following mainnet state
 
-Stops the live read-through for state previously pinned with \`contract.dev follow\`.
+Stops the live read-through for state previously pinned with \`contract-dev follow\`.
 Local history is cleared, so the state behaves as never-touched: it keeps
 tracking live mainnet until your next local write.
 
 Usage:
-  contract.dev unfollow <address>                        Stop following a whole contract
-  contract.dev unfollow <token> --balance-of <holder>    Stop following one holder's balance on a token
-  contract.dev unfollow <address> --slots <s1,s2,…>      Stop following specific slots (0x hex or decimal)
+  contract-dev unfollow <address>                        Stop following a whole contract
+  contract-dev unfollow <token> --balance-of <holder>    Stop following one holder's balance on a token
+  contract-dev unfollow <address> --slots <s1,s2,…>      Stop following specific slots (0x hex or decimal)
 
-See what is currently followed: contract.dev follow list
+See what is currently followed: contract-dev follow list
 `;
 
 export async function unfollowCommand(args: string[]): Promise<unknown> {

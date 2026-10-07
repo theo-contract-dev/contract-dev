@@ -136,7 +136,7 @@ describe('watch / unwatch (mainnet contracts)', () => {
         delete process.env.CONTRACT_DEV_API_KEY;
         process.env.HOME = '/nonexistent-home-for-test';
         try {
-            await expect(watchCommand(['0xAbC'])).rejects.toThrow(/contract\.dev login/);
+            await expect(watchCommand(['0xAbC'])).rejects.toThrow(/contract-dev login/);
         } finally {
             process.env.HOME = originalHome;
         }

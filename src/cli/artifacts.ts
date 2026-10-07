@@ -270,7 +270,7 @@ function buildMissingArtifactsError(project: ProjectInfo): string {
       ``,
       `If your hardhat.config sets ${which.join(' or ')} dynamically, pass the real paths explicitly:`,
       ``,
-      `    contract.dev push-contracts --contracts src/protocol --artifacts build/artifacts/src/protocol`,
+      `    contract-dev push-contracts --contracts src/protocol --artifacts build/artifacts/src/protocol`,
       ``,
       `Otherwise, run \`${buildCmd}\` first.`,
       `See https://docs.contract.dev/cli/push-contracts#source-and-artifact-directories`,

@@ -2,12 +2,12 @@ import { parseFlags, requirePositional } from './_args';
 import { apiRequest, loadCredentials, requireAuth, saveCredentials } from '../credentials';
 import { loginCommand, WhoamiPayload } from './login';
 
-const HELP = `contract.dev workspace — the workspace the CLI acts on
+const HELP = `contract-dev workspace — the workspace the CLI acts on
 
 Usage:
-  contract.dev workspace                 Show the workspace the credentials are bound to
-  contract.dev workspace list            List the workspaces you belong to
-  contract.dev workspace use <ref>       Switch to another workspace (ref = slug, id, or name)
+  contract-dev workspace                 Show the workspace the credentials are bound to
+  contract-dev workspace list            List the workspaces you belong to
+  contract-dev workspace use <ref>       Switch to another workspace (ref = slug, id, or name)
 
 Credentials are bound to ONE workspace: the one that was active in the app when you
 approved the login. \`workspace use\` therefore runs the login again — make the workspace
@@ -64,7 +64,7 @@ async function listWorkspaces(): Promise<void> {
   }
   if (workspaces.length > 1) {
     console.log('');
-    console.log('The credentials are bound to the starred workspace; `contract.dev workspace use <name>` logs in to another.');
+    console.log('The credentials are bound to the starred workspace; `contract-dev workspace use <name>` logs in to another.');
   }
 }
 
@@ -112,7 +112,7 @@ async function useWorkspace(args: string[]): Promise<void> {
   const after = loadCredentials();
   if (after?.workspaceId && after.workspaceId !== target.id) {
     console.log(
-      `These credentials are bound to ${after.workspaceName ?? 'a different workspace'}, not ${target.name} — make ${target.name} the active workspace in the app and run \`contract.dev workspace use ${ref}\` again.`,
+      `These credentials are bound to ${after.workspaceName ?? 'a different workspace'}, not ${target.name} — make ${target.name} the active workspace in the app and run \`contract-dev workspace use ${ref}\` again.`,
     );
     return;
   }

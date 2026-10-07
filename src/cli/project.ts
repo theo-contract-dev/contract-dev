@@ -82,7 +82,7 @@ export function detectProject(
 //
 // Honors FOUNDRY_PROFILE the same way `forge` does: keys from the named
 // profile override [profile.default], everything else inherits. So
-// FOUNDRY_PROFILE=production forge build && contract.dev push-contracts
+// FOUNDRY_PROFILE=production forge build && contract-dev push-contracts
 // reads from [profile.production] first and falls back to [profile.default]
 // for anything that profile doesn't set.
 function parseFoundryToml(path: string): { src?: string; out?: string } {

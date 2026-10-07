@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 export const DEFAULT_API_URL = 'https://app.contract.dev';
 
-// Saved by `contract.dev login`, per-user per-machine (never in the repo). The key is
+// Saved by `contract-dev login`, per-user per-machine (never in the repo). The key is
 // ORG-SCOPED: it acts as exactly the workspace that was active in the app when the login
 // was approved. workspaceId/Name record that workspace for display and for keying the
 // per-workspace active stagenet; switching workspaces means a new login (`workspace use`).
@@ -14,7 +14,7 @@ export interface StoredCredentials {
   email?: string;
   workspaceId?: string;
   workspaceName?: string;
-  // Active stagenet per workspace id (set via `contract.dev stagenet use`), so a login into
+  // Active stagenet per workspace id (set via `contract-dev stagenet use`), so a login into
   // another workspace can never silently target the previous one's fork.
   activeStagenets?: Record<string, { id: string; name: string }>;
 }
@@ -97,7 +97,7 @@ export function workspaceOverrideRef(): string | undefined {
 export function requireAuth(): ResolvedAuth {
   const auth = resolveAuth();
   if (!auth) {
-    throw new Error('Not logged in. Run `contract.dev login`.');
+    throw new Error('Not logged in. Run `contract-dev login`.');
   }
   return auth;
 }
@@ -167,10 +167,10 @@ export async function apiRequest<T>(
   if (response.status === 401) {
     if (workspace) {
       throw new Error(
-        `These credentials cannot act on workspace "${workspace}". Log in with it active in the app instead (\`contract.dev workspace use ${workspace}\`).`,
+        `These credentials cannot act on workspace "${workspace}". Log in with it active in the app instead (\`contract-dev workspace use ${workspace}\`).`,
       );
     }
-    throw new Error('API key was rejected. Run `contract.dev login` again.');
+    throw new Error('API key was rejected. Run `contract-dev login` again.');
   }
   if (!response.ok) {
     throw new Error(payload?.error || `Request failed with status ${response.status}`);

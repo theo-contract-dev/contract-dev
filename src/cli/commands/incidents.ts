@@ -2,13 +2,13 @@ import { parseFlags, flag, requirePositional } from './_args';
 import { apiRequest, requireAuth } from '../credentials';
 import { formatValue, shortHex, TrackedMetric } from './metrics';
 
-const HELP = `contract.dev incidents — the workspace's alert episodes
+const HELP = `contract-dev incidents — the workspace's alert episodes
 
 Usage:
-  contract.dev incidents [--days <n>] [--limit <n>]   What fired (default: last 7 days + anything still open)
-  contract.dev incidents show <id>                   One episode in full: evidence, deliveries, who acked
-  contract.dev incidents ack <id>                    Stop the reminders (the all-clear still comes)
-  contract.dev incidents unack <id>                  Hand it back — reminders resume
+  contract-dev incidents [--days <n>] [--limit <n>]   What fired (default: last 7 days + anything still open)
+  contract-dev incidents show <id>                   One episode in full: evidence, deliveries, who acked
+  contract-dev incidents ack <id>                    Stop the reminders (the all-clear still comes)
+  contract-dev incidents unack <id>                  Hand it back — reminders resume
 
 Acking silences repeat pages without silencing the recovery, which pausing the monitor
 would. Windows beyond 24h need a paid plan; the server clamps otherwise.

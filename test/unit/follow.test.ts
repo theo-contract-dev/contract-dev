@@ -88,7 +88,7 @@ describe('mainnet follow', () => {
 
         it('the old `follow stop` spelling points at unfollow', async () => {
             mockFetch({});
-            await expect(followCommand(['stop', '0xPool'])).rejects.toThrow(/contract\.dev unfollow/);
+            await expect(followCommand(['stop', '0xPool'])).rejects.toThrow(/contract-dev unfollow/);
         });
 
         it('follow list → dev_getFollowed', async () => {

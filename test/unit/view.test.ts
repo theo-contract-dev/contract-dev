@@ -3,6 +3,8 @@ import { matchContract } from '../../src/cli/data';
 import { fmtNative, sourceFiles } from '../../src/cli/commands/explorer';
 import { totalSeries } from '../../src/cli/commands/tvl';
 import type { WatchedAccount } from '../../src/cli/commands/watch';
+import { contractHealth } from '../../src/cli/commands/inspect';
+import { monitorState } from '../../src/cli/commands/monitor';
 
 describe('numbers', () => {
     it('prints a measured zero as 0 and an unknown as a dash', () => {
@@ -133,7 +135,7 @@ describe('matchContract', () => {
     });
 
     it('says what to do about a contract it does not know', () => {
-        expect(() => matchContract(all, '0x0000000000000000000000000000000000000001')).toThrow(/not watched.*contract\.dev watch/);
+        expect(() => matchContract(all, '0x0000000000000000000000000000000000000001')).toThrow(/not watched.*contract-dev watch/);
         expect(() => matchContract(all, 'uniswap')).toThrow(/No watched contract is called "uniswap"/);
     });
 });
@@ -144,5 +146,34 @@ describe('sourceFiles', () => {
         expect(sourceFiles('X', JSON.stringify({ 'A.sol': { content: 'a' }, 'B.sol': { content: 'b' } }))).toEqual({ 'A.sol': 'a', 'B.sol': 'b' });
         const standard = `{${JSON.stringify({ language: 'Solidity', sources: { 'src/C.sol': { content: 'c' } } })}}`;
         expect(sourceFiles('C', standard)).toEqual({ 'src/C.sol': 'c' });
+    });
+});
+
+describe('monitor states', () => {
+    it('reads the server\'s words the way the app does', () => {
+        expect(monitorState({ enabled: true, status: 'ok' })).toBe('healthy');
+        expect(monitorState({ enabled: true, status: 'breached' })).toBe('alerting');
+        expect(monitorState({ enabled: true, status: 'warning' })).toBe('warning');
+        expect(monitorState({ enabled: true, status: 'warming' })).toBe('warming');
+        expect(monitorState({ enabled: true, status: 'stale' })).toBe('healthy');
+        expect(monitorState({ enabled: false, status: 'breached' })).toBe('disabled');
+    });
+
+    it('finds one contract\'s monitors: its default monitors\' readings and the rules on its metrics', () => {
+        const a = '0x4c0917e65bc851ce86f6a448f653604378e89b19';
+        const health = contractHealth(
+            [
+                { name: 'Revert spike', kind: 'revertRate', enabled: true, status: 'ok', subjects: [{ chainId: 42161, address: a, state: 'alerting', sentence: 'Reverting 6.7% of transactions', level: 'alert', openIncidentId: 'i1', since: null }], inputs: [] },
+                { name: 'Control change', kind: 'controlChange', enabled: true, status: 'ok', subjects: [{ chainId: 1, address: a, state: 'healthy', sentence: null, level: null, openIncidentId: null, since: null }], inputs: [] },
+                { name: 'Buffer floor', kind: null, enabled: true, status: 'warning', inputs: [{ alias: 'b', trackedOnchainValueId: 'm1', trackedOnchainValue: { id: 'm1', chainId: 42161, address: a.toUpperCase().replace('0X', '0x') } }] },
+                { name: 'Elsewhere', kind: null, enabled: true, status: 'breached', inputs: [{ alias: 'x', trackedOnchainValueId: 'm2', trackedOnchainValue: { id: 'm2', chainId: 42161, address: '0x0000000000000000000000000000000000000001' } }] },
+            ] as any,
+            42161,
+            a,
+        );
+        expect(health).toEqual([
+            { name: 'Revert spike', state: 'alerting', sentence: 'Reverting 6.7% of transactions' },
+            { name: 'Buffer floor', state: 'warning', sentence: null },
+        ]);
     });
 });

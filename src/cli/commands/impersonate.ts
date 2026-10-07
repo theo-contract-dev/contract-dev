@@ -4,12 +4,12 @@ import { parseFlags, requirePositional, flag, parseAmount } from './_args';
 
 interface BalanceResult { address: string; balance: string; }
 
-const HELP = `contract.dev impersonate — send transactions from any address without its private key
+const HELP = `contract-dev impersonate — send transactions from any address without its private key
 
 Usage:
-  contract.dev impersonate <address> [--fund <amount>]   Add address to impersonation allowlist
-  contract.dev impersonate stop <address>                Remove address from allowlist
-  contract.dev impersonate list                          Print all currently-impersonated addresses
+  contract-dev impersonate <address> [--fund <amount>]   Add address to impersonation allowlist
+  contract-dev impersonate stop <address>                Remove address from allowlist
+  contract-dev impersonate list                          Print all currently-impersonated addresses
 
 Options:
   --fund <amount>   Top up the impersonated address with native tokens (e.g. for gas).

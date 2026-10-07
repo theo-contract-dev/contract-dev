@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.4.0 — 2026-10-05
+
+Needs the app as deployed on 2026-10-05: an API key on `/api/mainnet/contract/transfer-volume`,
+`contract/token-parties`, `console/positions/detail`, `oracles/feed` and `invariants/<id>/sightings`.
+
+### Added
+- `events [<contract>]` — the Events tab: every event fired in the window, how often and in how many transactions,
+  against the previous window, and the events a contract's ABI declares that never fired.
+- `contracts show` covers the whole Overview tab: value held and its 24h change, the activity sparkline, a token's
+  own transfer volume, where the ABI comes from, the contract's monitors and their states, its tracked metrics.
+- `dependencies` opens with the price feeds the contract reads, as the Dependencies tab does: each Chainlink
+  feed's value, how long since it updated against the heartbeat it promises, Fresh / Late / Not assessed, the
+  stalest price any read in the window saw, and the reads. `address` on a feed's proxy, SVR proxy or aggregator
+  prints the address page's panel: the reading, its age, the verdict, the published terms, the feed's addresses.
+- `flows <token>` adds the token's own movements, holder to holder, as the home map shows them for a token: its
+  top senders and receivers over the last 24h, with mints, burns and self-transfers left out.
+- `positions <contract> <vault|market> [--range]` opens one position in full, the Positions tab's drill-down: a
+  vault holding's value, shares, share price, withdrawable amount and vault size, or a lending account's health,
+  collateral and debt; the series behind them as lines; the timeline of deposits, withdrawals, supplies, borrows,
+  repays and liquidations with their transactions; where the history begins.
+- `monitor show` on a silence monitor reads its sightings — the calls or emissions it counts — and says how
+  many, how long it has been quiet, the longest gap, and every quiet stretch longer than its window with the
+  sightings on either side. `monitor sightings <id|name> [--range 24h|7d|30d] [--limit]` lists them.
+
+### Changed
+- The package is `@contract-dev/cli` and the command is `contract-dev` (were both `contract.dev`). The dotted
+  command never ran on Windows: PowerShell and cmd treat `.dev` as a file extension, find the POSIX shim npm
+  writes next to the `.cmd` wrapper, and open it as a document. Install with `npm install -g @contract-dev/cli`
+  or run `npx @contract-dev/cli <command>`. The `contract.dev` package is deprecated and gets no further releases.
+
+- `metrics show` and `metrics export` say which window the server served when the plan narrowed it
+  (Free reaches 90 days at a point a day since the 2026-10-06 app deploy; `all` stays paid).
+
+### Fixed
+- `status` and `monitors` read monitor states the way the app does. The server says `ok` / `breached` / `warming`;
+  1.2.0 and 1.3.0 counted those as nothing, so a workspace with an open alert showed 0 healthy · 0 alerting.
+
 ## 1.3.0 — 2026-10-01
 
 Needs the app deploy that lets a staff key name a workspace (`lib/apiAuth`, `lib/workspaceOverride`)
