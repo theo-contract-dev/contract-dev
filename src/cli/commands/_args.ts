@@ -8,21 +8,27 @@ export interface ParsedFlags {
 
 // Tiny flag parser. Supports --key=value and --key value. Booleans (--flag with
 // no value) come back as 'true'. Anything not preceded by --flag is positional.
+// A flag given twice keeps both values, in order (`--row a --row b`); `flag` reads
+// the last one, `flagAll` every one.
 export function parseFlags(args: string[]): ParsedFlags {
   const out: ParsedFlags = { _: [] };
+  const set = (key: string, value: string) => {
+    const prev = out[key];
+    out[key] = prev === undefined ? value : Array.isArray(prev) ? [...prev, value] : [prev, value];
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
       if (eq >= 0) {
-        out[a.slice(2, eq)] = a.slice(eq + 1);
+        set(a.slice(2, eq), a.slice(eq + 1));
       } else {
         const next = args[i + 1];
         if (next && !next.startsWith('--')) {
-          out[a.slice(2)] = next;
+          set(a.slice(2), next);
           i++;
         } else {
-          out[a.slice(2)] = 'true';
+          set(a.slice(2), 'true');
         }
       }
     } else {
@@ -34,7 +40,15 @@ export function parseFlags(args: string[]): ParsedFlags {
 
 export function flag(flags: ParsedFlags, name: string): string | undefined {
   const v = flags[name];
+  if (Array.isArray(v)) return v[v.length - 1];
   return typeof v === 'string' ? v : undefined;
+}
+
+/** Every value of a repeated flag, in order; `[]` when it was not passed. */
+export function flagAll(flags: ParsedFlags, name: string): string[] {
+  const v = flags[name];
+  if (Array.isArray(v)) return v;
+  return typeof v === 'string' ? [v] : [];
 }
 
 export function requirePositional(positional: string[], idx: number, label: string): string {
@@ -44,8 +58,8 @@ export function requirePositional(positional: string[], idx: number, label: stri
 }
 
 export function requireFlag(flags: ParsedFlags, name: string): string {
-  const v = flags[name];
-  if (typeof v !== 'string' || v.length === 0 || v === 'true') {
+  const v = flag(flags, name);
+  if (v === undefined || v.length === 0 || v === 'true') {
     throw new Error(`Missing required --${name}`);
   }
   return v;

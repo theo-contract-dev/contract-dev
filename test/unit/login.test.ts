@@ -87,6 +87,21 @@ describe('login (device-code flow)', () => {
         expect(fs.existsSync(path.join(tmpHome, '.contract.dev', 'credentials.json'))).toBe(false);
     });
 
+    it('ends by pointing at the agent skill when there is no terminal to ask on, and installs it with --skill', async () => {
+        const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+        mockDeviceFlow([{ status: 'approved', key: 'k', email: null, org: null }]);
+        await loginCommand(['--api-url', API_URL, '--no-browser']);
+        const lines = log.mock.calls.map((c) => c.join(' '));
+        expect(lines[lines.length - 1]).toBe('Agent skill for Claude Code, Codex and Cursor: contract-dev skills install');
+        expect(fs.existsSync(path.join(tmpHome, '.claude', 'skills', 'contract-dev'))).toBe(false);
+
+        mockDeviceFlow([{ status: 'approved', key: 'k', email: null, org: null }]);
+        await loginCommand(['--api-url', API_URL, '--no-browser', '--skill']);
+        expect(fs.existsSync(path.join(tmpHome, '.claude', 'skills', 'contract-dev', 'SKILL.md'))).toBe(true);
+        expect(fs.existsSync(path.join(tmpHome, '.agents', 'skills', 'contract-dev', 'SKILL.md'))).toBe(true);
+        log.mockRestore();
+    });
+
     it('logout removes the saved credentials file', async () => {
         mockDeviceFlow([{ status: 'approved', key: 'k', email: null, org: null }]);
         await loginCommand(['--api-url', API_URL, '--no-browser']);

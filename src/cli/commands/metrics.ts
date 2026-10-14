@@ -2,6 +2,8 @@ import { Interface, isAddress } from 'ethers';
 import { parseFlags, flag, requirePositional, requireFlag } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { parseChainId, WatchedAccount } from './watch';
+import { resolveContract } from '../data';
+import { EVENT_METRIC_HELP, defineEventMetric, defineGroupMetric, defineItemMetric, deleteEventMetric, isEventMetric, listEventMetrics, monitorEventMetric, showEventMetric, trackFormula, updateEventMetric } from './eventMetric';
 
 const TRACK_HELP = `contract-dev track — track an on-chain value as a metric (charted on /metrics, usable by monitors)
 
@@ -12,20 +14,20 @@ Usage:
 Kinds:
   native-balance                                 The address's native balance
   erc20-balance   --token <addr>                 The address's balance of an ERC20
-  total-supply                                   An ERC20's totalSupply()
-  balance-of      --holder <addr>                An ERC20's balanceOf(holder)
   function        --function "<sig>" [--args a,b] The result of any view call, e.g.
                   [--word <n>] [--signed]          --function "convertToAssets(uint256) returns (uint256)" --args 1e18
                   [--decimals <n>]                 (--calldata 0x… instead of --function/--args; --word picks
                                                     one return value; --decimals sets the display scale)
   tvl                                            The contract's TVL in USD (provider-backed)
-  calls | reverts | revert-rate | callers | gas-p95
+  (formula)                                      contract-dev track formula <contract> --label … --call … --value …:
+                                                 several views at one block and an expression (try: track formula help)
+  calls | reverts | revert-rate | callers
                   [--method <selector|"sig">]    Method telemetry from the trace store, over a window
                   [--window 5m|15m|1h|6h|24h]      (default: any method, 1h). --only / --except <addrs>
                   [--only a,b | --except a,b]      filter by caller.
 
 Examples:
-  contract-dev track 0xA0b8… total-supply --label "USDC supply"
+  contract-dev track 0xA0b8… function --function "totalSupply() returns (uint256)" --label "USDC supply"
   contract-dev track 0xVault… function --function "totalAssets() returns (uint256)" --decimals 18
   contract-dev track 0xPool… calls --method "swap(address,bool,int256,uint160,bytes)" --window 15m
 `;
@@ -75,25 +77,28 @@ export interface TrackedMetric {
 const KINDS: Record<string, { api: string; label: string }> = {
   'native-balance': { api: 'nativeBalance', label: 'Native balance' },
   'erc20-balance': { api: 'tokenBalance', label: 'ERC20 balance' },
-  'total-supply': { api: 'totalSupply', label: 'Total supply' },
-  'balance-of': { api: 'functionResult', label: 'Balance of' },
+  // total-supply and balance-of left with the app's picker 2026-10-14: both are `function`
+  // on the token (totalSupply(); balanceOf(address) --args <holder>). Existing rows keep sampling.
   function: { api: 'functionResult', label: 'Function call' },
   tvl: { api: 'tvlUsd', label: 'TVL' },
   calls: { api: 'callCount', label: 'Method calls' },
   reverts: { api: 'revertCount', label: 'Method reverts' },
   'revert-rate': { api: 'revertRate', label: 'Method revert rate' },
   callers: { api: 'callerCount', label: 'Method callers' },
-  'gas-p95': { api: 'gasP95', label: 'Method gas p95' },
+  // gas-p95 (gasP95) left the picker 2026-10-14; the API refuses new rows of it, existing ones keep sampling.
 };
-const TRACE_KINDS = new Set(['calls', 'reverts', 'revert-rate', 'callers', 'gas-p95']);
+const TRACE_KINDS = new Set(['calls', 'reverts', 'revert-rate', 'callers']);
 // The windows the app's picker offers (TRACE_WINDOW_OPTIONS_SEC in @mockchain/config).
 const TRACE_WINDOWS: Record<string, number> = { '5m': 300, '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400 };
-const BALANCE_OF_SIGNATURE = 'balanceOf(address) → uint256';
 
 export const shortHex = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
 
-export function encodeBalanceOf(holder: string): string {
-  return '0x70a08231' + holder.slice(2).toLowerCase().padStart(64, '0');
+/** An address, or the name of a contract this workspace watches. */
+async function addressOrName(raw: string, label: string, chainId: number): Promise<string> {
+  const ref = raw.trim();
+  if (isAddress(ref)) return ref;
+  if (/^0x/i.test(ref)) throw new Error(`${label} must be a 0x address or a watched contract's name (got: ${raw})`);
+  return (await resolveContract(requireAuth(), ref, chainId)).address;
 }
 
 function requireAddress(raw: string, label: string): string {
@@ -254,30 +259,27 @@ async function subjectName(auth: ResolvedAuth, chainId: number, address: string)
 }
 
 export async function trackCommand(args: string[]): Promise<TrackedMetric | void> {
+  // a calculated value: several calls and an expression (src/cli/commands/eventMetric)
+  if (args[0] === 'formula') return (await trackFormula(args.slice(1))) as void;
   if (args[0] === 'help' || args[0] === '-h' || args[0] === '--help' || args[0] === undefined) {
     console.log(TRACK_HELP);
     return;
   }
   const flags = parseFlags(args);
   const positional = flags._ as string[];
-  const address = requireAddress(requirePositional(positional, 0, 'address'), 'address');
   const kindName = requirePositional(positional, 1, `kind (one of: ${Object.keys(KINDS).join(', ')})`);
   const kind = KINDS[kindName];
   if (!kind) throw new Error(`Unknown kind "${kindName}". One of: ${Object.keys(KINDS).join(', ')}`);
   const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
+  // a watched contract's name works as well as its address (track stETH totalSupply)
+  const address = await addressOrName(requirePositional(positional, 0, 'address'), 'address', chainId);
 
   let params: Record<string, unknown> | undefined;
   let labelSuffix = kind.label;
   switch (kindName) {
     case 'erc20-balance':
-      params = { token: requireAddress(requireFlag(flags, 'token'), '--token') };
+      params = { token: await addressOrName(requireFlag(flags, 'token'), '--token', chainId) };
       break;
-    case 'balance-of': {
-      const holder = requireAddress(requireFlag(flags, 'holder'), '--holder');
-      params = { calldata: encodeBalanceOf(holder), signature: BALANCE_OF_SIGNATURE };
-      labelSuffix = `Balance of ${shortHex(holder)}`;
-      break;
-    }
     case 'function': {
       params = buildFunctionParams(flags);
       const sig = typeof params.signature === 'string' ? params.signature : null;
@@ -313,7 +315,10 @@ export async function trackCommand(args: string[]): Promise<TrackedMetric | void
 
 // A metric by id, or by label when exactly one matches (case-insensitive).
 export async function resolveMetric(auth: ResolvedAuth, ref: string): Promise<TrackedMetric> {
-  const { trackedMetrics } = await apiRequest<{ trackedMetrics: TrackedMetric[] }>(auth, 'GET', '/api/mainnet/tracked-metrics');
+  // By id or label, over EVERY value the workspace has — the method values (`track calls`…)
+  // and the values the app's monitor composer made are not listed by `metrics`, but a
+  // monitor can still be added on them.
+  const { trackedMetrics } = await apiRequest<{ trackedMetrics: TrackedMetric[] }>(auth, 'GET', '/api/mainnet/tracked-metrics?include=unlisted');
   const all = trackedMetrics ?? [];
   const byId = all.find((m) => m.id === ref);
   if (byId) return byId;
@@ -341,8 +346,29 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
     case undefined:
     case 'list':
       return await listMetrics(sub === undefined ? args : rest);
+    case 'events':
+      return await listEventMetrics();
     case 'show':
-      return await showMetric(rest);
+      // a tracked value's id or label first; a name no tracked value has may be an event metric's
+      try {
+        return await showMetric(rest);
+      } catch (e) {
+        const ref = (parseFlags(rest)._ as string[]).join(' ').trim();
+        if (e instanceof Error && /No tracked metric matches/.test(e.message) && ref && (await isEventMetric(ref).catch(() => false))) return await showEventMetric(rest);
+        throw e;
+      }
+    case 'define':
+      return await defineEventMetric(rest);
+    case 'update':
+      return await updateEventMetric(rest);
+    case 'delete':
+      return await deleteEventMetric(rest);
+    case 'monitor':
+      return await monitorEventMetric(rest);
+    case 'item':
+      return await defineItemMetric(rest);
+    case 'group':
+      return await defineGroupMetric(rest);
     case 'rename':
       return await patchMetric(rest, 'rename');
     case 'pause':
@@ -363,6 +389,7 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
     case '-h':
     case '--help':
       console.log(METRICS_HELP);
+      console.log(EVENT_METRIC_HELP);
       return;
     default:
       // `metrics --address …` — flags only, no subcommand.
@@ -509,7 +536,7 @@ async function patchMetric(args: string[], action: 'rename' | 'pause' | 'resume'
       break;
     case 'decimals': {
       const d = (trackedMetric.params as any)?.decimals;
-      console.log(d == null ? `Cleared the display scale on ${name} (the app will re-probe it).` : `${name} now displays with ${d} decimals.`);
+      console.log(d == null ? `Cleared the display scale on ${name}: a supply, an ERC-20 balance or a share price takes its token's decimals again; any other value shows as the chain holds it.` : `${name} now displays with ${d} decimals.`);
       console.log('Monitors reading this metric compare against the new scale — check their thresholds.');
     }
   }

@@ -2,6 +2,7 @@ import { parseFlags, flag } from './_args';
 import { requireAuth, apiRequest } from '../credentials';
 import { chainFlag, limitFlag, lookupNames, nameKey, parseRange, resolveContract, servedRangeNote } from '../data';
 import { DASH, chainLabel, fmtAge, fmtInt, fmtUsd, nameOr, plural, shortAddr, sparkline, table, Column } from '../view';
+import { activityQueryCommand } from './ask';
 
 const HELP = `contract-dev activity — what reached your watched contracts, newest first
 
@@ -10,6 +11,10 @@ Usage:
   contract-dev activity <contract> --calls         Every call into the contract, internal calls included
   contract-dev activity <contract> --events        Logs the contract emitted
   contract-dev activity <contract> --transfers     Tokens and coin moving in and out of it
+  contract-dev activity query --measure events|transactions|wallets [--event <name>]… [--group <name> | --contract <ref>]
+                              [--by contract,day,event] [--window 24h|7d|30d|90d] [--tz <zone>]
+                                                   Counts per contract per day — a pivot — or by whatever --by names
+                                                   (try: activity query help)
 
 Flags:
   --range 24h|7d          Window (default 24h)
@@ -112,11 +117,12 @@ const UNAVAILABLE: Record<string, string> = {
   none: 'No watched contracts in scope. Watch one with `contract-dev watch <address>`.',
 };
 
-export async function activityCommand(args: string[]): Promise<ActivityFeed | void> {
+export async function activityCommand(args: string[]): Promise<unknown> {
   if (['help', '-h', '--help'].includes(args[0])) {
     console.log(HELP);
     return;
   }
+  if (args[0] === 'query') return await activityQueryCommand(args.slice(1));
   const flags = parseFlags(args);
   const views = Object.keys(VIEW_FLAGS).filter((k) => flag(flags, k) === 'true');
   if (new Set(views.map((v) => VIEW_FLAGS[v])).size > 1) throw new Error('Pick one of --calls, --events or --transfers.');

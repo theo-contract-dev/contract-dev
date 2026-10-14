@@ -49,7 +49,7 @@ interface FeedCounts {
   unavailable: string | null;
 }
 
-const STANDARD_LABEL: Record<string, string> = {
+export const STANDARD_LABEL: Record<string, string> = {
   eip1967: 'EIP-1967 proxy',
   eip1167: 'EIP-1167 clone',
   eip2535: 'EIP-2535 diamond',

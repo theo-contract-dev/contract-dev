@@ -1,13 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { contractStats, showContract } from './inspect';
-import { parseFlags, flag, requirePositional } from './_args';
+import { parseFlags, flag, requirePositional, type ParsedFlags } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
+import { runTool } from '../tools';
 import { formatUsd } from '../format';
+import { fmtInt, plural } from '../view';
 
 const HELP = `contract-dev watch — watch mainnet contracts on your workspace's dashboard
 
 Usage:
   contract-dev watch <address> [flags]                 Watch a contract
+  contract-dev watch <address>[=<name>]… [--chain <id>] [--group <name>]
+                                                       Watch several at once, each named, tagged into a group when one is named
   contract-dev watch list [--chain <id>]               List watched contracts
   contract-dev rename <address> <name> [--chain <id>]  Rename a watched contract (clears with "")
   contract-dev contracts set-abi <address> --abi <file> Set the ABI on a contract already watched (--clear removes it)
@@ -30,6 +34,14 @@ Flags (contracts set-abi <address>):
   --abi <file>     The ABI to store, same two shapes as above; \`-\` reads stdin.
   --clear          Remove the stored ABI instead, so the explorer is read again.
   --chain <id>     Disambiguate a contract watched on several chains.
+
+Several addresses (or one with --group) go through the watch_contracts tool in one call: each is
+detected, a wallet is skipped, and the rest are tagged into --group when one is named. Name each
+one where it stands: 0xae7a…fE84=stETH, or "0x889e…F9B1=Withdrawal Queue" in quotes when the name
+has spaces; an address with no name takes the explorer's. --abi goes with one address only.
+
+  contract-dev watch 0xae7ab96520de3a18e5e111b5eaab095312d7fe84=stETH "0x889edc2edab5f40e902b864ad4d7ade8e412f9b1=Withdrawal Queue" --group Lido
+\`contract-dev factory <address> --watch --group <name>\` does the same for everything a factory deployed.
 
 Contracts are watched per (chain, address) — \`--chain\` disambiguates one watched
 on several chains. Watched contracts appear on the home map and /contracts.
@@ -218,13 +230,70 @@ export async function setAbiCommand(args: string[]): Promise<WatchedAccount | vo
   return account;
 }
 
-// The modal's flow: detect first (type + name), then add with the result as hints so the
-// server classifies once. A wallet is refused here, before any row exists.
-async function addSubcommand(args: string[]): Promise<WatchedAccount> {
-  const flags = parseFlags(args);
-  const address = requirePositional(flags._ as string[], 0, 'address');
+/** What the watch_contracts tool answers: a tally, with each address it skipped or could not watch. */
+export interface WatchContractsResult {
+  added: number;
+  alreadyWatched: number;
+  skipped: Array<{ address: string; reason: string }>;
+  failed: Array<{ address: string; error: string }>;
+  group: string | null;
+  chainId: number;
+}
+
+// Past this many addresses in one go, the tool wants it said twice.
+const MANY = 25;
+
+/** The tally on one line, then each skipped and failed address on its own. */
+export function watchSummaryLines(r: WatchContractsResult): string[] {
+  const skipped = r.skipped ?? [];
+  const failed = r.failed ?? [];
+  const lines = [`Watched ${fmtInt(r.added)} · already watched ${fmtInt(r.alreadyWatched)} · skipped ${fmtInt(skipped.length)} (not a contract) · failed ${fmtInt(failed.length)}`];
+  for (const s of skipped) lines.push(`  skipped ${s.address} — ${s.reason}`);
+  for (const f of failed) lines.push(`  failed ${f.address} — ${f.error}`);
+  return lines;
+}
+
+// Several addresses, or one going into a group: one call to the watch_contracts tool, which
+// detects each, skips wallets, tags the rest and answers with a tally.
+/** `0xabc…=stETH` → the address and the name given with it; a bare address has none. */
+export function splitNamed(arg: string): { address: string; name: string } {
+  const m = /^(0x[0-9a-fA-F]{40})=([\s\S]*)$/.exec(arg.trim());
+  return m ? { address: m[1], name: m[2].trim() } : { address: arg.trim(), name: '' };
+}
+
+async function watchMany(flags: ParsedFlags, args: string[], group: string | undefined): Promise<WatchContractsResult> {
   const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
   const name = flag(flags, 'name');
+  const named = args.map(splitNamed);
+  const addresses = named.map((n) => n.address);
+  if (addresses.length > 1 && name !== undefined) throw new Error('--name names one contract; name several where they stand: 0xabc…=Name.');
+  if (name !== undefined && name !== 'true' && !named[0].name) named[0].name = name;
+  const names = named.map((n) => n.name);
+  if (flag(flags, 'abi') !== undefined) throw new Error('--abi goes with one address; set it afterwards with `contract-dev contracts set-abi`.');
+  // the CLI is a person (or their agent) acting on purpose: the server's many-at-once check is for chat
+  const r = await runTool<WatchContractsResult>(requireAuth(), 'watch_contracts', {
+    chainId,
+    addresses,
+    ...(names.some(Boolean) ? { names } : {}),
+    ...(group !== undefined ? { group } : {}),
+    ...(addresses.length > MANY ? { confirmMany: true } : {}),
+  });
+  for (const line of watchSummaryLines(r)) console.log(line);
+  return r;
+}
+
+// The modal's flow: detect first (type + name), then add with the result as hints so the
+// server classifies once. A wallet is refused here, before any row exists.
+async function addSubcommand(args: string[]): Promise<WatchedAccount | WatchContractsResult> {
+  const flags = parseFlags(args);
+  const positional = flags._ as string[];
+  requirePositional(positional, 0, 'address');
+  const group = flag(flags, 'group');
+  if (group === 'true') throw new Error('--group needs a name');
+  if (positional.length > 1 || group !== undefined) return await watchMany(flags, positional, group);
+  const { address, name: inline } = splitNamed(positional[0]);
+  const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
+  const name = flag(flags, 'name') ?? (inline || undefined);
   const abiFile = flag(flags, 'abi');
   const abi = abiFile ? readAbiFile(abiFile) : undefined;
 

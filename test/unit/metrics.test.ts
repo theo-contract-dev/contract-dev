@@ -1,5 +1,5 @@
 import { Interface } from 'ethers';
-import { trackCommand, untrackCommand, metricsCommand, expandScientific, encodeBalanceOf } from '../../src/cli/commands/metrics';
+import { trackCommand, untrackCommand, metricsCommand, expandScientific } from '../../src/cli/commands/metrics';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
 
 const VAULT = '0x1111111111111111111111111111111111111111';
@@ -25,6 +25,22 @@ describe('track', () => {
         expect(calls[0].path).toBe('/api/mainnet/accounts?accountType=contract');
         expect(calls[1].body).toEqual({ chainId: 1, address: VAULT, kind: 'nativeBalance', label: 'Treasury · Native balance' });
         expect(printed()[0]).toMatch(/Tracking Treasury · Native balance on chain 1 \(id: m1\)/);
+    });
+
+    it('takes a watched contract by name, for the contract and for --token', async () => {
+        const calls = mockApi({
+            'GET /api/mainnet/accounts': () => ({
+                payload: { accounts: [
+                    { id: 'c1', chainId: 1, chainIds: [1], address: VAULT, accountType: 'contract', name: 'Treasury' },
+                    { id: 'c2', chainId: 1, chainIds: [1], address: TOKEN, accountType: 'contract', name: 'eETH' },
+                ] },
+            }),
+            'POST /api/mainnet/tracked-metrics': (c) => created(c.body),
+        });
+        await trackCommand(['Treasury', 'erc20-balance', '--token', 'eETH', '--label', 'Treasury eETH']);
+        const post = calls.find((c) => c.method === 'POST')!;
+        expect(post.body).toMatchObject({ chainId: 1, address: VAULT, kind: 'tokenBalance', params: { token: TOKEN }, label: 'Treasury eETH' });
+        await expect(trackCommand(['0x12', 'native-balance'])).rejects.toThrow(/0x address or a watched contract's name/);
     });
 
     it('a repeat track answers with the existing metric', async () => {
@@ -54,12 +70,12 @@ describe('track', () => {
             'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
             'POST /api/mainnet/tracked-metrics': (c) => created(c.body),
         });
-        await trackCommand([VAULT, 'total-supply', '--chain', '8453']);
-        expect(calls[1].body.label).toBe('0x1111…1111 · Total supply');
+        await trackCommand([VAULT, 'native-balance', '--chain', '8453']);
+        expect(calls[1].body.label).toBe('0x1111…1111 · Native balance');
         expect(calls[1].body.chainId).toBe(8453);
 
-        await trackCommand([VAULT, 'total-supply', '--label', 'Supply']);
-        expect(calls[2].body).toEqual({ chainId: 1, address: VAULT, kind: 'totalSupply', label: 'Supply' }); // no accounts lookup
+        await trackCommand([VAULT, 'native-balance', '--label', 'Treasury']);
+        expect(calls[2].body).toEqual({ chainId: 1, address: VAULT, kind: 'nativeBalance', label: 'Treasury' }); // no accounts lookup
     });
 
     it('erc20-balance needs --token', async () => {
@@ -73,18 +89,18 @@ describe('track', () => {
         expect(calls.at(-1)!.body.params).toEqual({ token: TOKEN });
     });
 
-    it('balance-of submits as a functionResult carrying balanceOf(holder), like the app', async () => {
+    it('total-supply and balance-of are no longer kinds (2026-10-14): both are `function` on the token', async () => {
         const calls = mockApi({
             'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
             'POST /api/mainnet/tracked-metrics': (c) => created(c.body),
         });
-        await trackCommand([TOKEN, 'balance-of', '--holder', HOLDER]);
-        expect(calls[1].body.kind).toBe('functionResult');
-        expect(calls[1].body.params).toEqual({
-            calldata: '0x70a08231' + HOLDER.slice(2).padStart(64, '0'),
-            signature: 'balanceOf(address) → uint256',
-        });
-        expect(calls[1].body.label).toBe('0x2222…2222 · Balance of 0x3333…3333');
+        await expect(trackCommand([TOKEN, 'total-supply'])).rejects.toThrow(/Unknown kind "total-supply"/);
+        await expect(trackCommand([TOKEN, 'balance-of', '--holder', HOLDER])).rejects.toThrow(/Unknown kind "balance-of"/);
+        expect(calls).toHaveLength(0);
+        // the same read, spelled as a function call with the holder as its argument
+        await trackCommand([TOKEN, 'function', '--function', 'balanceOf(address) returns (uint256)', '--args', HOLDER]);
+        expect(calls.at(-1)!.body.kind).toBe('functionResult');
+        expect(calls.at(-1)!.body.params.calldata).toBe('0x70a08231' + HOLDER.slice(2).toLowerCase().padStart(64, '0'));
     });
 
     it('function encodes a human-readable signature + args with ethers', async () => {
@@ -154,8 +170,11 @@ describe('track', () => {
         expect(calls[1].body.kind).toBe('revertRate');
         expect(calls[1].body.params).toEqual({ selector: '0xa9059cbb', windowSec: 3600 });
 
-        await expect(trackCommand([VAULT, 'gas-p95', '--window', '2h'])).rejects.toThrow(/--window must be one of/);
+        await expect(trackCommand([VAULT, 'callers', '--window', '2h'])).rejects.toThrow(/--window must be one of/);
         await expect(trackCommand([VAULT, 'callers', '--only', HOLDER, '--except', TOKEN])).rejects.toThrow(/not both/);
+        // gas-p95 was retired 2026-10-14: no longer a kind the CLI knows, so nothing is posted.
+        await expect(trackCommand([VAULT, 'gas-p95'])).rejects.toThrow(/Unknown kind "gas-p95"/);
+        expect(calls).toHaveLength(2);
     });
 
     it('rejects a bad address or kind before any request', async () => {
@@ -164,12 +183,11 @@ describe('track', () => {
         await expect(trackCommand([VAULT, 'balance'])).rejects.toThrow(/Unknown kind "balance"/);
     });
 
-    it('expandScientific / encodeBalanceOf', () => {
+    it('expandScientific', () => {
         expect(expandScientific('1e18')).toBe('1000000000000000000');
         expect(expandScientific('2.5e3')).toBe('2500');
         expect(expandScientific('123')).toBe('123');
         expect(() => expandScientific('1.5e0')).toThrow(/not an integer/);
-        expect(encodeBalanceOf(HOLDER)).toBe('0x70a08231' + HOLDER.slice(2).padStart(64, '0'));
     });
 });
 

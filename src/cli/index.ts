@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { cliVersion } from './version';
 import { pushContractsCommand } from './commands/push-contracts';
 import { generateWalletCommand } from './commands/generate-wallet';
 import { functionOverrideCommand } from './commands/function-override';
@@ -15,6 +14,7 @@ import { watchCommand, unwatchCommand, renameCommand, contractsCommand } from '.
 import { metricsCommand, trackCommand, untrackCommand } from './commands/metrics';
 import { monitorCommand, monitorsCommand, channelsCommand } from './commands/monitor';
 import { incidentsCommand } from './commands/incidents';
+import { reportCommand } from './commands/report';
 import { statusCommand } from './commands/status';
 import { activityCommand } from './commands/activity';
 import { methodsCommand } from './commands/methods';
@@ -24,6 +24,13 @@ import { usersCommand } from './commands/users';
 import { tvlCommand, positionsCommand, holdersCommand } from './commands/tvl';
 import { dependenciesCommand } from './commands/inspect';
 import { txCommand, addressCommand, blockCommand, walletCommand, sourceCommand } from './commands/explorer';
+import { findCommand, describeCommand, compareCommand } from './commands/ask';
+import { largestCommand, whoCommand, marketCommand, readCommand } from './commands/questions';
+import { groupCommand, factoryCommand } from './commands/group';
+import { tableCommand } from './commands/table';
+import { historyCommand } from './commands/history';
+import { toolCommand } from './commands/tool';
+import { refreshGuideIfStale, refreshInstalledSkills, skillsCommand } from './commands/skills';
 import { extractTargetFlags } from './target';
 
 const HELP = `contract.dev — your contracts, from the command line
@@ -37,13 +44,31 @@ Account:
 
 Watch contracts:
   contract-dev watch <address>            Watch a mainnet contract (try: watch help)
+  contract-dev watch <address> <address>… [--group <name>]   Watch several at once, tagged into a group
   contract-dev watch list                 List watched contracts
   contract-dev rename <address> <name>    Rename a watched contract
   contract-dev contracts set-abi <address> --abi <file>   Name an unverified contract's methods and events
   contract-dev unwatch <address>          Stop watching a contract
+  contract-dev factory <address>          The contracts a factory deployed; --watch --group <name> watches the new ones (try: factory help)
+
+Groups:
+  contract-dev group show <group>         A group's rules, table columns, monitors and members (try: group help)
+  contract-dev group rule add <group> --factory <addr> | --registry <addr> --function "…"
+                                          Keep the group filled: every contract the factory deploys or the registry lists
+  contract-dev group name-pattern <group> "<pattern>"   Name every member from its own reads: "{token0().symbol()} pool"
+  contract-dev group column add <group> --label "…" --read "totalAssets()"   A column on its table, read on every member
+  contract-dev group monitor add <group> --name "…" --column <key> --below <n>   One monitor on every member
+
+Tables (the things inside contracts: withdrawal rounds, loans, requests):
+  contract-dev table list                 Every item table, hidden ones too (try: table help)
+  contract-dev table show <table>         Openings and closings per period, how long rows stay open, the biggest rows
+  contract-dev table create "<name>" --opens <Event> [--closes <Event>] [--group <g>] [--count <Event>] [--hidden]
+                                          A table from the contracts' events, its whole history read
 
 Metrics:
   contract-dev metrics                    List tracked metrics (try: metrics help)
+  contract-dev metric define "<name>" …   A metric added up from events, each read at its own transaction (try: metrics help)
+  contract-dev metric group "<name>" --group <g> --column <key>   A group's column rolled up into one metric across its contracts
   contract-dev metrics export <id|label>  A metric's history as CSV or JSON
   contract-dev track <address> <kind>     Track a balance, supply, call result, TVL or method telemetry (try: track help)
   contract-dev untrack <id|label>         Stop tracking
@@ -52,6 +77,7 @@ Data (what the dashboard shows; <contract> is an address or a watched contract's
   contract-dev activity [<contract>]      Transactions, calls, events and transfers, newest first (try: activity help)
   contract-dev methods [<contract>]       Calls per method: reverts, callers, gas; one method in full (try: methods help)
   contract-dev events [<contract>]        Events emitted, event by event, and the ones declared but never fired
+  contract-dev history [<contract>] --event <Name>   Every firing since launch: by week, sizes, top wallets, when (try: history help)
   contract-dev flows [<contract>]         Value in and out: by token, by counterparty; a token's own senders and receivers (try: flows help)
   contract-dev users [<contract>]         Active wallets, how they arrive, the busiest (try: users help)
   contract-dev tvl [<contract>]           Value held: now, its change, what it is made of (try: tvl help)
@@ -60,6 +86,20 @@ Data (what the dashboard shows; <contract> is an address or a watched contract's
   contract-dev holders <contract>         A token's holders
   contract-dev dependencies <contract>    The contracts it calls out to, and the price feeds it reads
   contract-dev counterparty <address>     One counterparty's dealings with your contracts
+
+Ask (questions over the workspace; scope is --group <name>, --contract <ref> or --chain <id>, else everything):
+  contract-dev find <query>               What a name points at: contracts (by name, address or kind: pools, vaults,
+                                          tokens), groups, metrics, monitors, reports, destinations
+  contract-dev describe <contract>        What a contract is: kinds, standards, owner, TVL, its events and write
+                                          functions, what it calls
+  contract-dev compare [scope] --by <measure>   Rank contracts by transactions, activeWallets, volumeInUsd, volumeOutUsd,
+                                          tvlUsd, revertedShare or events --event <Name>, against the window before
+  contract-dev activity query --measure events|transactions|wallets [--event <Name>] [scope] [--by contract,day]
+                                          Counts per contract per day (try: activity query help)
+  contract-dev largest <Event> [scope]    The biggest deposits, swaps, withdrawals or liquidations, and who made them
+  contract-dev who <address|ENS|name>     Who it is; --activity: what it did here; --holdings: what it holds
+  contract-dev market [<contract>|--group] Lending markets and vaults now: rates, utilisation, supplied, borrowed
+  contract-dev read <contract> <function> [<arg>…]   Call a view function, now or --at a past time (try: read help)
 
 Explorer (any address on a supported chain):
   contract-dev tx <hash>                  A transaction; --trace for the call tree, --state for what it changed
@@ -71,11 +111,22 @@ Explorer (any address on a supported chain):
 Monitoring:
   contract-dev monitors                   List monitors
   contract-dev monitor add <metric> …     Alert when a metric crosses a line (try: monitor help)
+  contract-dev monitor compile --on <contract> --event <Name> [--where "<field> <op> <value>"]… [--to <dest>]
+                                          A monitor from a sentence: what it would say, how often it would have fired
+                                          in 7 days; --silence [--method <name>] [--for 24h] for a contract going quiet
+  contract-dev monitor add --on <contract> --event <Name> …   Save it (the same flags as compile)
   contract-dev monitor show <id|name>     Rule, inputs, episodes; a silence monitor's sightings and quiet stretches
   contract-dev monitor sightings <id|name> Every sighting a silence monitor counts, newest first
   contract-dev monitor exclude <default> <address>   Leave a contract out of a default monitor
   contract-dev incidents                  What fired (try: incidents help)
   contract-dev channels                   Alert destinations (try: channels help)
+
+Reports:
+  contract-dev report list                Scheduled reports: scope, cadence, destinations, next send, last run
+  contract-dev report create …            A table of your metrics, sent on a schedule: --template daily|weekly --to <dest> (try: report help)
+  contract-dev report preview …           The table a draft would send, computed now, saved nowhere
+  contract-dev report show <id|name>      Settings, the latest table, every run and where it went
+  contract-dev report run <id|name>       Send it now · report pause / resume / delete <id|name>
 
 Stagenets:
   contract-dev stagenets                  List the active workspace's stagenets
@@ -93,7 +144,14 @@ Stagenets:
   contract-dev unfollow <address>         Stop following (mirrors follow's flags)
   contract-dev function-override <sub>    Override contract function results (try: function-override help)
 
-Nouns work too: contracts list|add|rename|remove · metrics track|untrack · monitor list · incidents list · stagenet list.
+Agents:
+  contract-dev tool list                  The platform's tools, the ones an agent calls: name, scope, title
+  contract-dev tool show <name>           A tool's description and its input schema
+  contract-dev tool run <name> --input '<json>'   Run one; the result as JSON, a refusal exits 1 (try: tool help)
+  contract-dev skills install             Teach Claude Code, Codex, Cursor and other agents this CLI (try: skills help)
+  contract-dev skills status              Where the agent skill is installed, and its version
+
+Nouns work too: contracts list|add|rename|remove · metrics track|untrack · monitor list · incidents list · reports · stagenet list.
 
 Global flags:
   --json                                  Print the command's result as JSON instead of text
@@ -102,14 +160,7 @@ Global flags:
   contract-dev help                       Show this help
 `;
 
-export function cliVersion(): string {
-  try {
-    // dist/cli/index.js and src/cli/index.ts both sit two levels under the package root.
-    return String(JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8')).version);
-  } catch {
-    return 'unknown';
-  }
-}
+export { cliVersion };
 
 // Dispatch one invocation; returns whatever the command returns (what --json prints).
 export async function run(args: string[]): Promise<unknown> {
@@ -178,6 +229,9 @@ export async function run(args: string[]): Promise<unknown> {
     case 'channels':
     case 'channel':
       return await channelsCommand(rest);
+    case 'report':
+    case 'reports':
+      return await reportCommand(rest);
     case 'activity':
       return await activityCommand(rest);
     case 'methods':
@@ -213,6 +267,37 @@ export async function run(args: string[]): Promise<unknown> {
       return await walletCommand(rest);
     case 'source':
       return await sourceCommand(rest);
+    case 'find':
+      return await findCommand(rest);
+    case 'describe':
+      return await describeCommand(rest);
+    case 'compare':
+      return await compareCommand(rest);
+    case 'group':
+    case 'groups':
+      return await groupCommand(rest);
+    case 'table':
+    case 'tables':
+      return await tableCommand(rest);
+    case 'history':
+      return await historyCommand(rest);
+    case 'factory':
+      return await factoryCommand(rest);
+    case 'tool':
+    case 'tools':
+      return await toolCommand(rest);
+    case 'largest':
+      return await largestCommand(rest);
+    case 'who':
+      return await whoCommand(rest);
+    case 'market':
+    case 'markets':
+      return await marketCommand(rest);
+    case 'read':
+      return await readCommand(rest);
+    case 'skills':
+    case 'skill':
+      return await skillsCommand(rest);
     case 'version':
     case '--version':
     case '-v':
@@ -241,6 +326,16 @@ async function main() {
   const args = extractTargetFlags(raw.filter((a) => a !== '--json'));
   const realLog = console.log;
   if (json) console.log = () => {};
+  // after an upgrade, the agent skill this CLI installed is brought up to its version (a line on stderr)
+  if (!['skills', 'skill', 'login', 'logout', 'help', '--help', '-h', 'version', '--version', '-v', '-V', undefined].includes(args[0])) {
+    try {
+      refreshInstalledSkills();
+      // once a day, the server's guide: a tool added since reaches the agent without a new CLI
+      await refreshGuideIfStale();
+    } catch {
+      // never in the way of the command
+    }
+  }
   try {
     const result = await run(args);
     if (json) {
@@ -250,7 +345,9 @@ async function main() {
   } catch (err) {
     console.log = realLog;
     const message = err instanceof Error ? err.message : String(err);
-    if (json) console.log(JSON.stringify({ error: message }, null, 2));
+    // A tool's refusal carries a code (NOT_WATCHED, AMBIGUOUS, …) that a script can branch on.
+    const code = (err as { code?: unknown } | null)?.code;
+    if (json) console.log(JSON.stringify({ error: message, ...(typeof code === 'string' ? { code } : {}) }, null, 2));
     console.error(`Error: ${message}`);
     process.exit(1);
   }

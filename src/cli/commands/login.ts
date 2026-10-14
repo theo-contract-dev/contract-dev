@@ -1,6 +1,7 @@
 import { hostname } from 'node:os';
 import { spawn } from 'node:child_process';
 import { parseFlags, flag } from './_args';
+import { offerSkillAfterLogin } from './skills';
 import {
   DEFAULT_API_URL,
   apiRequest,
@@ -16,11 +17,16 @@ const HELP = `contract-dev login — connect the CLI to your contract.dev accoun
 Usage:
   contract-dev login                    Device-code sign-in (opens the browser)
   contract-dev login --no-browser       Print the activation URL instead of opening it
+  contract-dev login --skill            Also install the agent skill, without asking
+  contract-dev login --no-skill         Do not offer the agent skill
 
 The CLI shows a one-time code and opens the activation page. Approving there saves
 credentials to ~/.contract.dev/credentials.json, bound to your account and to the
 workspace that is active in the app at that moment. To act on another workspace,
 make it the active one in the app and log in again (\`contract-dev workspace use\`).
+
+At the end it offers to install the agent skill, so Claude Code, Codex, Cursor and other
+coding agents can use the CLI for you (\`contract-dev skills install\` does the same later).
 `;
 
 interface DeviceStart {
@@ -72,6 +78,7 @@ export async function loginCommand(args: string[]): Promise<void> {
   const flags = parseFlags(args);
   const apiUrl = (flag(flags, 'api-url') ?? DEFAULT_API_URL).replace(/\/+$/, '');
   const noBrowser = flags['no-browser'] === 'true';
+  const skill = { install: flags.skill === 'true', skip: flags['no-skill'] === 'true' };
 
   const existing = loadCredentials();
   if (existing) {
@@ -136,6 +143,13 @@ export async function loginCommand(args: string[]): Promise<void> {
         console.log(
           `Credentials are bound to ${who.org.name}. You belong to ${who.workspaces.length} workspaces — \`contract-dev workspace use <name>\` logs in to another.`,
         );
+      }
+      // the agent skill, offered once: a prompt only where there is a person at a terminal
+      const interactive = !!(process.stdin.isTTY && process.stdout.isTTY) && !process.argv.includes('--json');
+      try {
+        await offerSkillAfterLogin({ ...skill, interactive });
+      } catch (err) {
+        console.log(`Could not install the agent skill (${err instanceof Error ? err.message : String(err)}). Try: contract-dev skills install`);
       }
       return;
     }

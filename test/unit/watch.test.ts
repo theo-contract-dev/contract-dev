@@ -1,4 +1,5 @@
-import { watchCommand, unwatchCommand, contractsCommand } from '../../src/cli/commands/watch';
+import { watchCommand, unwatchCommand, contractsCommand, splitNamed } from '../../src/cli/commands/watch';
+import { run } from '../../src/cli/index';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
 
 const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
@@ -131,6 +132,38 @@ describe('watch / unwatch (mainnet contracts)', () => {
         await expect(unwatchCommand(['0xBBB'])).rejects.toThrow(/No watched contract found for 0xBBB/);
     });
 
+    it('several addresses go through the watch_contracts tool in one call: the tally, then each skipped and failed address on its own line', async () => {
+        const result = { added: 2, alreadyWatched: 1, skipped: [{ address: '0xccc', reason: 'no code at this address' }], failed: [{ address: '0xddd', error: 'RPC timed out' }], group: 'pools', chainId: 42161 };
+        const calls = mockApi({ 'POST /api/mainnet/tools/watch_contracts': () => ({ payload: { ok: true, result, ms: 9 } }) });
+        const got = await watchCommand(['0xaaa', '0xbbb', '0xccc', '0xddd', '--chain', 'arbitrum', '--group', 'pools']);
+        expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['POST /api/mainnet/tools/watch_contracts']);
+        expect(calls[0].body).toEqual({ input: { chainId: 42161, addresses: ['0xaaa', '0xbbb', '0xccc', '0xddd'], group: 'pools' } });
+        expect(printed()).toEqual([
+            'Watched 2 · already watched 1 · skipped 1 (not a contract) · failed 1',
+            '  skipped 0xccc — no code at this address',
+            '  failed 0xddd — RPC timed out',
+        ]);
+        expect(got).toEqual(result);
+    });
+
+    it('one address with --group takes the same path, --name as its name, the chain defaulting to 1', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/watch_contracts': () => ({ payload: { ok: true, result: { added: 1, alreadyWatched: 0, skipped: [], failed: [], group: 'pools', chainId: 1 }, ms: 9 } }) });
+        await watchCommand(['0xaaa', '--group', 'pools', '--name', 'Treasury']);
+        expect(calls[0].body).toEqual({ input: { chainId: 1, addresses: ['0xaaa'], names: ['Treasury'], group: 'pools' } });
+        expect(printed()).toEqual(['Watched 1 · already watched 0 · skipped 0 (not a contract) · failed 0']);
+    });
+
+    it('more than 25 addresses go in one call with no --yes (the CLI acts on purpose); --name and --abi name one contract only', async () => {
+        const many = Array.from({ length: 26 }, (_, i) => `0x${String(i + 1).padStart(40, '0')}`);
+        const calls = mockApi({ 'POST /api/mainnet/tools/watch_contracts': () => ({ payload: { ok: true, result: { added: 26, alreadyWatched: 0, skipped: [], failed: [], group: null, chainId: 1 }, ms: 9 } }) });
+        await watchCommand(many);
+        expect(calls[0].body).toEqual({ input: { chainId: 1, addresses: many, confirmMany: true } });
+        await expect(watchCommand(['0xaaa', '0xbbb', '--name', 'x'])).rejects.toThrow(/--name names one contract/);
+        await expect(watchCommand(['0xaaa', '--group', 'pools', '--abi', 'out/X.json'])).rejects.toThrow(/--abi goes with one address/);
+        await expect(watchCommand(['0xaaa', '--group'])).rejects.toThrow(/--group needs a name/);
+        expect(calls).toHaveLength(1);
+    });
+
     it('fails with a login hint when no credential is available', async () => {
         const originalHome = process.env.HOME;
         delete process.env.CONTRACT_DEV_API_KEY;
@@ -140,5 +173,30 @@ describe('watch / unwatch (mainnet contracts)', () => {
         } finally {
             process.env.HOME = originalHome;
         }
+    });
+});
+
+describe('watch with names', () => {
+    useEnvAuth();
+    const ok = (result: unknown) => ({ payload: { ok: true, result, ms: 7 } });
+    const A = '0xae7ab96520de3a18e5e111b5eaab095312d7fe84';
+    const B = '0x889edc2edab5f40e902b864ad4d7ade8e412f9b1';
+
+    it('splitNamed reads address=Name, keeps spaces, and leaves a bare address unnamed', () => {
+        expect(splitNamed(`${A}=stETH`)).toEqual({ address: A, name: 'stETH' });
+        expect(splitNamed(`${B}=Withdrawal Queue`)).toEqual({ address: B, name: 'Withdrawal Queue' });
+        expect(splitNamed(A)).toEqual({ address: A, name: '' });
+    });
+
+    it('sends each name aligned with its address in the one bulk call; unnamed ones go as empty', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/watch_contracts': () => ok({ added: 3, alreadyWatched: 0, skipped: [], failed: [], group: 'Lido', chainId: 1 }) });
+        await run(['watch', `${A}=stETH`, `${B}=Withdrawal Queue`, '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0', '--group', 'Lido']);
+        expect(calls[0].body.input).toEqual({ chainId: 1, addresses: [A, B, '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0'], names: ['stETH', 'Withdrawal Queue', ''], group: 'Lido' });
+    });
+
+    it('with no names given, sends none', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/watch_contracts': () => ok({ added: 2, alreadyWatched: 0, skipped: [], failed: [], group: null, chainId: 1 }) });
+        await run(['watch', A, B]);
+        expect(calls[0].body.input.names).toBeUndefined();
     });
 });

@@ -108,6 +108,26 @@ export function fmtTime(ms: number | null | undefined): string {
   return `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
+/**
+ * 2026-10-14 09:00 GMT+11 — an absolute time on this machine's clock (or `timeZone`'s), for
+ * the things that happen on a schedule: when a report sends next.
+ */
+export function fmtLocalTime(ms: number | null | undefined, timeZone?: string): string {
+  if (!finite(ms) || ms <= 0) return DASH;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  }).formatToParts(new Date(ms));
+  const get = (type: string): string => parts.find((p) => p.type === type)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')} ${get('timeZoneName')}`.trim();
+}
+
 // ── shapes ───────────────────────────────────────────────────────────────
 
 const BARS = '▁▂▃▄▅▆▇█';

@@ -1,9 +1,10 @@
-import { parseFlags, flag, requirePositional } from './_args';
+import { parseFlags, flag, flagAll, requirePositional, type ParsedFlags } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
+import { runTool } from '../tools';
 import { resolveMetric, formatValue, shortHex, TrackedMetric } from './metrics';
 import { parseChainId } from './watch';
-import { limitFlag, parseRange } from '../data';
-import { DASH, fmtAge, fmtInt, fmtTime, plural, shortAddr, sparkline, table } from '../view';
+import { chainFlag, limitFlag, parseRange } from '../data';
+import { DASH, chainLabel, fmtAge, fmtInt, fmtTime, plural, shortAddr, sparkline, table } from '../view';
 import { fmtSpan } from './oracles';
 import {
   buildBoundExpr,
@@ -16,11 +17,16 @@ import {
   type InvariantExpr,
 } from '../monitor-expr';
 
-const HELP = `contract-dev monitor — alert when a tracked metric crosses a line
+const HELP = `contract-dev monitor — alert when a tracked metric crosses a line, an event is emitted, or a contract goes quiet
 
 Usage:
   contract-dev monitors                                   List monitors (status, rule, open incident)
   contract-dev monitor add <metric> <rule> --to <dest,…> [--warn …] [--name "…"] [--max-age <sec>]
+  contract-dev monitor compile --on <contract> --event <Name> [--where "<field> <op> <value>"]… [--to <dest>]… [--name "…"]
+  contract-dev monitor compile --on <contract> --silence [--method <name> | --event <Name>] [--for 24h] [--to <dest>]…
+                                                          What the monitor would say, and how often it would have fired in
+                                                          the last 7 days; saved nowhere
+  contract-dev monitor add (the same flags)               Save it
   contract-dev monitor show <id|name> [--range]           Rule, inputs, destinations, recent episodes; a silence monitor's
                                                           sightings, how long it has been quiet, and the quiet stretches
   contract-dev monitor sightings <id|name> [--range] [--limit]   Every sighting a silence monitor counts, newest first
@@ -29,7 +35,7 @@ Usage:
   contract-dev monitor pause <id|name> / resume <id|name>
   contract-dev monitor snooze <id|name> <30m|2h|1d|iso>   Mute pages until then (still evaluates)
   contract-dev monitor unsnooze <id|name>
-  contract-dev monitor delete <id|name>
+  contract-dev monitor delete <id|name>…                 Delete one or several (ids from --json, or names)
   contract-dev monitor exclude <default> <address> [--chain <id>]   Leave a contract out of a default monitor
   contract-dev monitor include <default> <address> [--chain <id>]   Put it back
   contract-dev channels                                   Alert destinations — what --to accepts
@@ -46,11 +52,42 @@ Warning tier (optional, on the healthy side of the alert):
 
 Destinations:
   --to <dest,…>            Channel ids, labels ("#alerts") or kinds (telegram) from \`contract-dev channels\`.
-                           Required on add — a monitor with nowhere to send alerts nobody.
+                           Optional: without one the monitor records alerts on its page until a destination
+                           is linked in the app.
 
 <metric> is a tracked metric's id or label (\`contract-dev metrics\`). Examples:
   contract-dev monitor add "Treasury · Native balance" --below 25000 --warn 30000 --to telegram
   contract-dev monitor add vault_reserves --below-metric vault_liabilities --warn-pct 5 --to "#alerts"
+
+From a sentence (an event monitor, or a silence monitor):
+  --on <contract>          The watched contract, by address or name; --chain picks between chains
+  --group <group>          Instead of --on: one monitor on each contract of the group that has the event
+                           (every upgrade, every pause).
+  --event <Name>           Alert when the event is emitted (with --silence: when it stops being emitted). Repeat
+                           for several events in one go: --event Upgraded --event Paused --event AdminChanged
+  --usd-above <n>          Alert when the event is worth more than n dollars at today's price, on the fields whose
+                           token --token states (each in its own token, both directions), turned into token
+                           amounts once
+  --where "<field> <op> <value>"
+                           A condition on the event's fields; repeat for more. In base units, or in the field's
+                           token when --token states it ("12,500" on a field stated as USDC; never dollars).
+                           Ops: is, is not, above, at least, below, at most (or =, !=, >, >=, <, <=)
+  --token "<field>=<token>"
+                           The token a numeric field is an amount of: its 0x address, self (the contract
+                           itself), or a view the contract answers with it, like token0() or asset(); repeat
+                           for more. Nothing is assumed from a field's name: without it a field is in base units
+  --silence                Alert when the contract goes quiet: no call for --for; with --method, no call to that
+                           method; with --event, no emission of it
+  --method <name>          The method whose silence matters (silence only)
+  --for <duration>         How long quiet counts: 90m, 24h, 3d (silence only; default 24h)
+  --name "<text>"          The monitor's name (one is made from the event or method otherwise)
+  --to <dest>              Destinations by id, label or kind; repeat or comma-separate. Optional here: without
+                           one the monitor records alerts on its page and pages nobody.
+add saves at once and replays nothing: set a --where value in the field's own unit (\`describe\` shows
+each field's unit), and remove a monitor that turns out noisy with \`monitor delete\`. compile previews
+the same flags with a 7-day replay of how often it would have fired; it is slow on busy contracts.
+  contract-dev monitor add --on steth --event Transfer --where "value at least 1000 stETH" --to "#alerts"
+  contract-dev monitor compile --on steth --silence --method submit --for 6h
 
 Default monitors — control-change, dependency-failure, revert-spike — take pause / resume /
 snooze / unsnooze / set --to / exclude / include by that slug or by name; they have no
@@ -380,6 +417,8 @@ export async function monitorCommand(args: string[]): Promise<unknown> {
   switch (sub) {
     case 'add':
       return await addMonitor(rest);
+    case 'compile':
+      return await compileSubcommand(rest);
     case 'show':
       return await showMonitor(rest);
     case 'set':
@@ -418,18 +457,21 @@ export async function monitorCommand(args: string[]): Promise<unknown> {
   }
 }
 
-async function addMonitor(args: string[]): Promise<Invariant> {
+async function addMonitor(args: string[]): Promise<unknown> {
   const flags = parseFlags(args);
+  // --on / --event / --silence: a monitor from a sentence, compiled and saved by the server.
+  if (isIntentForm(flags)) return await addMonitorFromIntent(flags);
   const ref = requirePositional(flags._ as string[], 0, 'metric (id or label)');
   const rule = parseRule(flags);
   if (!rule) throw new Error('A monitor needs a rule: --below <n>, --above <n>, --below-metric <metric> or --above-metric <metric>');
   const toRaw = flag(flags, 'to');
-  if (!toRaw || toRaw === 'true') throw new Error('Pick at least one destination with --to (see `contract-dev channels`).');
+  if (toRaw === 'true') throw new Error('--to needs a destination (see `contract-dev channels`).');
 
   const auth = requireAuth();
   const subject = await resolveMetric(auth, ref);
   const tiers = await buildTiers(auth, subject, rule, flags);
-  const channelIds = resolveChannelIds(await listChannels(auth), toRaw.split(','));
+  // no destination is fine: the monitor records alerts on its page until one is linked
+  const channelIds = toRaw ? resolveChannelIds(await listChannels(auth), toRaw.split(',')) : [];
   const maxInputAgeSec = parseMaxAge(flags);
 
   const subjectLabel = metricName(subject);
@@ -502,6 +544,284 @@ async function setMonitor(args: string[]): Promise<Invariant> {
   const { invariant } = await apiRequest<{ invariant: Invariant }>(auth, 'PATCH', `/api/mainnet/invariants/${existing.id}`, body);
   console.log(`Updated "${invariant.name}": ${invariant.exprText}${invariant.warnExprText ? `, warn at ${invariant.warnExprText}` : ''}`);
   return invariant;
+}
+
+// ── a monitor from a sentence: --on <contract> --event <Name> [--where …] / --silence [--method …] [--for …] ──
+//
+// The server's compile_monitor tool turns the intent into the exact monitor: the sentence it
+// will print, the conditions in the field's units, a backtest over the last 7 days. `compile`
+// shows that and saves nothing; `add` with the same flags calls create_monitor.
+
+export interface MonitorIntent {
+  mode: 'event' | 'silence';
+  /** One contract, or `group` for one monitor on each contract of a group. */
+  contract?: string;
+  group?: string;
+  chainId?: number;
+  event?: string;
+  method?: string;
+  where?: Array<{ field: string; op: string; value: string }>;
+  /** Fire when the event is worth more than this many dollars at today's price, on the fields whose token `tokens` states. */
+  usdAbove?: number;
+  /** The token each numeric field is an amount of, as stated: an address, self, or a view like token0(). */
+  tokens?: Array<{ field: string; token: string }>;
+  windowSec?: number;
+  name?: string;
+  destinations?: string[];
+}
+
+export interface BacktestFiring {
+  txHash: string;
+  at: string;
+  blockNumber: number | null;
+  from: string | null;
+  args: Record<string, string>;
+}
+
+export type Backtest = { window: string; matches: number; recent: BacktestFiring[]; scanned?: number; capped?: boolean } | { window: string; occurrences: number; lastSeenAt: string | null };
+
+export interface CompiledMonitor {
+  body: Record<string, unknown>;
+  name: string;
+  sentence: string;
+  contract: { chainId: number; address: string; name: string };
+  conditions: string[];
+  channelIds: string[];
+  backtest: Backtest | null;
+  notes: string[];
+}
+
+export interface CreatedFromIntent {
+  monitor: Invariant;
+  sentence: string;
+  backtest: Backtest | null;
+}
+
+const TWO_WORD_OPS = ['is not', 'at least', 'at most'];
+const ONE_WORD_OPS = ['is', 'above', 'below', '=', '==', '!=', '>', '>=', '<', '<='];
+const WHERE_USAGE = '--where must read "<field> <op> <value>", like --where "amount0 at least 10000" (ops: is, is not, above, at least, below, at most, or =, !=, >, >=, <, <=)';
+
+/** `"amount0 at least 10,000 USDC"` (or `"amount0>=10000"`) → the condition as the server takes it. */
+export function parseWhere(raw: string): { field: string; op: string; value: string } {
+  const text = raw.trim();
+  const symbol = /^([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|!=|==|=|>|<)\s*(\S.*)$/.exec(text);
+  if (symbol) return { field: symbol[1], op: symbol[2], value: symbol[3].trim() };
+  const tokens = text.split(/\s+/).filter(Boolean);
+  if (tokens.length < 3) throw new Error(`${WHERE_USAGE}; got: "${raw}"`);
+  const [field, ...rest] = tokens;
+  const two = `${rest[0]} ${rest[1]}`.toLowerCase();
+  const one = rest[0].toLowerCase();
+  if (TWO_WORD_OPS.includes(two)) {
+    const value = rest.slice(2).join(' ');
+    if (!value) throw new Error(`${WHERE_USAGE}; got: "${raw}"`);
+    return { field, op: two, value };
+  }
+  if (ONE_WORD_OPS.includes(one)) return { field, op: one, value: rest.slice(1).join(' ') };
+  throw new Error(`${WHERE_USAGE}; got: "${raw}"`);
+}
+
+/** 90m · 24h · 3d (also 3600s, 1w) → seconds, from a minute to 30 days. */
+export function parseDuration(raw: string, label = '--for'): number {
+  const m = /^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|week|weeks)$/i.exec(raw.trim());
+  if (!m) throw new Error(`${label} must be a duration like 90m, 24h or 3d (got: ${raw})`);
+  const unit = m[2].toLowerCase()[0];
+  const sec = Number(m[1]) * (unit === 's' ? 1 : unit === 'm' ? 60 : unit === 'h' ? 3600 : unit === 'd' ? 86_400 : 604_800);
+  if (sec < 60 || sec > 2_592_000) throw new Error(`${label} must be between 1 minute and 30 days (got: ${raw})`);
+  return sec;
+}
+
+const isIntentForm = (flags: ParsedFlags): boolean => flag(flags, 'on') !== undefined || flag(flags, 'group') !== undefined || flag(flags, 'event') !== undefined || flag(flags, 'silence') !== undefined;
+
+/** The flags → the intent compile_monitor and create_monitor take. */
+export function buildIntent(flags: ParsedFlags): MonitorIntent {
+  const on = flag(flags, 'on');
+  const group = flag(flags, 'group');
+  if (on === 'true') throw new Error('--on needs a contract: the watched contract, by address or name.');
+  if (group === 'true') throw new Error('--group needs a group name.');
+  if (on !== undefined && group !== undefined) throw new Error('Pick --on <contract> or --group <group>, not both.');
+  if (on === undefined && group === undefined) throw new Error('Say where: --on <contract> (a watched contract, by address or name) or --group <group> (each contract of a group).');
+  const silence = flag(flags, 'silence') !== undefined;
+  if (flag(flags, 'silence') !== undefined && flag(flags, 'silence') !== 'true') throw new Error('--silence takes no value; name the method with --method <name>.');
+  const event = flag(flags, 'event');
+  const method = flag(flags, 'method');
+  const forRaw = flag(flags, 'for');
+  const name = flag(flags, 'name');
+  if (event === 'true') throw new Error('--event needs the event\'s name');
+  if (method === 'true') throw new Error('--method needs the method\'s name');
+  if (name === 'true') throw new Error('--name needs a value');
+  if (!silence && event === undefined) throw new Error('Say what to watch: --event <Name> (when it is emitted) or --silence (when the contract goes quiet).');
+  if (!silence && method !== undefined) throw new Error('--method is for a silence monitor: add --silence.');
+  if (!silence && forRaw !== undefined) throw new Error('--for is for a silence monitor: add --silence.');
+  if (silence && event !== undefined && method !== undefined) throw new Error('A silence monitor watches an event or a method, not both.');
+  const where = flagAll(flags, 'where')
+    .filter((w) => w !== 'true')
+    .map(parseWhere);
+  if (silence && where.length) throw new Error('--where is for an event monitor (--event <Name>, without --silence).');
+  const destinations = flagAll(flags, 'to')
+    .filter((v) => v !== 'true')
+    .flatMap((v) => v.split(','))
+    .map((v) => v.trim())
+    .filter(Boolean);
+  const chainId = chainFlag(flags);
+  const intent: MonitorIntent = on !== undefined ? { mode: silence ? 'silence' : 'event', contract: on } : { mode: silence ? 'silence' : 'event', group };
+  if (chainId !== undefined) intent.chainId = chainId;
+  if (event !== undefined) intent.event = event;
+  if (method !== undefined) intent.method = method;
+  if (where.length) intent.where = where;
+  const tokens = flagAll(flags, 'token')
+    .filter((v) => v !== 'true')
+    .map((raw) => {
+      const eq = raw.indexOf('=');
+      const field = eq > 0 ? raw.slice(0, eq).trim() : '';
+      const token = eq > 0 ? raw.slice(eq + 1).trim() : '';
+      if (!field || !/^(0x[0-9a-fA-F]{40}|self|[A-Za-z_][A-Za-z0-9_]*\(\))$/.test(token))
+        throw new Error(`--token takes <field>=<token>: its 0x address, self, or a view like token0() (got: ${raw})`);
+      return { field, token };
+    });
+  if (silence && tokens.length) throw new Error('--token is for an event monitor.');
+  if (tokens.length) intent.tokens = tokens;
+  const usdRaw = flag(flags, 'usd-above');
+  if (usdRaw !== undefined) {
+    if (silence) throw new Error('--usd-above is for an event monitor.');
+    const usd = Number(usdRaw.replace(/[$,\s]/g, ''));
+    if (usdRaw === 'true' || !Number.isFinite(usd) || usd <= 0) throw new Error(`--usd-above needs a dollar amount, like 1000000 or $1,000,000 (got: ${usdRaw})`);
+    intent.usdAbove = usd;
+  }
+  if (forRaw !== undefined) intent.windowSec = parseDuration(forRaw);
+  if (name !== undefined && name.trim()) intent.name = name.trim();
+  if (destinations.length) intent.destinations = destinations;
+  return intent;
+}
+
+const windowDays = (w: string): string => (/^\d+d$/.test(w) ? `${w.slice(0, -1)} days` : w);
+
+/** The backtest, as the composer shows it: how often it would have fired, the newest firings; or how often it has been seen. */
+export function backtestLines(b: Backtest | null | undefined): string[] {
+  if (!b) return ['  backtest:    unavailable'];
+  if ('matches' in b) {
+    // a capped read is the newest events only: shorter than the window, so it must not claim the week
+    const span = b.capped ? `the newest ${plural(b.scanned ?? 0, 'event')} read (less than ${windowDays(b.window)}: the week holds more)` : windowDays(b.window);
+    const lines = [`  backtest:    Would have fired ${plural(b.matches, 'time')} in ${span}`];
+    for (const f of (b.recent ?? []).slice(0, 3)) {
+      const args = Object.entries(f.args ?? {})
+        .map(([k, v]) => `${k}=${v}`)
+        .join(' ');
+      lines.push(`    ${fmtTime(Date.parse(f.at))}  ${f.from ? shortAddr(f.from) : DASH}  ${args || DASH}  ${f.txHash}`);
+    }
+    return lines;
+  }
+  return [`  backtest:    Seen ${plural(b.occurrences, 'time')} in ${windowDays(b.window)}${b.lastSeenAt ? `, last ${fmtTime(Date.parse(b.lastSeenAt))}` : ''}`];
+}
+
+/** What `compile` prints: the sentence, the subject, the conditions, the destinations, the backtest, the notes. */
+export function compiledLines(c: CompiledMonitor, intent: MonitorIntent): string[] {
+  const lines = [
+    c.sentence,
+    `  name:        ${c.name}`,
+    `  on:          ${c.contract.name} (${chainLabel(c.contract.chainId)} ${c.contract.address})`,
+    `  conditions:  ${c.conditions.length ? c.conditions.join(' · ') : 'none'}`,
+    `  sends to:    ${c.channelIds.length ? (intent.destinations ?? []).join(', ') || plural(c.channelIds.length, 'destination') : 'nobody'}`,
+    ...backtestLines(c.backtest),
+  ];
+  for (const note of c.notes ?? []) lines.push(`  note: ${note}`);
+  return lines;
+}
+
+/** An argument as a person would retype it on the shell: bare when it is plain, double-quoted otherwise. */
+export const shellQuote = (arg: string): string => (/^[A-Za-z0-9_\-.,:/=@+%]+$/.test(arg) ? arg : `"${arg.replace(/(["\\$`])/g, '\\$1')}"`);
+
+async function compileSubcommand(args: string[]): Promise<CompiledMonitor | void> {
+  if (!args.length || ['help', '-h', '--help'].includes(args[0])) {
+    console.log(HELP);
+    return;
+  }
+  const flags = parseFlags(args);
+  const intent = buildIntent(flags);
+  const compiled = await runTool<CompiledMonitor & GroupSet>(requireAuth(), 'compile_monitor', { ...intent });
+  if (intent.group) {
+    for (const line of groupSetLines(compiled, intent.group)) console.log(line);
+    console.log(`Save them with: contract-dev monitor add ${args.map(shellQuote).join(' ')}`);
+    return compiled;
+  }
+  for (const line of compiledLines(compiled, intent)) console.log(line);
+  console.log(`Save it with: contract-dev monitor add ${args.map(shellQuote).join(' ')}`);
+  return compiled;
+}
+
+/** What the server answers for a group: a sentence for all, the contracts it fitted, and the ones it left out. */
+export interface GroupSet {
+  monitors?: number;
+  sentence?: string | null;
+  /** Every contract left out; `skipped` names only those left out for a reason other than lacking the event. */
+  skippedCount?: number;
+  skipped?: Array<{ contract: string; reason: string }>;
+  created?: Array<{ id: string; name: string; contract: string }>;
+  failed?: Array<{ contract: string; error: string }>;
+  notes?: string[];
+}
+
+/** A group's monitors in a few lines: the sentence, how many, and what was left out or failed. */
+export function groupSetLines(r: GroupSet, group: string): string[] {
+  const made = r.created ? r.created.length : r.monitors ?? 0;
+  const lines = [r.sentence ?? DASH, `${r.created ? 'Created' : 'Would create'} ${plural(made, 'monitor')} in ${group}, one on each contract that has it.`];
+  const skipped = r.skipped ?? [];
+  const leftOut = r.skippedCount ?? skipped.length;
+  if (leftOut) lines.push(`Left out ${plural(leftOut, 'contract')} that ${leftOut === 1 ? 'does' : 'do'} not have it.`);
+  const byReason = new Map<string, string[]>();
+  for (const x of skipped) byReason.set(x.reason, [...(byReason.get(x.reason) ?? []), x.contract]);
+  for (const [reason, names] of byReason) if (!reason.startsWith('no ') || reason === 'no ABI known') lines.push(`  ${reason}: ${names.join(', ')}`);
+  for (const f of r.failed ?? []) lines.push(`  failed ${f.contract} — ${f.error}`);
+  return lines;
+}
+
+/** Several events in one call: one monitor (or one group set) per event, made side by side, one line each. */
+async function addSeveralEvents(flags: ParsedFlags, events: string[]): Promise<Array<{ event: string; result?: CreatedFromIntent | GroupSet; error?: string }>> {
+  if (flagAll(flags, 'where').some((w) => w !== 'true')) throw new Error('--where goes with one event: the fields differ from event to event. Add those monitors one at a time.');
+  const base = buildIntent(flags);
+  const auth = requireAuth();
+  const outcomes = await Promise.all(
+    events.map(async (event) => {
+      const intent: MonitorIntent = { ...base, event, ...(base.name ? { name: `${base.name} · ${event}` } : {}) };
+      try {
+        const result = await runTool<CreatedFromIntent | GroupSet>(auth, 'create_monitor', { ...intent, ...(intent.group ? { confirmMany: true } : {}) });
+        return { event, result };
+      } catch (err) {
+        return { event, error: err instanceof Error ? err.message : String(err) };
+      }
+    }),
+  );
+  for (const o of outcomes) {
+    if (o.error) console.log(`${o.event}: not created — ${o.error}`);
+    else if (base.group) {
+      const set = o.result as GroupSet;
+      const extra = groupSetLines(set, base.group).slice(2);
+      console.log(`${o.event}: ${plural(set.created?.length ?? 0, 'monitor')}${set.skippedCount ? ` · left out ${fmtInt(set.skippedCount)}` : ''}`);
+      for (const line of extra.filter((l) => l.startsWith('  '))) console.log(line);
+    } else {
+      const one = o.result as CreatedFromIntent;
+      console.log(`${o.event}: created "${one.monitor.name}" (${one.monitor.id}) — ${one.sentence}`);
+    }
+  }
+  if (outcomes.every((o) => o.error)) throw new Error(outcomes[0].error);
+  return outcomes;
+}
+
+async function addMonitorFromIntent(flags: ParsedFlags): Promise<CreatedFromIntent | GroupSet | Array<{ event: string; result?: CreatedFromIntent | GroupSet; error?: string }>> {
+  const events = flagAll(flags, 'event').filter((e) => e !== 'true');
+  if (events.length > 1) return await addSeveralEvents(flags, events);
+  const intent = buildIntent(flags);
+  if (intent.group) {
+    // the CLI acts on purpose: the server's many-at-once check is for chat, so it is passed here
+    const set = await runTool<GroupSet>(requireAuth(), 'create_monitor', { ...intent, confirmMany: true });
+    for (const line of groupSetLines(set, intent.group)) console.log(line);
+    return set;
+  }
+  const created = await runTool<CreatedFromIntent>(requireAuth(), 'create_monitor', { ...intent });
+  console.log(created.sentence);
+  // saving replays nothing; an older server may still send a backtest, shown when it does
+  if (created.backtest) for (const line of backtestLines(created.backtest)) console.log(line);
+  console.log(`Created monitor "${created.monitor.name}" (${created.monitor.id}).`);
+  return created;
 }
 
 // ── a silence monitor's sightings: the calls or emissions it counts, off the chain's record ──
@@ -799,12 +1119,29 @@ async function excludeSubcommand(args: string[], exclude: boolean): Promise<Inva
   return invariant;
 }
 
-async function deleteMonitor(args: string[]): Promise<{ ok: true; id: string } | void> {
+async function deleteMonitor(args: string[]): Promise<{ ok: true; id: string; ids: string[] } | void> {
   const flags = parseFlags(args);
-  const ref = requirePositional(flags._ as string[], 0, 'monitor (id or name)');
+  const refs = flags._ as string[];
+  requirePositional(refs, 0, 'monitor (id or name)');
   const auth = requireAuth();
-  const existing = await resolveMonitor(auth, ref);
-  await apiRequest(auth, 'DELETE', `/api/mainnet/invariants/${existing.id}`);
-  console.log(`Deleted monitor "${existing.name}" (${existing.id}) and its episode history.`);
-  return { ok: true, id: existing.id };
+  // every ref resolved against one listing before anything is deleted, so a typo deletes nothing
+  const { invariants } = await apiRequest<{ invariants: Invariant[] }>(auth, 'GET', '/api/mainnet/invariants');
+  const all = invariants ?? [];
+  const targets = refs.map((ref) => {
+    const byId = all.find((m) => m.id === ref);
+    if (byId) return byId;
+    const lower = ref.trim().toLowerCase();
+    const byName = all.filter((m) => m.name.toLowerCase() === lower || slugOf(m.name) === lower);
+    if (byName.length === 1) return byName[0];
+    if (byName.length > 1) throw new Error(`${byName.length} monitors are named "${ref}" — use an id: ${byName.map((m) => m.id).join(', ')}. Nothing was deleted.`);
+    throw new Error(`No monitor matches "${ref}" (run \`contract-dev monitors\` to list them). Nothing was deleted.`);
+  });
+  const ids: string[] = [];
+  for (const m of targets) {
+    if (ids.includes(m.id)) continue;
+    await apiRequest(auth, 'DELETE', `/api/mainnet/invariants/${m.id}`);
+    console.log(`Deleted monitor "${m.name}" (${m.id}) and its episode history.`);
+    ids.push(m.id);
+  }
+  return { ok: true, id: ids[0], ids };
 }

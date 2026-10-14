@@ -30,6 +30,7 @@
     "typescript": "^5"
   },
   "files": [
-    "dist"
+    "dist",
+    "skills"
   ]
 }

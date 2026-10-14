@@ -115,6 +115,19 @@ export interface RequestOptions {
   timeoutMs?: number;
 }
 
+// A response the server answered with an error status. The body rides along for the
+// commands that need more than the message (a run the server filed as failed).
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly payload: unknown,
+  ) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
+}
+
 function describeFailure(err: unknown, apiUrl: string, timeoutMs: number): Error {
   const name = (err as { name?: string } | null)?.name;
   if (name === 'TimeoutError' || name === 'AbortError') {
@@ -173,7 +186,7 @@ export async function apiRequest<T>(
     throw new Error('API key was rejected. Run `contract-dev login` again.');
   }
   if (!response.ok) {
-    throw new Error(payload?.error || `Request failed with status ${response.status}`);
+    throw new ApiRequestError(payload?.error || `Request failed with status ${response.status}`, response.status, payload);
   }
   return payload as T;
 }

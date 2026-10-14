@@ -73,11 +73,17 @@ describe('monitor add', () => {
         expect(calls.find((c) => c.method === 'POST')!.body.name).toBe('Vault reserves vs Vault liabilities');
     });
 
-    it('refuses: no rule, two rules, no --to, warn of the wrong shape, self-comparison', async () => {
+    it('saves with no destination: the monitor records alerts on its page until one is linked', async () => {
+        const calls = mockApi({ ...base, 'POST /api/mainnet/invariants': () => ({ status: 201, payload: { invariant: { id: 'inv1', name: 'm1', exprText: 'm1 >= 1', warnExprText: null } } }) });
+        await monitorCommand(['add', 'm1', '--below', '1']);
+        expect(calls.find((c) => c.method === 'POST')?.body.channelIds).toEqual([]);
+    });
+
+    it('refuses: no rule, two rules, an empty --to, warn of the wrong shape, self-comparison', async () => {
         mockApi(base);
         await expect(monitorCommand(['add', 'm1', '--to', 'ch1'])).rejects.toThrow(/needs a rule/);
         await expect(monitorCommand(['add', 'm1', '--below', '1', '--above', '2', '--to', 'ch1'])).rejects.toThrow(/Pick one rule/);
-        await expect(monitorCommand(['add', 'm1', '--below', '1'])).rejects.toThrow(/--to/);
+        await expect(monitorCommand(['add', 'm1', '--below', '1', '--to'])).rejects.toThrow(/--to needs a destination/);
         await expect(monitorCommand(['add', 'm1', '--below', '1', '--warn-pct', '5', '--to', 'ch1'])).rejects.toThrow(/--warn-pct is for/);
         await expect(monitorCommand(['add', 'm2', '--below-metric', 'm3', '--warn', '5', '--to', 'ch1'])).rejects.toThrow(/--warn is for/);
         await expect(monitorCommand(['add', 'm2', '--below-metric', 'm2', '--to', 'ch1'])).rejects.toThrow(/against itself/);
