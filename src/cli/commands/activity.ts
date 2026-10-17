@@ -11,8 +11,8 @@ Usage:
   contract-dev activity <contract> --calls         Every call into the contract, internal calls included
   contract-dev activity <contract> --events        Logs the contract emitted
   contract-dev activity <contract> --transfers     Tokens and coin moving in and out of it
-  contract-dev activity query --measure events|transactions|wallets [--event <name>]… [--group <name> | --contract <ref>]
-                              [--by contract,day,event] [--window 24h|7d|30d|90d] [--tz <zone>]
+  contract-dev activity query --measure transactions|wallets [--group <name> | --contract <ref>]
+                              [--by contract,day] [--window 24h|7d|30d|90d] [--tz <zone>]
                                                    Counts per contract per day — a pivot — or by whatever --by names
                                                    (try: activity query help)
 

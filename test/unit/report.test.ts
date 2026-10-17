@@ -253,6 +253,57 @@ describe('report create', () => {
     });
 });
 
+describe('report create --every / report update', () => {
+    useEnvAuth();
+
+    const base = {
+        ...listOf([]),
+        'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
+        'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: metrics } }),
+        'GET /api/mainnet/accounts': () => ({ payload: { accounts } }),
+        'GET /api/mainnet/custom-metrics': () => ({ payload: { metrics: [{ id: 'cm1', name: 'Breached markets' }] } }),
+        'POST /api/mainnet/reports': (c: any) => ({ status: 201, payload: { report: report({ ...c.body, id: 'rep10', channels: [], lastRunAt: null, lastRun: null }) } }),
+    };
+
+    it('--every makes an interval report on the UTC clock; --snapshot, --only-when and a row window land in the body', async () => {
+        const calls = mockApi(base);
+        await reportCommand(['create', '--every', '10m', '--name', 'Wildcat pulse', '--scope', 'tag:Wildcat markets', '--row', 'customMetric:Breached markets', '--row', 'transactions | 7d nocompare', '--snapshot', '--only-when', '{Breached markets} > 0']);
+        const post = calls.find((c) => c.method === 'POST')!;
+        expect(post.body).toEqual({
+            name: 'Wildcat pulse',
+            scope: { kind: 'tag', tag: 'Wildcat markets' },
+            cadence: 'interval',
+            hour: 0,
+            timezone: 'UTC',
+            everyMinutes: 10,
+            compare: false,
+            onlyWhen: '{Breached markets} > 0',
+            rows: [{ kind: 'customMetric', params: { id: 'cm1' } }, { kind: 'transactions', window: '7d', compare: false }],
+            channelIds: [],
+            runNow: true,
+        });
+        expect(printed()[2]).toBe('  schedule:   every 10m · 24h snapshot');
+        expect(printed()[3]).toBe('  only when:  {Breached markets} > 0');
+        await expect(reportCommand(['create', '--every', '7m', '--name', 'x', '--row', 'transactions'])).rejects.toThrow(/--every must be one of 5m, 10m, 15m, 30m, 1h, 2h, 3h, 6h, 12h/);
+        await expect(reportCommand(['create', '--every', '1h', '--template', 'daily'])).rejects.toThrow(/--every makes an interval report/);
+    });
+
+    it('update patches only what changes: --add-row keeps the rows, --every moves it to an interval, --always clears the condition', async () => {
+        const existing = report({ id: 'rep10', name: 'Wildcat pulse', cadence: 'daily', rows: [{ kind: 'transactions' }], channels: [], lastRunAt: null, lastRun: null, onlyWhen: '{Transactions} > 0' });
+        const calls = mockApi({
+            ...base,
+            ...listOf([existing]),
+            'PATCH /api/mainnet/reports/rep10': (c: any) => ({ payload: { report: report({ ...existing, ...c.body, channels: [] }) } }),
+        });
+        await reportCommand(['update', 'Wildcat pulse', '--add-row', 'customMetric:Breached markets', '--every', '1h', '--always']);
+        const patch = calls.find((c) => c.method === 'PATCH')!;
+        expect(patch.body).toEqual({ everyMinutes: 60, onlyWhen: null, cadence: 'interval', rows: [{ kind: 'transactions' }, { kind: 'customMetric', params: { id: 'cm1' } }] });
+        expect(printed()[0]).toBe('Updated report "Wildcat pulse" (rep10).');
+        await expect(reportCommand(['update', 'Wildcat pulse'])).rejects.toThrow(/Nothing to change/);
+        await expect(reportCommand(['update', 'Wildcat pulse', '--remove-row', 'nope'])).rejects.toThrow(/has no row nope/);
+    });
+});
+
 describe('report preview / run / pause / resume / delete', () => {
     useEnvAuth();
 
@@ -336,22 +387,21 @@ describe('repeated flags and local time', () => {
 
 describe('report create / preview --each', () => {
     useEnvAuth();
-    const each = { metricId: 'cm1', metricName: 'Swap size (USD)', when: 'value >= 10000', message: '{name(sender())} swapped {value}' };
+    const each = { kind: 'metricRecord', subject: 'Swap size (USD)', metricId: 'cm1', metricName: 'Swap size (USD)', when: 'value >= 10000', message: '{name(sender())} swapped {value}', digestMinutes: null };
     const preview = { each: { days: 7, from: '2026-10-13T12:00:00Z', looked: 1689, matches: 203, samples: [{ time: '2026-10-14T12:44:23Z', text: 'alice.eth swapped $47,241', txUrl: 'https://x/tx' }] }, note: '' };
 
-    test('create --each posts the metric, condition and message, resolves --to, and prints how often it would have sent', async () => {
+    test('create --each posts the metric, condition and message, resolves --to, and previews nothing', async () => {
         const calls = mockApi({
             'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
             'POST /api/mainnet/reports': () => ({ payload: { report: report({ id: 'rep9', name: 'Large swaps', cadence: 'each', rows: [], each, channels: [channels[1]] }) } }),
-            'POST /api/mainnet/tools/preview_report': () => ({ payload: { ok: true, result: preview, ms: 5 } }),
         });
         await run(['report', 'create', '--each', '--name', 'Large swaps', '--metric', 'Swap size (USD)', '--when', 'value >= 10000', '--message', '{name(sender())} swapped {value}', '--to', '#alerts']);
         const post = calls.find((c) => c.method === 'POST' && c.path === '/api/mainnet/reports');
         expect(post?.body).toEqual({ name: 'Large swaps', cadence: 'each', metric: 'Swap size (USD)', when: 'value >= 10000', message: '{name(sender())} swapped {value}', channelIds: ['ch2'] });
         const out = printed();
         expect(out.some((l) => l.includes('each time "Swap size (USD)" has a record where value >= 10000'))).toBe(true);
-        expect(out.some((l) => l.includes('It would have sent 203 messages'))).toBe(true);
-        expect(out.some((l) => l.includes('alice.eth swapped $47,241'))).toBe(true);
+        expect(out.some((l) => l.includes('It sends on every new match from now'))).toBe(true);
+        expect(calls.some((c) => c.path === '/api/mainnet/tools/preview_report')).toBe(false);
     });
 
     test('preview --each asks the tool and needs every part', async () => {
@@ -359,5 +409,58 @@ describe('report create / preview --each', () => {
         await run(['report', 'preview', '--each', '--metric', 'Swap size (USD)', '--when', 'value >= 10000', '--message', 'x {value}']);
         expect(calls[0].body).toEqual({ input: { cadence: 'each', metric: 'Swap size (USD)', when: 'value >= 10000', message: 'x {value}' } });
         await expect(run(['report', 'preview', '--each', '--metric', 'Swap size (USD)'])).rejects.toThrow(/--each needs --when, --message/);
+    });
+});
+
+describe('report create --on-* / update on an each-time report', () => {
+    useEnvAuth();
+    const made = (body: Record<string, unknown>, each: Record<string, unknown>) => ({ payload: { report: report({ id: 'rep11', name: body.name, cadence: 'each', rows: [], each, channels: [] }) } });
+
+    test('--on-member posts a member trigger with its on word; --digest and --when ride along; the name comes from the subject', async () => {
+        const calls = mockApi({
+            'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
+            'POST /api/mainnet/reports': (c: any) => made(c.body, { kind: 'member', subject: 'a contract leaves Wildcat markets', metricId: null, metricName: null, when: '{what} == "left"', message: c.body.message, digestMinutes: 60 }),
+        });
+        await run(['report', 'create', '--on-member', 'Wildcat markets:left', '--message', '{name(contract)} left {group}', '--when', '{what} == "left"', '--digest', '1h']);
+        const post = calls.find((c) => c.method === 'POST' && c.path === '/api/mainnet/reports');
+        expect(post?.body).toEqual({ name: 'Each time: Wildcat markets', cadence: 'each', trigger: { kind: 'member', group: 'Wildcat markets', on: 'left' }, when: '{what} == "left"', message: '{name(contract)} left {group}', digestMinutes: 60, channelIds: [] });
+        const out = printed();
+        expect(out.some((l) => l.includes('each time a contract leaves Wildcat markets where {what} == "left"'))).toBe(true);
+        expect(out.some((l) => l.includes('digest:     one message every 1h'))).toBe(true);
+    });
+
+    test('--on-event carries the event and --value; --on-row and --on-monitor split their on word; --on-call keeps the method; one trigger at a time', async () => {
+        const calls = mockApi({
+            'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
+            'POST /api/mainnet/reports': (c: any) => made(c.body, { kind: 'metricRecord', subject: 'Swap fires', metricId: 'cm9', metricName: 'Swaps (report)', when: 'true', message: c.body.message, digestMinutes: null }),
+        });
+        await run(['report', 'create', '--on-event', 'Swap', '--value', 'usd(amount0, token0())', '--message', '{name(sender())} swapped {value}', '--name', 'Swaps']);
+        await run(['report', 'create', '--on-row', 'Loans:finished', '--message', 'Loan {id} repaid']);
+        await run(['report', 'create', '--on-monitor', 'any', '--message', '{monitor} {what}']);
+        await run(['report', 'create', '--on-call', 'transfer(address,uint256)', '--scope', 'tag:pools', '--message', '{name(caller)} called {method}']);
+        const posts = calls.filter((c) => c.method === 'POST' && c.path === '/api/mainnet/reports').map((c) => c.body);
+        expect(posts[0].trigger).toEqual({ kind: 'event', event: 'Swap', value: 'usd(amount0, token0())' });
+        expect(posts[1].trigger).toEqual({ kind: 'row', table: 'Loans', on: 'finished' });
+        expect(posts[2].trigger).toEqual({ kind: 'monitor', monitor: 'any' });
+        expect(posts[3].trigger).toEqual({ kind: 'call', method: 'transfer(address,uint256)' });
+        expect(posts[3].scope).toEqual({ kind: 'tag', tag: 'pools' });
+        await expect(run(['report', 'create', '--on-row', 'Loans', '--on-member', 'pools', '--message', 'x'])).rejects.toThrow(/Pass one trigger/);
+        await expect(run(['report', 'create', '--on-row', 'Loans'])).rejects.toThrow(/needs --message/);
+        await expect(run(['report', 'create', '--on-row', 'Loans', '--message', 'x', '--digest', '7m'])).rejects.toThrow(/--digest must be one of/);
+    });
+
+    test('update on an each-time report patches when, message, digest and on; a schedule flag is refused', async () => {
+        const existing = report({ id: 'rep11', name: 'Repaid loans', cadence: 'each', rows: [], each: { kind: 'row', subject: 'a row finishes in Loans', metricId: null, metricName: null, when: '', message: 'Loan {id} repaid', digestMinutes: null }, channels: [] });
+        const calls = mockApi({
+            ...listOf([existing]),
+            'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
+            'PATCH /api/mainnet/reports/rep11': (c: any) => ({ payload: { report: { ...existing, each: { ...(existing as any).each, when: c.body.when, message: c.body.message, digestMinutes: c.body.digestMinutes } } } }),
+        });
+        await run(['report', 'update', 'Repaid loans', '--when', '{Principal} > 1000', '--message', 'Loan {id} repaid: {Principal}', '--digest', '30m', '--on', 'both']);
+        const patch = calls.find((c) => c.method === 'PATCH')!;
+        expect(patch.body).toEqual({ when: '{Principal} > 1000', message: 'Loan {id} repaid: {Principal}', digestMinutes: 30, on: 'both' });
+        await run(['report', 'update', 'Repaid loans', '--no-digest']);
+        expect(calls.filter((c) => c.method === 'PATCH')[1].body).toEqual({ digestMinutes: null });
+        await expect(run(['report', 'update', 'Repaid loans', '--every', '1h'])).rejects.toThrow(/--every is for a scheduled report/);
     });
 });

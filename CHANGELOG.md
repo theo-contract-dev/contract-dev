@@ -1,5 +1,93 @@
 # Changelog
 
+## 1.9.0 — 2026-10-17
+
+### Removed — built-ins
+- `history --token "<field>=<token>"`: `--value "<formula>"` with `--read "<name>=<call>"` (read once per
+  contract) sizes each firing in the language of `events`, `usd(normalizedAmount, a)` with `--read "a=asset()"`, each
+  firing at its own day's price.
+- `largest`: `contract-dev events <contract> --event <Name> --sort "<formula>"` ranks events by any formula
+  (`max(usd(abs(amount0), t0), usd(abs(amount1), t1))` for a swap's bigger side), the tokens named in it.
+- `market`: a lending market's or vault's rates, utilisation, supplied and borrowed come from its own functions,
+  `contract-dev source <contract>` to see how it computes them, then `contract-dev read`.
+- `positions`: a contract's positions in lending markets and vaults are read from those protocols' own functions
+  with `contract-dev read`; `who --holdings` lists token holdings only.
+- `compare --by swaps|swapVolumeUsd|feesUsd|events`: event figures per contract are `contract-dev events --group <g>
+  --event <Name> --by contract` with `--sum "<formula>"` or `--count`. `compare` keeps transactions, activeWallets,
+  volumeInUsd, volumeOutUsd, tvlUsd and revertedShare.
+- `activity query --measure events` (and its `--event`, `--by event`): `contract-dev events --event <Name> --by
+  contract --by day --count`. `activity query` keeps transactions and wallets.
+- Each event `events` lists now says who made it: the wallet (the smart account when the transaction carried one),
+  the signer it came via when that differs, their names, and a searcher bot (Ethereum). A group by `sender` (or by a
+  parameter holding an address) carries the name.
+- `describe` shows each event field's token as checked against the contract's own transactions (`amount0 in USDC
+  (token0(), checked on 8 of 8 transactions)`), for the token to name in a formula or `--token`. Nothing is filled in
+  from it.
+- The alert flags: every alert is one `--when` formula, `--warn` its warning tier.
+  `monitor add <value>`: `--below <n>` is `--when "value < <n>"`, `--above <n>` is `--when "value > <n>"`,
+  `--below-metric <m>` is `--when "value < {<m>}"`, `--above-metric <m>` is `--when "value > {<m>}"`, `--warn <n>` is
+  `--warn "value < <n>"`, `--warn-pct 5` is `--warn "value < {<m>} * 1.05"`; `monitor set <id> --below <n>` is
+  `monitor set <id> --when "value < <n>"`.
+  `monitor add --on … --event …`: `--where "<field> at least <n>"` is `--when "<field> >= <n>"`, `--token
+  "<field>=<token>"` with it is `--when "amount(<field>, <token>) >= <n>"`, `--usd-above <n>` is `--when
+  "usd(abs(<field>), <token>) > <n>"`.
+  `group monitor add`: `--below <n>` is `--when "value < <n>"`, `--above-column <c>` is `--when "value > {<Column>}"`,
+  `--warn-pct 10` beside `--below 1000000` is `--warn "value < 1100000"`.
+  `metric monitor`: `--window 1h --above <n>` is `--when "total(1h) > <n>"`, `--rises 10` is `--when "total(1h) >
+  before(1h) * 1.1"`, `--falls 50` is `--when "total(1h) < before(1h) * 0.5"`, `--usual 3 --baseline-days 7` is
+  `--when "total(1h) > 3 * usual(1h, 7d)"`, `--above <n>` on an item or group metric is `--when "value > <n>"`.
+
+### Added — history in alert formulas
+- `ago(<duration>)` on a tracked value: `monitor add <value> --when "value < ago(24h) * 0.8"` (down more than 20% on a
+  day ago), a minute to 90 days back; no verdict until the value has been tracked that long. `previous`, its reading
+  before, stays.
+- `total(<window>)`, `before(<window>)` and `usual(<window>, <days>d)` on an event metric: `metric monitor <metric>
+  --when "total(1h) > before(1h) * 1.1"` (up more than 10% on the hour before), `--when "total(1h) > 3 * usual(1h,
+  7d)"` (over three times its usual hour across a week); a window is 5 minutes to 7 days.
+- `monitor set <id|name> --when "<formula>"` changes a tracked value's rule in the same formulas, keeping its value,
+  destinations and history; `--warn "<formula>"` sets its warning tier, `--no-warn` drops it.
+- An alert command refuses a flag it does not take, naming the ones it does.
+
+### Added — reports on their own terms
+- `report create --every 10m|1h|6h …`: a table every N minutes on the UTC clock, with `--window 24h|7d|30d|90d`,
+  `--snapshot` (the figures alone, no change column) and `--only-when "<expr>"` (sent only when a condition over
+  the rows by label holds: `{Breached markets} > 0`; a run it fails is kept as skipped). A row may read its own
+  window: `--row "transactions | 7d nocompare"`.
+- `report update <id|name> …`: the parts that change (`--name`, `--row`/`--add-row`/`--remove-row`, `--every`,
+  `--window`, `--snapshot | --compare`, `--only-when | --always`, `--at`, `--on`, `--tz`, `--scope`, `--to`); on an
+  each-time report `--when`, `--message`, `--digest | --no-digest`, `--on`.
+- Each-time reports listen for more than an event metric's records: `--on-event "Swap"` (an event on the scope's
+  contracts; the report keeps an event metric of its own for it, off the lists, deleted with it; `--value` says
+  what a record is worth), `--on-call "transfer(address,uint256)"` (a method called, with `--scope`), `--on-value
+  "<tracked value>"` (a reading, with `{prev}`), `--on-row "<table>[:opened|finished|both]"`, `--on-member
+  "<group>[:joined|left|both]"`, `--on-monitor "any|<monitor>[:fired|recovered|both]"` (information about
+  monitoring; never a monitor made for the report). `--when` is a condition over what happened, `--message` a
+  template over it (`{name(contract)} {what} {group}`), `--digest 30m|1h|1d` bundles the matches into one message.
+- A webhook destination gets every run as JSON (`report.table`, `report.message`), signed like an alert.
+- A `formula` row: the read grammar inside a report. `--row "formula:<Label>=<expr>; call <name>=<call>…; token <t>;
+  show usd"` resolves the calls on every contract in the scope (a view, `balance(self)`, `slot(self, <key>)`), works
+  out the expression, reads it at the end of the window and at its start for the change, and sums across the scope;
+  dollars through a stated token. Nothing has to be tracked first.
+
+## 1.8.0 — 2026-10-16
+
+### Added — one read grammar
+- Every computed value, wherever it lives, is now CALLS plus an EXPRESSION: `track formula`, a group's formula
+  column, a table's formula with its own calls, an event metric's reads. A call is a view (`totalAssets()`,
+  `getFee(address) with 0x…`), a coin balance (`balance(self)`, `balance(0x…)`), or one storage word
+  (`slot(self, 7)`; `slot(self, keccak(<key>, 3))` for a mapping entry). A view that returns an array answers a
+  list: `owners[1]`, `owners[indexOf(owners, x)]`, `len()`, `sum()`, `contains()`, at most 256 elements.
+- `group column add <group> --label … --call "<name>=<call>"… --formula "<expr>" [--type bool]`: a formula column,
+  the calls resolved on every member and the expression over them and the group's other columns (`{Held} -
+  {Required}`), one calculated value per member, so roll-ups (`metric group`) and per-member monitors work on it;
+  a yes/no column (`--formula "{Held} < {Required}"`) is counted by a count roll-up.
+- `table create|update … --formula "<Label>=<expr>; call <name>=<call>; …"`: a table formula with reads of its own
+  on each row (`id()` is the row's id), kept as hidden columns.
+- `track formula … --call "eth=balance(self)" --call "cap=slot(self, 7)"`, and dollars through a stated token:
+  `--value "usd(held, 0xa0b8…) - usd(debt, 0xa0b8…)"` (sampled every block, priced at the current price).
+- `metric define … --read "eth=balance(emitter())" --read "owed=slot(emitter(), keccak(sender(), 3))"`: coin
+  balances and storage words read exactly as of the event's transaction, like any read.
+
 ## 1.7.0 — 2026-10-13
 
 ### Added — event metrics
@@ -44,6 +132,9 @@
 
 ### Added — item tables and full history
 - Nothing is assumed to be a token amount any more. A table column, a group column or a roll-up is in a token only when it states one: `token <token>` (its 0x address, `self`, or a view each contract answers with it, like `asset()`); its decimals then scale it, and `show usd` puts it in dollars at the current price. `--sum "WithdrawalQueued.normalizedAmount:Requested token asset()"`, `--formula "Outstanding={Requested} - {Paid}; token asset(); show usd"`, `table update <table> --token "Requested=asset() show usd"` (empty after `=` clears it), `group column add … --token "asset()" --show usd`, `metric group … --token …`. Without a token a number is shown as the chain holds it; `decimals <n>` still scales a plain number. Formulas and rules can also price a token themselves: `price()`, `usd()`, `amount()`.
+- Monitors and tracked values too: a monitor's `--where` value or `--usd-above` line is in a token only through `--token "<field>=<token>"` (the token's 0x address, `self`, or a view like `token0()`), never through a field's name, and stablecoins are no longer counted as exactly a dollar. A tracked function call is never assumed to be a token amount, `balanceOf` included: `--decimals`, or `erc20-balance`.
+- `largest` and `history` too: `--token "<field>=<token>"` (repeat it; `<Event>.<field>=<token>` keeps one to an event) says what sizes each event, in place of `--field` and the old rules that sized a swap on its stablecoin side or an amount by its field's name. An event ranks on its largest stated field in USD, so a swap states both sides. `history` counts by the transaction's signer unless `--who` names an address field.
+- `factory` and `group rule add --factory` need `--event <Name> --field <arg>`: the event that announces a new contract and its address argument that is the new contract. They no longer pick one from the ABI's names, and `factory` no longer names the contracts it lists (`--watch` leaves naming to the group's `name-pattern`).
 - `table list | show <table> | create "<name>" | update <table>`: the things inside contracts (withdrawal rounds,
   loans, requests), one row per id over their whole life. `show` gives openings and closings per period, how long
   rows stay open, column totals and the biggest rows; `--item <id>` one row with its own events. `create` builds a

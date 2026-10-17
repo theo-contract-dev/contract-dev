@@ -1,5 +1,7 @@
 import { run } from '../../src/cli/index';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
+import { parseFlags } from '../../src/cli/commands/_args';
+import { columnsFrom } from '../../src/cli/commands/table';
 
 // The table and history commands send the tools their input and print the answer; each test pins the input and a few lines.
 const ok = (result: unknown) => ({ payload: { ok: true, result, ms: 7 } });
@@ -94,6 +96,17 @@ describe('table', () => {
     });
 });
 
+describe('the row id field, stated', () => {
+    it('--count and --sum take a trailing "on <field>": the event field that holds the row id', () => {
+        const flags = parseFlags(['--count', 'WithdrawalQueued:Queued on expiry', '--sum', 'WithdrawalQueued.normalizedAmount:Requested on expiry token asset() show usd', '--count', 'WithdrawalExecuted']);
+        expect(columnsFrom(flags)).toEqual([
+            { label: 'Queued', event: 'WithdrawalQueued', fold: 'count', on: 'expiry' },
+            { label: 'WithdrawalExecuted count', event: 'WithdrawalExecuted', fold: 'count' },
+            { label: 'Requested', event: 'WithdrawalQueued', field: 'normalizedAmount', fold: 'sum', on: 'expiry', token: 'asset()', show: 'usd' },
+        ]);
+    });
+});
+
 describe('history', () => {
     useEnvAuth();
 
@@ -102,15 +115,17 @@ describe('history', () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/event_history': () => {
                 n++;
-                return ok(n === 1 ? { complete: false, resume: true, from: '2026-02-11T00:00:00Z', total: 1708 } : { complete: true, from: '2023-12-19T23:13:59Z', total: 3512, byEvent: [{ event: 'WithdrawalQueued', fired: 3512, sized: 3512, usd: 851000000 }] });
+                return ok(n === 1 ? { complete: false, resume: true, from: '2026-02-11T00:00:00Z', total: 1708 } : { complete: true, from: '2023-12-19T23:13:59Z', total: 3512, byEvent: [{ event: 'WithdrawalQueued', fired: 3512, value: 851000000 }] });
             },
         });
-        await run(['history', '--group', 'Wildcat markets', '--event', 'WithdrawalQueued', '--by', 'week', '--tz', 'Australia/Sydney']);
+        await run(['history', '--group', 'Wildcat markets', '--event', 'WithdrawalQueued', '--by', 'week', '--tz', 'Australia/Sydney', '--who', 'account', '--read', 'a=asset()', '--value', 'usd(normalizedAmount, a)']);
         expect(calls).toHaveLength(2);
-        expect(calls[0].body).toEqual({ input: { events: ['WithdrawalQueued'], scope: { kind: 'group', group: 'Wildcat markets' }, by: 'week', timezone: 'Australia/Sydney' } });
+        expect(calls[0].body).toEqual({
+            input: { events: ['WithdrawalQueued'], scope: { kind: 'group', group: 'Wildcat markets' }, by: 'week', timezone: 'Australia/Sydney', who: 'account', reads: [{ name: 'a', call: 'asset()' }], value: 'usd(normalizedAmount, a)' },
+        });
         const out = printed();
         expect(out).toContain('Total: 3,512');
-        expect(out.some((l) => /^ {2}Event {2,}Fired {2,}Sized {2,}Usd$/.test(l))).toBe(true);
+        expect(out.some((l) => /^ {2}Event {2,}Fired {2,}Value$/.test(l))).toBe(true);
     });
 
     test('--once stops after one call, and a contract is the scope', async () => {
@@ -119,6 +134,7 @@ describe('history', () => {
         expect(calls).toHaveLength(1);
         expect(calls[0].body).toEqual({ input: { events: ['WithdrawalQueued', 'WithdrawalExecuted'], scope: { kind: 'contract', contract: '0x5ab22e9c360807f16dfa34ad5c589055d2871a5b' } } });
         await expect(run(['history', '--group', 'x'])).rejects.toThrow(/Name the events/);
+        await expect(run(['history', '--group', 'x', '--event', 'Deposit', '--read', 'asset()'])).rejects.toThrow(/name=/);
     });
 });
 

@@ -138,10 +138,13 @@ describe('group rule add', () => {
         expect(out.slice(6)).toEqual(['', 'Synced: 3 discovered · 3 tagged · 2 watched · 0 pending · 1 failed', `  failed ${POOL_B} — no code at this address`]);
     });
 
-    it('a factory rule without --chain sends none (the server reads ethereum); without --event the server guesses', async () => {
+    it('a factory rule without --chain sends none (the server reads ethereum); --event and --field are required', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/create_watch_rule': () => ok({ group: 'pools', rule: { id: 'r1', kind: 'factory', chainId: 1, address: FACTORY, event: 'PoolCreated', field: 'pool' }, namePattern: null, sample: [], sync: { discovered: 0, tagged: 0, watched: 0, pending: 0, failed: [] } }) });
-        await groupCommand(['rule', 'add', 'pools', '--factory', FACTORY]);
-        expect(calls[0].body).toEqual({ input: { group: 'pools', factory: FACTORY } });
+        await expect(groupCommand(['rule', 'add', 'pools', '--factory', FACTORY])).rejects.toThrow(/--factory needs --event <Name>/);
+        await expect(groupCommand(['rule', 'add', 'pools', '--factory', FACTORY, '--event', 'PoolCreated'])).rejects.toThrow(/--field <arg>/);
+        expect(calls).toHaveLength(0);
+        await groupCommand(['rule', 'add', 'pools', '--factory', FACTORY, '--event', 'PoolCreated', '--field', 'pool']);
+        expect(calls[0].body).toEqual({ input: { group: 'pools', factory: FACTORY, event: 'PoolCreated', field: 'pool' } });
         expect(printed()).toEqual(['Rule r1 added to pools.', `Factory ${FACTORY} on Ethereum · reads PoolCreated.pool`, '', 'Synced: 0 discovered · 0 tagged · 0 watched · 0 pending · 0 failed']);
     });
 
@@ -219,10 +222,37 @@ describe('group column add', () => {
         expect(printed()).toEqual(['Added column "Owner" (owner) to vaults · 3 contracts.', 'Column owner · Owner · reads owner() with 0xabc, 0xdef · raw · decimals 18']);
     });
 
+    it('a formula column sends its calls and formula, and prints the formula, its calls and a yes/no sample', async () => {
+        const calls = mockApi({
+            'POST /api/mainnet/tools/add_table_column': () =>
+                ok({
+                    preview: true,
+                    group: 'vaults',
+                    column: { key: 'breached', label: 'Breached', kind: 'formula', signature: '', expr: 'held - {Required} < 0', type: 'bool', unit: 'raw', calls: [{ name: 'held', kind: 'view', signature: 'totalAssets()', on: 'asset()', decimals: 18 }, { name: 'eth', kind: 'balance' }] },
+                    sample: [
+                        { address: POOL_A, name: 'Vault A', value: '1' },
+                        { address: POOL_B, name: 'Vault B', value: null, error: 'asset() answers no address on Vault B' },
+                    ],
+                    contracts: 3,
+                    note: null,
+                }),
+        });
+        await groupCommand(['column', 'add', 'vaults', '--label', 'Breached', '--call', 'held=totalAssets() on asset() decimals 18', '--call', 'eth=balance(self)', '--formula', 'held - {Required} < 0', '--type', 'bool', '--preview']);
+        expect(calls[0].body).toEqual({
+            input: { group: 'vaults', label: 'Breached', formula: 'held - {Required} < 0', calls: [{ name: 'held', call: 'totalAssets()', on: 'asset()', decimals: 18 }, { name: 'eth', call: 'balance(self)' }], type: 'bool', preview: true },
+        });
+        const out = printed();
+        expect(out.slice(0, 4)).toEqual(['Preview: nothing saved.', 'Column breached · Breached · formula held - {Required} < 0 · yes/no', '  held = totalAssets() on asset() decimals 18', '  eth = balance(self)']);
+        expect(out[5]).toBe('Readings (2)');
+        expect(out[7]).toMatch(new RegExp(`^ {2}Vault A {2,}${POOL_A} {2,}Yes`));
+        expect(out[8]).toMatch(/Vault B .*— {2,}asset\(\) answers no address on Vault B$/);
+    });
+
     it('refuses a missing label or read, an unknown unit or type, a word that is not a number', async () => {
         const calls = mockApi({});
         await expect(groupCommand(['column', 'add', 'vaults', '--read', 'totalAssets()'])).rejects.toThrow(/Missing required --label/);
-        await expect(groupCommand(['column', 'add', 'vaults', '--label', 'x'])).rejects.toThrow(/Missing required --read/);
+        await expect(groupCommand(['column', 'add', 'vaults', '--label', 'x'])).rejects.toThrow(/one read on every member .*or a formula/);
+        await expect(groupCommand(['column', 'add', 'vaults', '--label', 'x', '--read', 'f()', '--formula', 'a - b'])).rejects.toThrow(/not both/);
         await expect(groupCommand(['column', 'add', 'vaults', '--label', 'x', '--read', 'f()', '--unit', 'bananas'])).rejects.toThrow(/--unit must be one of usd, int, pct, duration, rate, raw/);
         await expect(groupCommand(['column', 'add', 'vaults', '--label', 'x', '--read', 'f()', '--type', 'bytes'])).rejects.toThrow(/--type must be one of address, uint, bool, string/);
         await expect(groupCommand(['column', 'add', 'vaults', '--label', 'x', '--read', 'f()', '--word', 'two'])).rejects.toThrow(/--word must be a number/);
@@ -233,28 +263,35 @@ describe('group column add', () => {
 describe('group monitor add', () => {
     useEnvAuth();
 
-    it('--below sends when and the threshold; prints the sentence and how many contracts it covers', async () => {
+    it('--when and --warn go as formulas; prints the sentence and how many contracts it covers', async () => {
         const words = 'Assets below $1.00M on any vault, warning 10% before';
         const calls = mockApi({ 'POST /api/mainnet/tools/add_group_monitor': () => ok({ group: 'vaults', monitor: { id: 'inv9', name: 'Vault draining', columnKey: 'assets', op: 'lt', threshold: 1_000_000, warnPct: 10, words, contracts: 3 }, contracts: 3 }) });
-        await run(['group', 'monitor', 'add', 'vaults', '--name', 'Vault draining', '--column', 'assets', '--below', '1000000', '--warn-pct', '10']);
-        expect(calls[0].body).toEqual({ input: { group: 'vaults', name: 'Vault draining', column: 'assets', when: 'below', threshold: 1_000_000, warnPct: 10 } });
+        await run(['group', 'monitor', 'add', 'vaults', '--name', 'Vault draining', '--column', 'assets', '--when', 'value < 1000000', '--warn', 'value < 1100000']);
+        expect(calls[0].body).toEqual({ input: { group: 'vaults', name: 'Vault draining', column: 'assets', when: 'value < 1000000', warn: 'value < 1100000' } });
         expect(printed()).toEqual(['Added monitor "Vault draining" (inv9) to vaults.', words, 'Covers 3 contracts.']);
     });
 
-    it('--above-column compares with another column; --preview saves nothing', async () => {
+    it('another column is named in braces; --preview saves nothing', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/add_group_monitor': () => ok({ preview: true, group: 'vaults', monitor: { name: 'Over cap', columnKey: 'util', op: 'gt', otherColumnKey: 'cap', words: 'Utilisation above Cap on any vault' }, contracts: 3 }) });
-        await groupCommand(['monitor', 'add', 'vaults', '--name', 'Over cap', '--column', 'util', '--above-column', 'cap', '--preview']);
-        expect(calls[0].body).toEqual({ input: { group: 'vaults', name: 'Over cap', column: 'util', when: 'above', otherColumn: 'cap', preview: true } });
+        await groupCommand(['monitor', 'add', 'vaults', '--name', 'Over cap', '--column', 'util', '--when', 'value > {Cap}', '--preview']);
+        expect(calls[0].body).toEqual({ input: { group: 'vaults', name: 'Over cap', column: 'util', when: 'value > {Cap}', preview: true } });
         expect(printed()).toEqual(['Preview: nothing saved.', 'Utilisation above Cap on any vault', 'Covers 3 contracts.']);
     });
 
-    it('wants exactly one line, as a number', async () => {
+    it('wants the line as a --when formula, a --warn formula, and only the flags it takes', async () => {
         const calls = mockApi({});
-        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets'])).rejects.toThrow(/Draw one line: --above <n>, --below <n>, --above-column <key> or --below-column <key>/);
-        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets', '--above', '1', '--below', '0'])).rejects.toThrow(/Draw one line/);
-        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets', '--above', 'lots'])).rejects.toThrow(/--above must be a number/);
-        await expect(groupCommand(['monitor', 'add', 'vaults', '--column', 'assets', '--above', '1'])).rejects.toThrow(/Missing required --name/);
+        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets'])).rejects.toThrow(/Draw the line with --when: --when "value < 1000000"/);
+        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets', '--when', 'value < 5', '--warn', '10'])).rejects.toThrow(/--warn is a formula/);
+        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets', '--below', '1000000'])).rejects.toThrow('Unknown flag --below for group monitor add. It takes --name, --column, --when, --warn, --preview.');
+        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets', '--when', 'value < 5', '--warn-pct', '10'])).rejects.toThrow(/^Unknown flag --warn-pct for group monitor add\./);
+        await expect(groupCommand(['monitor', 'add', 'vaults', '--column', 'assets', '--when', 'value < 1'])).rejects.toThrow(/Missing required --name/);
         expect(calls).toHaveLength(0);
+    });
+
+    it('--when sends one formula; the server judges it', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/add_group_monitor': () => ({ payload: { ok: true, result: { group: 'vaults', monitor: { id: 'g1', name: 'x', words: 'x: assets below 1000000' }, contracts: 3 }, ms: 40 } }) });
+        await groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets', '--when', 'value < 1000000']);
+        expect(calls[0].body.input).toEqual({ group: 'vaults', name: 'x', column: 'assets', when: 'value < 1000000' });
     });
 });
 
@@ -265,7 +302,7 @@ describe('factory', () => {
         factory: FACTORY,
         chainId: 1,
         events: ['PoolCreated', 'OwnerChanged'],
-        used: [{ event: 'PoolCreated', field: 'pool', by: 'heuristic' }],
+        used: [{ event: 'PoolCreated', field: 'pool' }],
         candidates: [
             { event: 'PoolCreated', addressArgs: ['token0', 'token1', 'pool'] },
             { event: 'OwnerChanged', addressArgs: ['oldOwner', 'newOwner'] },
@@ -278,53 +315,54 @@ describe('factory', () => {
         watched: 1,
         notWatched: 2,
         newest: [
-            { address: POOL_A, name: 'USDC/WETH 0.05%', at: '2026-10-12', watched: true },
-            { address: POOL_B, name: 'WBTC/WETH 0.3%', at: '2026-10-11', watched: false },
-            { address: POOL_C, name: null, at: null, watched: false },
+            { address: POOL_A, at: '2026-10-12', watched: true },
+            { address: POOL_B, at: '2026-10-11', watched: false },
+            { address: POOL_C, at: null, watched: false },
         ],
         notWatchedAddresses: [POOL_B, POOL_C],
         ...over,
     });
 
-    it('without --event: says what it guessed, the totals and how far it read, the newest, then the other events so a person can pick', async () => {
+    it('says what it read, the totals and how far it read, then the newest, with no invented names', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/factory_contracts': () => ok(deployed()) });
-        const result = await run(['factory', FACTORY, '--limit', '50']);
-        expect(calls[0].body).toEqual({ input: { factory: FACTORY, limit: 50 } });
+        const result = await run(['factory', FACTORY, '--event', 'PoolCreated', '--field', 'pool', '--limit', '50']);
+        expect(calls[0].body).toEqual({ input: { factory: FACTORY, limit: 50, event: 'PoolCreated', field: 'pool' } });
         const out = printed();
-        expect(out[0]).toBe('Read PoolCreated.pool (guessed)');
+        expect(out[0]).toBe('Read PoolCreated.pool');
         expect(out[1]).toBe('3 contracts · 1 watched · 2 not watched · the newest, back to 2026-09-01; older ones not read');
         expect(out[2]).toBe('');
-        expect(out[3]).toMatch(/^Name {2,}Address {2,}Deployed {2,}Watched$/);
-        expect(out[4]).toMatch(new RegExp(`^USDC/WETH 0\\.05% {2,}${POOL_A} {2,}2026-10-12 {2,}yes$`));
-        expect(out[5]).toMatch(new RegExp(`^WBTC/WETH 0\\.3% {2,}${POOL_B} {2,}2026-10-11 {2,}no$`));
-        expect(out[6]).toMatch(new RegExp(`^— {2,}${POOL_C} {2,}— {2,}no$`));
-        expect(out[7]).toBe('');
-        expect(out[8]).toBe('Guessed from the ABI. Events with an address argument: PoolCreated(token0, token1, pool), OwnerChanged(oldOwner, newOwner) — pass --event <Name> --field <arg> to pick.');
-        expect(out).toHaveLength(9);
+        expect(out[3]).toMatch(/^Address {2,}Deployed {2,}Watched$/);
+        expect(out[4]).toMatch(new RegExp(`^${POOL_A} {2,}2026-10-12 {2,}yes$`));
+        expect(out[5]).toMatch(new RegExp(`^${POOL_B} {2,}2026-10-11 {2,}no$`));
+        expect(out[6]).toMatch(new RegExp(`^${POOL_C} {2,}— {2,}no$`));
+        expect(out).toHaveLength(7);
         expect(result).toEqual(deployed());
     });
 
-    it('with --event and --field: your pick, no candidates line; a complete read over a window says since when', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/factory_contracts': () => ok(deployed({ used: [{ event: 'PoolCreated', field: 'pool', by: 'pick' }], complete: true, readBackTo: null, source: 'window', since: '2026-09-13' })) });
+    it('nothing is picked from names: without --event and --field it refuses before calling; a complete read over a window says since when', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/factory_contracts': () => ok(deployed({ complete: true, readBackTo: null, source: 'window', since: '2026-09-13' })) });
+        await expect(factoryCommand([FACTORY])).rejects.toThrow(/--event <Name> --field <arg>/);
+        await expect(factoryCommand([FACTORY, '--event', 'PoolCreated'])).rejects.toThrow(/--event <Name> --field <arg>/);
+        expect(calls).toHaveLength(0);
         await factoryCommand([FACTORY, '--chain', 'ethereum', '--event', 'PoolCreated', '--field', 'pool']);
         expect(calls[0].body).toEqual({ input: { factory: FACTORY, chainId: 1, event: 'PoolCreated', field: 'pool' } });
         const out = printed();
-        expect(out[0]).toBe('Read PoolCreated.pool (your pick)');
+        expect(out[0]).toBe('Read PoolCreated.pool');
         expect(out[1]).toBe('3 contracts · 1 watched · 2 not watched · the whole history · since 2026-09-13');
         expect(out).toHaveLength(7);
     });
 
-    it('--watch --group watches the ones not watched, with the names the answer knows in the same order, and prints the tally', async () => {
+    it('--watch --group watches the ones not watched, with no names (the group\'s name pattern names them), and prints the tally', async () => {
         const watched = { added: 1, alreadyWatched: 0, skipped: [{ address: POOL_C, reason: 'no code at this address' }], failed: [], group: 'pools', chainId: 1 };
         const calls = mockApi({
             'POST /api/mainnet/tools/factory_contracts': () => ok(deployed()),
             'POST /api/mainnet/tools/watch_contracts': () => ok(watched),
         });
-        const result = await run(['factory', FACTORY, '--watch', '--group', 'pools']);
+        const result = await run(['factory', FACTORY, '--event', 'PoolCreated', '--field', 'pool', '--watch', '--group', 'pools']);
         expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tools/factory_contracts', '/api/mainnet/tools/watch_contracts']);
-        expect(calls[1].body).toEqual({ input: { lookupNames: false, chainId: 1, addresses: [POOL_B, POOL_C], names: ['WBTC/WETH 0.3%', ''], group: 'pools' } });
+        expect(calls[1].body).toEqual({ input: { lookupNames: false, chainId: 1, addresses: [POOL_B, POOL_C], group: 'pools' } });
         const out = printed();
-        expect(out.slice(9)).toEqual(['', 'Watched 1 · already watched 0 · skipped 1 (not a contract) · failed 0', `  skipped ${POOL_C} — no code at this address`]);
+        expect(out.slice(7)).toEqual(['', 'Watched 1 · already watched 0 · skipped 1 (not a contract) · failed 0', `  skipped ${POOL_C} — no code at this address`]);
         expect(result).toEqual({ ...deployed(), watch: watched });
     });
 
@@ -334,7 +372,7 @@ describe('factory', () => {
             'POST /api/mainnet/tools/factory_contracts': () => ok(deployed({ total: 31, notWatched: 30, notWatchedAddresses: many, notWatchedMore: 10 })),
             'POST /api/mainnet/tools/watch_contracts': () => ok({ added: 30, alreadyWatched: 0, skipped: [], failed: [], group: 'pools', chainId: 1 }),
         });
-        const result: any = await factoryCommand([FACTORY, '--watch', '--group', 'pools']);
+        const result: any = await factoryCommand([FACTORY, '--event', 'PoolCreated', '--field', 'pool', '--watch', '--group', 'pools']);
         expect(calls).toHaveLength(2);
         expect(calls[1].body.input).toMatchObject({ chainId: 1, group: 'pools', confirmMany: true });
         expect(calls[1].body.input.addresses).toHaveLength(30);
@@ -344,7 +382,7 @@ describe('factory', () => {
 
     it('nothing to watch says so and makes no second call', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/factory_contracts': () => ok(deployed({ notWatched: 0, notWatchedAddresses: [] })) });
-        await factoryCommand([FACTORY, '--watch', '--group', 'pools']);
+        await factoryCommand([FACTORY, '--event', 'PoolCreated', '--field', 'pool', '--watch', '--group', 'pools']);
         expect(calls).toHaveLength(1);
         expect(printed().at(-1)).toBe('Every contract it deployed is watched already.');
     });

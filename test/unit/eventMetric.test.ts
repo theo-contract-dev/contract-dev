@@ -55,3 +55,24 @@ describe('metric monitor without a destination', () => {
         expect(calls[0].body.input).toEqual({ metric: 'Swap fees', name: 'Large swap fee', when: 'value > 5000' });
     });
 });
+
+describe('metric monitor: one formula', () => {
+    useEnvAuth();
+    const made = () => ({ payload: { ok: true, result: { monitor: { id: 'mm2', name: 'x' } }, ms: 3 } });
+
+    it('a window against its own past is --when, sent as {metric, name, when}; --per, --level, --to and --preview ride along', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/add_metric_monitor': made });
+        await run(['metric', 'monitor', 'Swap fees', '--name', 'Fees jump', '--when', 'total(1h) > before(1h) * 1.1']);
+        expect(calls[0].body.input).toEqual({ metric: 'Swap fees', name: 'Fees jump', when: 'total(1h) > before(1h) * 1.1' });
+        await run(['metric', 'monitor', 'Swap fees', '--name', 'Busy pool', '--when', 'total(1h) > 3 * usual(1h, 7d)', '--per', 'each', '--level', 'warning', '--to', '#alerts', '--preview']);
+        expect(calls[1].body.input).toEqual({ metric: 'Swap fees', name: 'Busy pool', when: 'total(1h) > 3 * usual(1h, 7d)', per: 'each', level: 'warning', to: ['#alerts'], preview: true });
+    });
+
+    it('refuses no --when, and a flag it does not take, before calling', async () => {
+        const calls = mockApi({});
+        await expect(run(['metric', 'monitor', 'Swap fees', '--name', 'x'])).rejects.toThrow(/--when says when it alerts/);
+        await expect(run(['metric', 'monitor', 'Swap fees', '--name', 'x', '--window', '1h', '--above', '5'])).rejects.toThrow('Unknown flag --window for metric monitor. It takes --name, --when, --per, --level, --to, --preview.');
+        await expect(run(['metric', 'monitor', 'Swap fees', '--name', 'x', '--when', 'total(1h) > 5', '--baseline-days', '7'])).rejects.toThrow(/^Unknown flag --baseline-days for metric monitor\./);
+        expect(calls).toHaveLength(0);
+    });
+});

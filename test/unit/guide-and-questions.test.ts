@@ -71,14 +71,6 @@ describe('the server guide in the skill', () => {
 describe('question shortcuts', () => {
     useEnvAuth();
 
-    it('largest: events, scope, window and limit go to largest_events; the answer prints', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/largest_events': () => ok({ window: '24h', rows: [{ name: 'stETH', amountUsd: 12000000, who: '0xabc' }] }) });
-        await run(['largest', 'Deposit,Withdrawal', '--group', 'Lido', '--window', '24h', '--limit', '5']);
-        expect(calls[0].body).toEqual({ input: { events: ['Deposit', 'Withdrawal'], scope: { kind: 'group', group: 'Lido' }, window: '24h', limit: 5 } });
-        expect(printed().join('\n')).toContain('stETH');
-        await expect(run(['largest', 'Deposit', '--window', '2d'])).rejects.toThrow(/--window must be one of 1h, 24h/);
-    });
-
     it('who: an address, ENS or name; --activity and --holdings pick the tool', async () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/describe_address': () => ok({ who: 'Wintermute' }),
@@ -96,13 +88,6 @@ describe('question shortcuts', () => {
         await expect(run(['who', 'x', '--activity', '--holdings'])).rejects.toThrow(/Pick one/);
     });
 
-    it('market: a contract or a group, with an asset', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/market_state': () => ok({ markets: [] }) });
-        await run(['market', 'Aave v3 Core pool', '--asset', 'USDC']);
-        await run(['market', '--group', 'Wildcat markets']);
-        expect(calls.map((c) => c.body.input)).toEqual([{ scope: { kind: 'contract', contract: 'Aave v3 Core pool' }, asset: 'USDC' }, { scope: { kind: 'group', group: 'Wildcat markets' } }]);
-    });
-
     it('read: one call with its arguments and scale, now or at a past time', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/read_contract': () => ok({ results: [{ value: 7250.3 }] }) });
         await run(['read', 'Withdrawal Queue', 'unfinalizedStETH', '--decimals', '18', '--at', '2026-10-01']);
@@ -114,9 +99,9 @@ describe('question shortcuts', () => {
         await expect(run(['read', 'stETH'])).rejects.toThrow(/Say what to read/);
     });
 
-    it('compare takes the pool measures and the past hour', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/compare_activity': () => ok({ scope: 'pools', window: '1h', by: 'swapVolumeUsd', event: null, unit: 'usd', rows: [] }) });
-        await run(['compare', '--group', 'pools', '--by', 'swapVolumeUsd', '--window', '1h']);
-        expect(calls[0].body.input).toMatchObject({ by: 'swapVolumeUsd', window: '1h' });
+    it('compare takes the past hour', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/compare_activity': () => ok({ scope: 'pools', window: '1h', by: 'activeWallets', unit: 'count', rows: [] }) });
+        await run(['compare', '--group', 'pools', '--by', 'activeWallets', '--window', '1h']);
+        expect(calls[0].body.input).toMatchObject({ by: 'activeWallets', window: '1h' });
     });
 });

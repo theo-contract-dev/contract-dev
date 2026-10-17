@@ -1,28 +1,20 @@
-import { parseFlags, flag, flagAll, requirePositional, type ParsedFlags } from './_args';
+import { parseFlags, flag, flagAll, onlyFlags, requirePositional, type ParsedFlags } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { runTool } from '../tools';
-import { resolveMetric, formatValue, shortHex, TrackedMetric } from './metrics';
+import { formatValue, shortHex, TrackedMetric } from './metrics';
 import { parseChainId } from './watch';
 import { chainFlag, limitFlag, parseRange } from '../data';
 import { DASH, chainLabel, fmtAge, fmtInt, fmtTime, plural, shortAddr, sparkline, table } from '../view';
 import { fmtSpan } from './oracles';
-import {
-  buildBoundExpr,
-  buildCompareExpr,
-  buildWarnCompareExpr,
-  DIRECTION_OP,
-  parseUntil,
-  toAlias,
-  type CmpOp,
-  type InvariantExpr,
-} from '../monitor-expr';
+import { parseUntil, type InvariantExpr } from '../monitor-expr';
 
-const HELP = `contract-dev monitor — alert when a tracked metric crosses a line, an event is emitted, or a contract goes quiet
+const HELP = `contract-dev monitor — alert when a tracked value crosses a line, an event is emitted, or a contract goes quiet
 
 Usage:
   contract-dev monitors                                   List monitors (status, rule, open incident)
-  contract-dev monitor add <metric> <rule> --to <dest,…> [--warn …] [--name "…"] [--max-age <sec>]
-  contract-dev monitor compile --on <contract> --event <Name> [--where "<field> <op> <value>"]… [--to <dest>]… [--name "…"]
+  contract-dev monitor add <value> --when "<formula>" [--warn "<formula>"] [--to <dest,…>] [--name "…"] [--max-age <sec>]
+                                                          A monitor on a tracked value
+  contract-dev monitor compile --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]… [--name "…"]
   contract-dev monitor compile --on <contract> --silence [--method <name> | --event <Name>] [--for 24h] [--to <dest>]…
                                                           What the monitor would say, and how often it would have fired in
                                                           the last 7 days; saved nowhere
@@ -30,7 +22,8 @@ Usage:
   contract-dev monitor show <id|name> [--range]           Rule, inputs, destinations, recent episodes; a silence monitor's
                                                           sightings, how long it has been quiet, and the quiet stretches
   contract-dev monitor sightings <id|name> [--range] [--limit]   Every sighting a silence monitor counts, newest first
-  contract-dev monitor set <id|name> [<rule>] [--warn …|--no-warn] [--to <dest,…>] [--max-age <sec>|--no-max-age]
+  contract-dev monitor set <id|name> [--when "<formula>"] [--warn "<formula>" | --no-warn] [--to <dest,…>]
+                              [--max-age <sec> | --no-max-age] [--name "…"]
   contract-dev monitor rename <id|name> "<name>"
   contract-dev monitor pause <id|name> / resume <id|name>
   contract-dev monitor snooze <id|name> <30m|2h|1d|iso>   Mute pages until then (still evaluates)
@@ -40,24 +33,27 @@ Usage:
   contract-dev monitor include <default> <address> [--chain <id>]   Put it back
   contract-dev channels                                   Alert destinations — what --to accepts
 
-Rules (exactly one):
-  --below <n>              Alert when the metric falls below n         (metric >= n)
-  --above <n>              Alert when the metric rises above n         (metric <= n)
-  --below-metric <metric>  Alert when it falls below another metric   (a >= b)
-  --above-metric <metric>  Alert when it rises above another metric   (a <= b)
-
-Warning tier (optional, on the healthy side of the alert):
-  --warn <n>               A number, for --below / --above
-  --warn-pct <p>           A margin in percent, for --below-metric / --above-metric
+A tracked value's rule, one formula in the language of metrics and tables, naming the value as value:
+  --when "value < 25000"                   below a line (> for above)
+  --when "value > {Vault reserves} * 1.05" against another tracked value, by its label in braces
+  --when "value < previous * 0.99"         against its own reading before: never falls more than 1% in a step
+  --when "value < ago(24h) * 0.8"          against itself a while ago (a minute to 90 days): down more than 20%
+                                           on a day ago; no verdict until it has been tracked that long
+  --warn "<formula>"       A warning tier: the same comparison nearer the healthy side, --warn "value < 30000"
+                           beside --when "value < 25000"
+  monitor set --when replaces the rule, and its warning unless --warn gives one; --warn alone sets the warning
+  on the rule it has; --no-warn drops it. The monitor keeps its value, destinations and history.
 
 Destinations:
   --to <dest,…>            Channel ids, labels ("#alerts") or kinds (telegram) from \`contract-dev channels\`.
                            Optional: without one the monitor records alerts on its page until a destination
                            is linked in the app.
 
-<metric> is a tracked metric's id or label (\`contract-dev metrics\`). Examples:
-  contract-dev monitor add "Treasury · Native balance" --below 25000 --warn 30000 --to telegram
-  contract-dev monitor add vault_reserves --below-metric vault_liabilities --warn-pct 5 --to "#alerts"
+<value> is a tracked value's id or label (\`contract-dev metrics\`). Examples:
+  contract-dev monitor add "Treasury · Native balance" --when "value < 25000" --warn "value < 30000" --to telegram
+  contract-dev monitor add "Vault liabilities" --when "value > {Vault reserves}" --warn "value > {Vault reserves} * 0.95" --to "#alerts"
+  contract-dev monitor add "stETH share rate" --when "value < previous"
+  contract-dev monitor set "Treasury · Native balance" --when "value < ago(24h) * 0.8"
 
 From a sentence (an event monitor, or a silence monitor):
   --on <contract>          The watched contract, by address or name; --chain picks between chains
@@ -65,17 +61,12 @@ From a sentence (an event monitor, or a silence monitor):
                            (every upgrade, every pause).
   --event <Name>           Alert when the event is emitted (with --silence: when it stops being emitted). Repeat
                            for several events in one go: --event Upgraded --event Paused --event AdminChanged
-  --usd-above <n>          Alert when the event is worth more than n dollars at today's price, on the fields whose
-                           token --token states (each in its own token, both directions), turned into token
-                           amounts once
-  --where "<field> <op> <value>"
-                           A condition on the event's fields; repeat for more. In base units, or in the field's
-                           token when --token states it ("12,500" on a field stated as USDC; never dollars).
-                           Ops: is, is not, above, at least, below, at most (or =, !=, >, >=, <, <=)
-  --token "<field>=<token>"
-                           The token a numeric field is an amount of: its 0x address, self (the contract
-                           itself), or a view the contract answers with it, like token0() or asset(); repeat
-                           for more. Nothing is assumed from a field's name: without it a field is in base units
+  --when "<formula>"       When it alerts, one formula in the language of metrics and tables: comparisons of the
+                           event's fields joined by and (amount0 > 0, to != 0x…), one field's values joined by or
+                           (to == 0xA or to == 0xB); a token amount as amount(field, token) >= 50 and a dollar line
+                           as usd(abs(field), token) > 1000000 (turned into the token at today's price, once), the
+                           token a 0x address, emitter() for the contract itself, or a view like token0(). A field
+                           compared without amount() or usd() is in base units. Without --when every emission alerts
   --silence                Alert when the contract goes quiet: no call for --for; with --method, no call to that
                            method; with --event, no emission of it
   --method <name>          The method whose silence matters (silence only)
@@ -83,10 +74,10 @@ From a sentence (an event monitor, or a silence monitor):
   --name "<text>"          The monitor's name (one is made from the event or method otherwise)
   --to <dest>              Destinations by id, label or kind; repeat or comma-separate. Optional here: without
                            one the monitor records alerts on its page and pages nobody.
-add saves at once and replays nothing: set a --where value in the field's own unit (\`describe\` shows
-each field's unit), and remove a monitor that turns out noisy with \`monitor delete\`. compile previews
-the same flags with a 7-day replay of how often it would have fired; it is slow on busy contracts.
-  contract-dev monitor add --on steth --event Transfer --where "value at least 1000 stETH" --to "#alerts"
+add saves at once and replays nothing; a monitor that turns out noisy is removed with \`monitor delete\`.
+compile previews the same flags with a 7-day replay of how often it would have fired; it is slow on busy contracts.
+  contract-dev monitor add --on steth --event Transfer --when "amount(value, emitter()) >= 1000" --to "#alerts"
+  contract-dev monitor add --on pool --event Swap --when "usd(abs(amount0), token0()) > 1000000" --name "Big swaps"
   contract-dev monitor compile --on steth --silence --method submit --for 6h
 
 Default monitors — control-change, dependency-failure, revert-spike — take pause / resume /
@@ -327,63 +318,6 @@ export async function resolveMonitor(auth: ResolvedAuth, ref: string): Promise<I
   throw new Error(`No monitor matches "${ref}" (run \`contract-dev monitors\` to list them).`);
 }
 
-type Rule =
-  | { kind: 'bound'; direction: 'below' | 'above'; threshold: string }
-  | { kind: 'compare'; direction: 'below' | 'above'; rhsRef: string };
-
-function parseRule(flags: ReturnType<typeof parseFlags>): Rule | null {
-  const picks = (['below', 'above', 'below-metric', 'above-metric'] as const).filter((k) => flag(flags, k) !== undefined);
-  if (picks.length === 0) return null;
-  if (picks.length > 1) throw new Error(`Pick one rule, not ${picks.map((p) => `--${p}`).join(' and ')}`);
-  const pick = picks[0];
-  const value = flag(flags, pick)!;
-  if (value === 'true') throw new Error(`--${pick} needs a value`);
-  if (pick === 'below' || pick === 'above') return { kind: 'bound', direction: pick, threshold: value };
-  return { kind: 'compare', direction: pick === 'below-metric' ? 'below' : 'above', rhsRef: value };
-}
-
-interface Tiers {
-  exprAst: InvariantExpr;
-  warnExprAst: InvariantExpr | null;
-  inputs: Array<{ alias: string; trackedOnchainValueId: string }>;
-  rhs: TrackedMetric | null;
-}
-
-// Both tiers + bindings from a rule, the way the composer builds them: the subject is the
-// left side, aliases come from labels, and a warning sits on the healthy side of the alert.
-async function buildTiers(auth: ResolvedAuth, subject: TrackedMetric, rule: Rule, flags: ReturnType<typeof parseFlags>): Promise<Tiers> {
-  const op: CmpOp = DIRECTION_OP[rule.direction];
-  const alias = toAlias(metricName(subject));
-  const warn = flag(flags, 'warn');
-  const warnPct = flag(flags, 'warn-pct');
-  if (warn !== undefined && warnPct !== undefined) throw new Error('Pass either --warn or --warn-pct, not both');
-
-  if (rule.kind === 'bound') {
-    if (warnPct !== undefined) throw new Error('--warn-pct is for --below-metric / --above-metric; use --warn <n> with a number threshold');
-    return {
-      exprAst: buildBoundExpr(alias, op, rule.threshold),
-      warnExprAst: warn !== undefined ? buildBoundExpr(alias, op, warn) : null,
-      inputs: [{ alias, trackedOnchainValueId: subject.id }],
-      rhs: null,
-    };
-  }
-
-  const rhs = await resolveMetric(auth, rule.rhsRef);
-  if (rhs.id === subject.id) throw new Error('A metric cannot be compared against itself');
-  if (warn !== undefined) throw new Error('--warn is for number thresholds; use --warn-pct <p> when comparing two metrics');
-  const rhsBase = toAlias(metricName(rhs));
-  const rhsAlias = rhsBase === alias ? `${rhsBase.slice(0, 38)}_b` : rhsBase;
-  return {
-    exprAst: buildCompareExpr(alias, op, rhsAlias),
-    warnExprAst: warnPct !== undefined ? buildWarnCompareExpr(alias, op, rhsAlias, warnPct) : null,
-    inputs: [
-      { alias, trackedOnchainValueId: subject.id },
-      { alias: rhsAlias, trackedOnchainValueId: rhs.id },
-    ],
-    rhs,
-  };
-}
-
 function parseMaxAge(flags: ReturnType<typeof parseFlags>): number | undefined {
   const raw = flag(flags, 'max-age');
   if (raw === undefined) return undefined;
@@ -400,7 +334,7 @@ export async function monitorsCommand(args: string[] = []): Promise<Invariant[] 
   const auth = requireAuth();
   const { invariants } = await apiRequest<{ invariants: Invariant[] }>(auth, 'GET', '/api/mainnet/invariants');
   if (!invariants?.length) {
-    console.log('No monitors. Create one with `contract-dev monitor add <metric> --below <n> --to <dest>`.');
+    console.log('No monitors. Create one with `contract-dev monitor add <value> --when "value < 25000" --to <dest>`.');
     return [];
   }
   for (const m of invariants) {
@@ -457,78 +391,65 @@ export async function monitorCommand(args: string[]): Promise<unknown> {
   }
 }
 
+/** The flags a monitor on a tracked value takes, and the ones `monitor set` takes. */
+const VALUE_FLAGS = ['when', 'warn', 'to', 'name', 'max-age'] as const;
+const SET_FLAGS = ['when', 'warn', 'no-warn', 'to', 'max-age', 'no-max-age', 'name'] as const;
+/** The flags an event or silence monitor takes (add and compile). */
+const INTENT_FLAGS = ['on', 'group', 'chain', 'event', 'silence', 'method', 'for', 'when', 'name', 'to', 'yes'] as const;
+
+/** A --when / --warn formula as given; a bare number is refused, as it says nothing about which way. */
+function formulaFlag(flags: ParsedFlags, key: 'when' | 'warn', example: string): string | undefined {
+  const v = flag(flags, key);
+  if (v === undefined) return undefined;
+  if (v === 'true' || !v.trim()) throw new Error(`--${key} needs the formula: --${key} "${example}".`);
+  if (/^-?[\d.,]+$/.test(v.trim())) throw new Error(`--${key} is a formula: --${key} "value < ${v.trim().replace(/,/g, '')}".`);
+  return v;
+}
+
+interface ValueMonitorResult {
+  monitor: { id: string; name: string; rule: string | null; warn?: string };
+}
+
 async function addMonitor(args: string[]): Promise<unknown> {
   const flags = parseFlags(args);
   // --on / --event / --silence: a monitor from a sentence, compiled and saved by the server.
   if (isIntentForm(flags)) return await addMonitorFromIntent(flags);
-  const ref = requirePositional(flags._ as string[], 0, 'metric (id or label)');
-  const rule = parseRule(flags);
-  if (!rule) throw new Error('A monitor needs a rule: --below <n>, --above <n>, --below-metric <metric> or --above-metric <metric>');
+  onlyFlags(flags, 'monitor add', VALUE_FLAGS);
+  const ref = requirePositional(flags._ as string[], 0, 'tracked value (id or label)');
+  // one formula in the shared grammar, judged by the server (add_value_monitor)
+  const when = formulaFlag(flags, 'when', 'value < 25000');
+  if (when === undefined) throw new Error('A monitor needs its rule: --when "value < 25000" (or value > {Other value} * 1.05, value < previous * 0.99, value < ago(24h) * 0.8).');
+  const input: Record<string, unknown> = { value: ref, when };
+  const warn = formulaFlag(flags, 'warn', 'value < 30000');
+  if (warn !== undefined) input.warn = warn;
+  const name = flag(flags, 'name');
+  if (name && name !== 'true') input.name = name;
   const toRaw = flag(flags, 'to');
   if (toRaw === 'true') throw new Error('--to needs a destination (see `contract-dev channels`).');
-
-  const auth = requireAuth();
-  const subject = await resolveMetric(auth, ref);
-  const tiers = await buildTiers(auth, subject, rule, flags);
-  // no destination is fine: the monitor records alerts on its page until one is linked
-  const channelIds = toRaw ? resolveChannelIds(await listChannels(auth), toRaw.split(',')) : [];
-  const maxInputAgeSec = parseMaxAge(flags);
-
-  const subjectLabel = metricName(subject);
-  const defaultName = tiers.rhs ? `${subjectLabel} vs ${metricName(tiers.rhs)}` : subjectLabel;
-  const name = (flag(flags, 'name') ?? '').trim() || defaultName;
-
-  const { invariant } = await apiRequest<{ invariant: Invariant }>(auth, 'POST', '/api/mainnet/invariants', {
-    name,
-    exprAst: tiers.exprAst,
-    warnExprAst: tiers.warnExprAst,
-    inputs: tiers.inputs,
-    notifyAll: false,
-    channelIds,
-    ...(maxInputAgeSec !== undefined ? { maxInputAgeSec } : {}),
-  });
-  console.log(`Created monitor "${invariant.name}" (${invariant.id}): ${invariant.exprText}${invariant.warnExprText ? `, warn at ${invariant.warnExprText}` : ''}`);
+  if (toRaw) input.to = toRaw.split(',').map((x) => x.trim()).filter(Boolean);
+  const maxAge = parseMaxAge(flags);
+  if (maxAge !== undefined) input.maxAgeSec = maxAge;
+  const r = await runTool<ValueMonitorResult>(requireAuth(), 'add_value_monitor', input);
+  console.log(`Created monitor "${r.monitor.name}" (${r.monitor.id}): ${r.monitor.rule ?? when}${r.monitor.warn ? `, warn at ${r.monitor.warn}` : ''}`);
   console.log('First verdict on the next reading.');
-  return invariant;
+  return r;
 }
 
-async function setMonitor(args: string[]): Promise<Invariant> {
+async function setMonitor(args: string[]): Promise<Invariant | ValueMonitorResult> {
   const flags = parseFlags(args);
+  onlyFlags(flags, 'monitor set', SET_FLAGS);
   const ref = requirePositional(flags._ as string[], 0, 'monitor (id or name)');
   const auth = requireAuth();
   const existing = await resolveMonitor(auth, ref);
-  const body: Record<string, unknown> = {};
 
-  const rule = parseRule(flags);
+  // the rule and its warning: formulas, rebuilt by the server on the value the monitor watches
+  const when = formulaFlag(flags, 'when', 'value < 25000');
+  const warn = formulaFlag(flags, 'warn', 'value < 30000');
   const noWarn = flag(flags, 'no-warn') === 'true';
-  if (rule) {
-    const subjectId = existing.inputs[0]?.trackedOnchainValueId;
-    if (!subjectId) throw new Error('This monitor has no bound metric to rebuild a rule on.');
-    const subject = await resolveMetric(auth, subjectId);
-    const tiers = await buildTiers(auth, subject, rule, flags);
-    body.exprAst = tiers.exprAst;
-    body.inputs = tiers.inputs;
-    // A new rule replaces the warning too: an old tier typed against a different bound
-    // (or a different rhs) is meaningless, and the server would refuse a mismatched one.
-    body.warnExprAst = noWarn ? null : tiers.warnExprAst;
-  } else if (noWarn) {
-    body.warnExprAst = null;
-  } else if (flag(flags, 'warn') !== undefined || flag(flags, 'warn-pct') !== undefined) {
-    // Warning-only edit: rebuild it against the existing alert tier.
-    const alert = existing.exprAst;
-    const op = alert.op;
-    if (alert.lhs.type !== 'ref') throw new Error('Cannot add a warning to this rule.');
-    const warn = flag(flags, 'warn');
-    const warnPct = flag(flags, 'warn-pct');
-    if (alert.rhs.type === 'lit') {
-      if (warn === undefined) throw new Error('This rule compares against a number — use --warn <n>');
-      body.warnExprAst = buildBoundExpr(alert.lhs.alias, op, warn);
-    } else {
-      if (warnPct === undefined) throw new Error('This rule compares two metrics — use --warn-pct <p>');
-      body.warnExprAst = buildWarnCompareExpr(alert.lhs.alias, op, alert.rhs.alias, warnPct);
-    }
-  }
+  if (warn !== undefined && noWarn) throw new Error('Pass --warn "<formula>" or --no-warn, not both.');
 
+  // the rest, checked before anything changes
+  const body: Record<string, unknown> = {};
   const toRaw = flag(flags, 'to');
   if (toRaw !== undefined) {
     if (toRaw === 'true') throw new Error('--to needs at least one destination');
@@ -540,13 +461,28 @@ async function setMonitor(args: string[]): Promise<Invariant> {
   const name = flag(flags, 'name');
   if (name && name !== 'true') body.name = name;
 
-  if (Object.keys(body).length === 0) throw new Error('Nothing to change — pass a rule, --warn/--no-warn, --to, --max-age or --name.');
+  let ruled: ValueMonitorResult | null = null;
+  if (when !== undefined || warn !== undefined || noWarn) {
+    ruled = await runTool<ValueMonitorResult>(auth, 'set_value_monitor', {
+      monitor: existing.id,
+      ...(when !== undefined ? { when } : {}),
+      ...(warn !== undefined ? { warn } : {}),
+      ...(noWarn ? { noWarn: true } : {}),
+    });
+  }
+
+  if (!ruled && Object.keys(body).length === 0) throw new Error('Nothing to change — pass --when, --warn/--no-warn, --to, --max-age or --name.');
+  if (Object.keys(body).length === 0) {
+    const m = ruled!.monitor;
+    console.log(`Updated "${m.name}": ${m.rule ?? DASH}${m.warn ? `, warn at ${m.warn}` : ''}`);
+    return ruled!;
+  }
   const { invariant } = await apiRequest<{ invariant: Invariant }>(auth, 'PATCH', `/api/mainnet/invariants/${existing.id}`, body);
   console.log(`Updated "${invariant.name}": ${invariant.exprText}${invariant.warnExprText ? `, warn at ${invariant.warnExprText}` : ''}`);
   return invariant;
 }
 
-// ── a monitor from a sentence: --on <contract> --event <Name> [--where …] / --silence [--method …] [--for …] ──
+// ── a monitor from a sentence: --on <contract> --event <Name> [--when …] / --silence [--method …] [--for …] ──
 //
 // The server's compile_monitor tool turns the intent into the exact monitor: the sentence it
 // will print, the conditions in the field's units, a backtest over the last 7 days. `compile`
@@ -560,11 +496,8 @@ export interface MonitorIntent {
   chainId?: number;
   event?: string;
   method?: string;
-  where?: Array<{ field: string; op: string; value: string }>;
-  /** Fire when the event is worth more than this many dollars at today's price, on the fields whose token `tokens` states. */
-  usdAbove?: number;
-  /** The token each numeric field is an amount of, as stated: an address, self, or a view like token0(). */
-  tokens?: Array<{ field: string; token: string }>;
+  /** When it alerts, one formula: amount(value, emitter()) >= 1000 and to != 0x…, usd(abs(amount0), token0()) > 1000000. */
+  when?: string;
   windowSec?: number;
   name?: string;
   destinations?: string[];
@@ -597,29 +530,6 @@ export interface CreatedFromIntent {
   backtest: Backtest | null;
 }
 
-const TWO_WORD_OPS = ['is not', 'at least', 'at most'];
-const ONE_WORD_OPS = ['is', 'above', 'below', '=', '==', '!=', '>', '>=', '<', '<='];
-const WHERE_USAGE = '--where must read "<field> <op> <value>", like --where "amount0 at least 10000" (ops: is, is not, above, at least, below, at most, or =, !=, >, >=, <, <=)';
-
-/** `"amount0 at least 10,000 USDC"` (or `"amount0>=10000"`) → the condition as the server takes it. */
-export function parseWhere(raw: string): { field: string; op: string; value: string } {
-  const text = raw.trim();
-  const symbol = /^([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|!=|==|=|>|<)\s*(\S.*)$/.exec(text);
-  if (symbol) return { field: symbol[1], op: symbol[2], value: symbol[3].trim() };
-  const tokens = text.split(/\s+/).filter(Boolean);
-  if (tokens.length < 3) throw new Error(`${WHERE_USAGE}; got: "${raw}"`);
-  const [field, ...rest] = tokens;
-  const two = `${rest[0]} ${rest[1]}`.toLowerCase();
-  const one = rest[0].toLowerCase();
-  if (TWO_WORD_OPS.includes(two)) {
-    const value = rest.slice(2).join(' ');
-    if (!value) throw new Error(`${WHERE_USAGE}; got: "${raw}"`);
-    return { field, op: two, value };
-  }
-  if (ONE_WORD_OPS.includes(one)) return { field, op: one, value: rest.slice(1).join(' ') };
-  throw new Error(`${WHERE_USAGE}; got: "${raw}"`);
-}
-
 /** 90m · 24h · 3d (also 3600s, 1w) → seconds, from a minute to 30 days. */
 export function parseDuration(raw: string, label = '--for'): number {
   const m = /^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|week|weeks)$/i.exec(raw.trim());
@@ -633,7 +543,8 @@ export function parseDuration(raw: string, label = '--for'): number {
 const isIntentForm = (flags: ParsedFlags): boolean => flag(flags, 'on') !== undefined || flag(flags, 'group') !== undefined || flag(flags, 'event') !== undefined || flag(flags, 'silence') !== undefined;
 
 /** The flags → the intent compile_monitor and create_monitor take. */
-export function buildIntent(flags: ParsedFlags): MonitorIntent {
+export function buildIntent(flags: ParsedFlags, command = 'monitor add'): MonitorIntent {
+  onlyFlags(flags, command, INTENT_FLAGS);
   const on = flag(flags, 'on');
   const group = flag(flags, 'group');
   if (on === 'true') throw new Error('--on needs a contract: the watched contract, by address or name.');
@@ -653,10 +564,6 @@ export function buildIntent(flags: ParsedFlags): MonitorIntent {
   if (!silence && method !== undefined) throw new Error('--method is for a silence monitor: add --silence.');
   if (!silence && forRaw !== undefined) throw new Error('--for is for a silence monitor: add --silence.');
   if (silence && event !== undefined && method !== undefined) throw new Error('A silence monitor watches an event or a method, not both.');
-  const where = flagAll(flags, 'where')
-    .filter((w) => w !== 'true')
-    .map(parseWhere);
-  if (silence && where.length) throw new Error('--where is for an event monitor (--event <Name>, without --silence).');
   const destinations = flagAll(flags, 'to')
     .filter((v) => v !== 'true')
     .flatMap((v) => v.split(','))
@@ -667,25 +574,11 @@ export function buildIntent(flags: ParsedFlags): MonitorIntent {
   if (chainId !== undefined) intent.chainId = chainId;
   if (event !== undefined) intent.event = event;
   if (method !== undefined) intent.method = method;
-  if (where.length) intent.where = where;
-  const tokens = flagAll(flags, 'token')
-    .filter((v) => v !== 'true')
-    .map((raw) => {
-      const eq = raw.indexOf('=');
-      const field = eq > 0 ? raw.slice(0, eq).trim() : '';
-      const token = eq > 0 ? raw.slice(eq + 1).trim() : '';
-      if (!field || !/^(0x[0-9a-fA-F]{40}|self|[A-Za-z_][A-Za-z0-9_]*\(\))$/.test(token))
-        throw new Error(`--token takes <field>=<token>: its 0x address, self, or a view like token0() (got: ${raw})`);
-      return { field, token };
-    });
-  if (silence && tokens.length) throw new Error('--token is for an event monitor.');
-  if (tokens.length) intent.tokens = tokens;
-  const usdRaw = flag(flags, 'usd-above');
-  if (usdRaw !== undefined) {
-    if (silence) throw new Error('--usd-above is for an event monitor.');
-    const usd = Number(usdRaw.replace(/[$,\s]/g, ''));
-    if (usdRaw === 'true' || !Number.isFinite(usd) || usd <= 0) throw new Error(`--usd-above needs a dollar amount, like 1000000 or $1,000,000 (got: ${usdRaw})`);
-    intent.usdAbove = usd;
+  const when = flag(flags, 'when');
+  if (when !== undefined) {
+    if (silence) throw new Error('--when is for an event monitor; a silence monitor takes --for.');
+    if (when === 'true' || !when.trim()) throw new Error('--when needs the formula: --when "amount(value, emitter()) >= 1000".');
+    intent.when = when;
   }
   if (forRaw !== undefined) intent.windowSec = parseDuration(forRaw);
   if (name !== undefined && name.trim()) intent.name = name.trim();
@@ -736,7 +629,7 @@ async function compileSubcommand(args: string[]): Promise<CompiledMonitor | void
     return;
   }
   const flags = parseFlags(args);
-  const intent = buildIntent(flags);
+  const intent = buildIntent(flags, 'monitor compile');
   const compiled = await runTool<CompiledMonitor & GroupSet>(requireAuth(), 'compile_monitor', { ...intent });
   if (intent.group) {
     for (const line of groupSetLines(compiled, intent.group)) console.log(line);
@@ -776,7 +669,6 @@ export function groupSetLines(r: GroupSet, group: string): string[] {
 
 /** Several events in one call: one monitor (or one group set) per event, made side by side, one line each. */
 async function addSeveralEvents(flags: ParsedFlags, events: string[]): Promise<Array<{ event: string; result?: CreatedFromIntent | GroupSet; error?: string }>> {
-  if (flagAll(flags, 'where').some((w) => w !== 'true')) throw new Error('--where goes with one event: the fields differ from event to event. Add those monitors one at a time.');
   const base = buildIntent(flags);
   const auth = requireAuth();
   const outcomes = await Promise.all(

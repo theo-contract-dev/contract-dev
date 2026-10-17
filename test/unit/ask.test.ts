@@ -1,4 +1,4 @@
-import { findCommand, describeCommand, compareCommand, activityQueryCommand, fmtByUnit, fmtChangePct, pivotLines, scopeFromFlags } from '../../src/cli/commands/ask';
+import { findCommand, describeCommand, compareCommand, activityQueryCommand, fmtByUnit, fmtChangePct, scopeFromFlags } from '../../src/cli/commands/ask';
 import { activityCommand } from '../../src/cli/commands/activity';
 import { parseFlags } from '../../src/cli/commands/_args';
 import { run } from '../../src/cli/index';
@@ -174,22 +174,22 @@ describe('compare', () => {
         expect(result).toEqual(ranking({}));
     });
 
-    it('a share prints as a percentage, a count with its thousands; --by events sends the event; the whole workspace is the default scope', async () => {
+    it('a share prints as a percentage, a count with its thousands; the whole workspace is the default scope', async () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/compare_activity': (c) =>
                 ok(
                     c.body.input.by === 'revertedShare'
                         ? ranking({ scope: 'workspace', by: 'revertedShare', unit: 'share', rows: [{ chainId: 1, address: POOL, name: 'Pool A', value: 0.07, prev: 0.05, changePct: 40 }] })
-                        : ranking({ scope: 'workspace', by: 'events', event: 'Swap', unit: 'count', rows: [{ chainId: 1, address: POOL, name: 'Pool A', value: 1234, prev: 1180, changePct: 4.5762 }] }),
+                        : ranking({ scope: 'workspace', by: 'activeWallets', unit: 'count', rows: [{ chainId: 1, address: POOL, name: 'Pool A', value: 1234, prev: 1180, changePct: 4.5762 }] }),
                 ),
         });
         await compareCommand(['--by', 'revertedShare']);
         expect(calls[0].body).toEqual({ input: { window: '7d', by: 'revertedShare' } });
         expect(printed()[0]).toBe('Workspace · by revertedShare · last 7d');
         expect(printed()[3]).toMatch(/^Pool A {2,}7\.0% {2,}5\.0% {2,}\+40%$/);
-        await compareCommand(['--by', 'events', '--event', 'Swap', '--chain', 'arbitrum']);
-        expect(calls[1].body).toEqual({ input: { scope: { kind: 'workspace', chainId: 42161 }, window: '7d', by: 'events', event: 'Swap' } });
-        expect(printed()[4]).toBe('Workspace · by events Swap · last 7d');
+        await compareCommand(['--by', 'activeWallets', '--chain', 'arbitrum']);
+        expect(calls[1].body).toEqual({ input: { scope: { kind: 'workspace', chainId: 42161 }, window: '7d', by: 'activeWallets' } });
+        expect(printed()[4]).toBe('Workspace · by activeWallets · last 7d');
         expect(printed()[7]).toMatch(/^Pool A {2,}1,234 {2,}1,180 {2,}\+4\.6%$/);
     });
 
@@ -199,12 +199,12 @@ describe('compare', () => {
         expect(printed()).toEqual(['Lido: stETH · by volumeInUsd · last 24h', "Showing 24h: this workspace's plan keeps 24h of history.", 'No contracts in scope.']);
     });
 
-    it('refuses a bad measure or window, events without the event, and two scopes', async () => {
+    it('refuses a bad measure or window, and two scopes', async () => {
         const calls = mockApi({});
         await expect(compareCommand(['--by', 'trades'])).rejects.toThrow(/--by must be one of transactions, activeWallets/);
         await expect(compareCommand(['--window', '2d'])).rejects.toThrow(/--window must be one of 1h, 24h, 7d, 30d, 90d/);
-        await expect(compareCommand(['--by', 'events'])).rejects.toThrow(/--by events needs --event <name>/);
-        await expect(compareCommand(['--event', 'Swap'])).rejects.toThrow(/--event goes with --by events/);
+        // the pool and event measures are not compare's: events --by contract --sum "<formula>" ranks those
+        for (const by of ['events', 'swaps', 'swapVolumeUsd', 'feesUsd']) await expect(compareCommand(['--by', by])).rejects.toThrow(/--by must be one of transactions, activeWallets, volumeInUsd, volumeOutUsd, tvlUsd, revertedShare/);
         await expect(compareCommand(['--group', 'pools', '--contract', 'steth'])).rejects.toThrow(/Pick one of --group or --contract/);
         expect(calls).toHaveLength(0);
     });
@@ -230,9 +230,8 @@ describe('activity query', () => {
     const counts = (over: Record<string, unknown>) => ({
         scope: 'pools',
         window: '7d',
-        measure: 'events',
+        measure: 'transactions',
         groupBy: ['contract', 'day'],
-        unknownEvents: [],
         unavailable: null,
         rows: [
             { chainId: 1, address: POOL, name: 'Pool A', day: '2026-10-11', value: 10 },
@@ -244,10 +243,10 @@ describe('activity query', () => {
 
     it('grouped by contract and day prints a pivot: a row per contract, a column per day, a total; a day with nothing is 0', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/query_activity': () => ok(counts({})) });
-        const result = await run(['activity', 'query', '--measure', 'events', '--event', 'Swap', '--group', 'pools', '--by', 'contract,day', '--tz', 'UTC']);
-        expect(calls[0].body).toEqual({ input: { scope: { kind: 'group', group: 'pools' }, measure: 'events', window: '7d', timezone: 'UTC', events: ['Swap'], groupBy: ['contract', 'day'] } });
+        const result = await run(['activity', 'query', '--measure', 'transactions', '--group', 'pools', '--by', 'contract,day', '--tz', 'UTC']);
+        expect(calls[0].body).toEqual({ input: { scope: { kind: 'group', group: 'pools' }, measure: 'transactions', window: '7d', timezone: 'UTC', groupBy: ['contract', 'day'] } });
         const out = printed();
-        expect(out[0]).toBe('pools · events Swap · last 7d · by contract, day · days in UTC');
+        expect(out[0]).toBe('pools · transactions · last 7d · by contract, day · days in UTC');
         expect(out[1]).toBe('');
         expect(out[2]).toMatch(/^Contract {2,}2026-10-11 {2,}2026-10-12 {2,}Total$/);
         expect(out[3]).toMatch(/^Pool B {2,}0 {2,}40 {2,}40$/);
@@ -256,13 +255,13 @@ describe('activity query', () => {
         expect(result).toEqual(counts({}));
     });
 
-    it('wallets do not add up across days, so their pivot has no total; grouped by event, a plain table; repeated and comma --event', async () => {
+    it('wallets do not add up across days, so their pivot has no total; grouped by day alone, a plain table', async () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/query_activity': (c) =>
                 ok(
                     c.body.input.measure === 'wallets'
                         ? counts({ scope: 'workspace', measure: 'wallets', rows: [{ chainId: 1, address: POOL, name: 'Pool A', day: '2026-10-12', value: 3 }] })
-                        : counts({ scope: 'Pool A', groupBy: ['event'], rows: [{ event: 'Swap', value: 120 }, { event: 'Mint', value: 4 }] }),
+                        : counts({ scope: 'Pool A', groupBy: ['day'], rows: [{ day: '2026-10-11', value: 120 }, { day: '2026-10-12', value: 4 }] }),
                 ),
         });
         await activityCommand(['query', '--measure', 'wallets', '--tz', 'UTC']);
@@ -271,44 +270,29 @@ describe('activity query', () => {
         expect(printed()[2]).toMatch(/^Contract {2,}2026-10-12$/);
         expect(printed()[3]).toMatch(/^Pool A {2,}3$/);
 
-        await activityQueryCommand(['--measure', 'events', '--event', 'Swap,Mint', '--event', 'Burn', '--contract', 'pool a', '--by', 'event', '--window', '30d', '--tz', 'UTC']);
-        expect(calls[1].body).toEqual({ input: { scope: { kind: 'contract', contract: 'pool a' }, measure: 'events', window: '30d', timezone: 'UTC', events: ['Swap', 'Mint', 'Burn'], groupBy: ['event'] } });
+        await activityQueryCommand(['--measure', 'transactions', '--contract', 'pool a', '--by', 'day', '--window', '30d', '--tz', 'UTC']);
+        expect(calls[1].body).toEqual({ input: { scope: { kind: 'contract', contract: 'pool a' }, measure: 'transactions', window: '30d', timezone: 'UTC', groupBy: ['day'] } });
         const out = printed().slice(4);
-        expect(out[0]).toBe('Pool A · events Swap, Mint, Burn · last 7d · by event');
+        expect(out[0]).toBe('Pool A · transactions · last 7d · by day · days in UTC');
         expect(out[1]).toBe("Showing 7d: this workspace's plan keeps 7d of history.");
-        expect(out[3]).toMatch(/^Event {2,}Events$/);
-        expect(out[4]).toMatch(/^Swap {2,}120$/);
-        expect(out[5]).toMatch(/^Mint {2,}4$/);
+        expect(out[3]).toMatch(/^Day {2,}Transactions$/);
+        expect(out[4]).toMatch(/^2026-10-11 {2,}120$/);
     });
 
-    it('names the events nobody declares, says when the store is unavailable or the window is empty', async () => {
-        mockApi({ 'POST /api/mainnet/tools/query_activity': (c) => ok(c.body.input.events?.[0] === 'Nope' ? counts({ unknownEvents: ['Nope'], rows: [] }) : counts({ unavailable: 'store', rows: [] })) });
-        await activityQueryCommand(['--measure', 'events', '--event', 'Nope', '--tz', 'UTC']);
-        expect(printed().slice(1)).toEqual(['No contract in scope declares "Nope".', 'No events in the window.']);
+    it('says when the store is unavailable or the window is empty', async () => {
+        mockApi({ 'POST /api/mainnet/tools/query_activity': (c) => ok(c.body.input.measure === 'wallets' ? counts({ measure: 'wallets', rows: [] }) : counts({ unavailable: 'store', rows: [] })) });
+        await activityQueryCommand(['--measure', 'wallets', '--tz', 'UTC']);
+        expect(printed().slice(1)).toEqual(['No wallets in the window.']);
         await activityQueryCommand(['--measure', 'transactions', '--tz', 'UTC']);
-        expect(printed().slice(4)).toEqual(['Data unavailable. Retry in a moment.']);
+        expect(printed().slice(3)).toEqual(['Data unavailable. Retry in a moment.']);
     });
 
-    it('refuses a missing or unknown measure, --event off events, an unknown dimension, a bad zone', async () => {
+    it('refuses a missing or unknown measure (events are counted by `events --by`), an unknown dimension, a bad zone', async () => {
         const calls = mockApi({});
-        await expect(activityQueryCommand([])).rejects.toThrow(/--measure is required: one of events, transactions, wallets/);
-        await expect(activityQueryCommand(['--measure', 'swaps'])).rejects.toThrow(/--measure must be one of/);
-        await expect(activityQueryCommand(['--measure', 'transactions', '--event', 'Swap'])).rejects.toThrow(/--event goes with --measure events/);
-        await expect(activityQueryCommand(['--measure', 'events', '--by', 'contract,hour'])).rejects.toThrow(/--by must name contract, day, event \(got: hour\)/);
-        await expect(activityQueryCommand(['--measure', 'events', '--tz', 'Mars/Olympus'])).rejects.toThrow(/--tz must be an IANA zone name/);
+        await expect(activityQueryCommand([])).rejects.toThrow(/--measure is required: one of transactions, wallets/);
+        await expect(activityQueryCommand(['--measure', 'events'])).rejects.toThrow(/--measure must be one of transactions, wallets \(got: events\)/);
+        await expect(activityQueryCommand(['--measure', 'transactions', '--by', 'contract,event'])).rejects.toThrow(/--by must name contract, day \(got: event\)/);
+        await expect(activityQueryCommand(['--measure', 'transactions', '--tz', 'Mars/Olympus'])).rejects.toThrow(/--tz must be an IANA zone name/);
         expect(calls).toHaveLength(0);
-    });
-
-    it('pivotLines keys a contract by its event too when grouped by event', () => {
-        const lines = pivotLines(
-            [
-                { chainId: 1, address: POOL, name: 'Pool A', day: '2026-10-11', event: 'Swap', value: 2 },
-                { chainId: 1, address: POOL, name: 'Pool A', day: '2026-10-11', event: 'Mint', value: 1 },
-            ],
-            'events',
-        );
-        expect(lines[0]).toMatch(/^Contract · Event {2,}2026-10-11 {2,}Total$/);
-        expect(lines[1]).toMatch(/^Pool A · Swap {2,}2 {2,}2$/);
-        expect(lines[2]).toMatch(/^Pool A · Mint {2,}1 {2,}1$/);
     });
 });

@@ -21,11 +21,11 @@ import { methodsCommand } from './commands/methods';
 import { eventsCommand } from './commands/events';
 import { flowsCommand, counterpartyCommand } from './commands/flows';
 import { usersCommand } from './commands/users';
-import { tvlCommand, positionsCommand, holdersCommand } from './commands/tvl';
+import { tvlCommand, holdersCommand } from './commands/tvl';
 import { dependenciesCommand } from './commands/inspect';
 import { txCommand, addressCommand, blockCommand, walletCommand, sourceCommand } from './commands/explorer';
 import { findCommand, describeCommand, compareCommand } from './commands/ask';
-import { largestCommand, whoCommand, marketCommand, readCommand } from './commands/questions';
+import { whoCommand, readCommand } from './commands/questions';
 import { groupCommand, factoryCommand } from './commands/group';
 import { tableCommand } from './commands/table';
 import { historyCommand } from './commands/history';
@@ -57,7 +57,7 @@ Groups:
                                           Keep the group filled: every contract the factory deploys or the registry lists
   contract-dev group name-pattern <group> "<pattern>"   Name every member from its own reads: "{token0().symbol()} pool"
   contract-dev group column add <group> --label "…" --read "totalAssets()"   A column on its table, read on every member
-  contract-dev group monitor add <group> --name "…" --column <key> --below <n>   One monitor on every member
+  contract-dev group monitor add <group> --name "…" --column <key> --when "value < <n>"   One monitor on every member
 
 Tables (the things inside contracts: withdrawal rounds, loans, requests):
   contract-dev table list                 Every item table, hidden ones too (try: table help)
@@ -77,12 +77,12 @@ Data (what the dashboard shows; <contract> is an address or a watched contract's
   contract-dev activity [<contract>]      Transactions, calls, events and transfers, newest first (try: activity help)
   contract-dev methods [<contract>]       Calls per method: reverts, callers, gas; one method in full (try: methods help)
   contract-dev events [<contract>]        Events emitted, event by event, and the ones declared but never fired
+  contract-dev events <contract> --event <Name> --sort "<expr>"   The events themselves through formulas: sort, filter, group (try: events help)
   contract-dev history [<contract>] --event <Name>   Every firing since launch: by week, sizes, top wallets, when (try: history help)
   contract-dev flows [<contract>]         Value in and out: by token, by counterparty; a token's own senders and receivers (try: flows help)
   contract-dev users [<contract>]         Active wallets, how they arrive, the busiest (try: users help)
   contract-dev tvl [<contract>]           Value held: now, its change, what it is made of (try: tvl help)
   contract-dev contracts show <contract>  One contract at a glance (its Overview tab) · contracts stats: all side by side
-  contract-dev positions <contract>       Positions in lending markets and vaults; positions <contract> <vault|market> opens one
   contract-dev holders <contract>         A token's holders
   contract-dev dependencies <contract>    The contracts it calls out to, and the price feeds it reads
   contract-dev counterparty <address>     One counterparty's dealings with your contracts
@@ -93,12 +93,10 @@ Ask (questions over the workspace; scope is --group <name>, --contract <ref> or 
   contract-dev describe <contract>        What a contract is: kinds, standards, owner, TVL, its events and write
                                           functions, what it calls
   contract-dev compare [scope] --by <measure>   Rank contracts by transactions, activeWallets, volumeInUsd, volumeOutUsd,
-                                          tvlUsd, revertedShare or events --event <Name>, against the window before
-  contract-dev activity query --measure events|transactions|wallets [--event <Name>] [scope] [--by contract,day]
+                                          tvlUsd or revertedShare, against the window before
+  contract-dev activity query --measure transactions|wallets [scope] [--by contract,day]
                                           Counts per contract per day (try: activity query help)
-  contract-dev largest <Event> [scope]    The biggest deposits, swaps, withdrawals or liquidations, and who made them
   contract-dev who <address|ENS|name>     Who it is; --activity: what it did here; --holdings: what it holds
-  contract-dev market [<contract>|--group] Lending markets and vaults now: rates, utilisation, supplied, borrowed
   contract-dev read <contract> <function> [<arg>…]   Call a view function, now or --at a past time (try: read help)
 
 Explorer (any address on a supported chain):
@@ -110,8 +108,9 @@ Explorer (any address on a supported chain):
 
 Monitoring:
   contract-dev monitors                   List monitors
-  contract-dev monitor add <metric> …     Alert when a metric crosses a line (try: monitor help)
-  contract-dev monitor compile --on <contract> --event <Name> [--where "<field> <op> <value>"]… [--to <dest>]
+  contract-dev monitor add <value> --when "<formula>"   Alert when a tracked value crosses a line (try: monitor help)
+  contract-dev monitor set <id|name> --when "<formula>"  Change its rule; --warn "<formula>" or --no-warn its warning
+  contract-dev monitor compile --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]
                                           A monitor from a sentence: what it would say, how often it would have fired
                                           in 7 days; --silence [--method <name>] [--for 24h] for a contract going quiet
   contract-dev monitor add --on <contract> --event <Name> …   Save it (the same flags as compile)
@@ -250,8 +249,6 @@ export async function run(args: string[]): Promise<unknown> {
     case 'tvl':
     case 'value':
       return await tvlCommand(rest);
-    case 'positions':
-      return await positionsCommand(rest);
     case 'holders':
       return await holdersCommand(rest);
     case 'dependencies':
@@ -286,13 +283,8 @@ export async function run(args: string[]): Promise<unknown> {
     case 'tool':
     case 'tools':
       return await toolCommand(rest);
-    case 'largest':
-      return await largestCommand(rest);
     case 'who':
       return await whoCommand(rest);
-    case 'market':
-    case 'markets':
-      return await marketCommand(rest);
     case 'read':
       return await readCommand(rest);
     case 'skills':

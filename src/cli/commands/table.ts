@@ -6,6 +6,7 @@
 // page) and update (rename, set when rows finish, put on or take off the page). --json hands back
 // the tool's own result.
 import { parseFlags, flag, flagAll, requirePositional, type ParsedFlags } from './_args';
+import { parseFormulaCall } from './eventMetric';
 import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag, limitFlag } from '../data';
@@ -24,13 +25,15 @@ Usage:
   contract-dev table show <table> --item <id>         One row: its values, its statuses, its watched events and its own
                                                       events since it was found
   contract-dev table create "<name>" --opens <Event> [--status "<Label>: <Opt>=<rule>; <Opt>=<rule>; <Opt>"]…
-                              [--formula "<Label>=<expr>[; token <token>][; show usd]"]… [--finished "<rule>"] [--closes <Event>|list] [--id <field>]
-                              [--group <group> | --contract <ref>] [--count <Event>[:label]]… [--sum "<Event>.<field>[:label] [token <token> [show usd] | decimals <n>]"]…
-                              [--hidden] [--preview]
+                              [--formula "<Label>=<expr>[; call <name>=<call>]…[; token <token>][; show usd]"]… [--finished "<rule>"] [--closes <Event>|list] [--id <field>]
+                              [--group <group> | --contract <ref>] [--count "<Event>[:label] [on <field>]"]…
+                              [--sum "<Event>.<field>[:label] [on <field>] [token <token> [show usd] | decimals <n>]"]…
+                              [--event "<Event>.<field>"]… [--closes-on <field>] [--id-shown date|number] [--hidden] [--preview]
                                                       A table from the contracts' events; its history is read now and
                                                       kept up to date
   contract-dev table update <table> [--name "<name>"] [--status "<Label>: …"]… [--formula "<Label>=<expr>"]…
-                              [--token "<Label>=<token> [show usd]"]… [--finished "<rule>" | --never-finishes] [--show | --hide] [--preview]
+                              [--token "<Label>=<token> [show usd]"]… [--event "<Event>.<field>"]… [--finished "<rule>" | --never-finishes]
+                              [--show | --hide] [--preview]
                                                       Rename it, add status or formula columns or replace their rules (by
                                                       label), set when its rows finish, put a hidden table on the Tables
                                                       page, or take one off
@@ -40,25 +43,33 @@ now(), found(), timeIn({Status}), and / or / not, comparisons, arithmetic, durat
 usd(raw, T) and amount(raw, T) for dollars at the current price. A --status
 column tries its options in order and the first whose rule holds wins; an option with no rule is Otherwise, last.
 --closes is the shorthand for a pinned Stage column with one option Closed on that event, finished once it is.
+--id-shown date shows a number id as a date (an expiry, a deadline); it is a number unless you say so.
 --hidden makes a table to answer a question: it stays off the Tables page and is removed 7 days after it was last
 read. --count and --sum add columns: how many of an event each row got, or the sum of one of its fields, matched on
-the row's id. Nothing is assumed about what a number is: an amount is a token amount only when you say which token,
+the row's id. When the event has more than one field that could hold the id, say which with "on <field>"; an event a
+rule names is stated the same way with --event "<Event>.<field>", and --closes-on <field> does it for --closes. Nothing
+is matched by name. Nothing is assumed about what a number is: an amount is a token amount only when you say which token,
 by ending it with "token <token>": its 0x address, self (the contract itself), or a view each contract answers with the
 token's address, like asset(). Its decimals then scale it, and "show usd" puts it in dollars at the current price. A
 formula already in token units takes the same: --formula "Outstanding={Requested} - {Paid}; token asset(); show usd".
+A formula folds an event's field by name over the row's events: sum(Event.field), count(Event), min, max, first,
+last. --formula "Still owed=sum(WithdrawalQueued.normalizedAmount) - sum(WithdrawalExecuted.normalizedAmount); token
+asset()" with --event WithdrawalQueued.expiry --event WithdrawalExecuted.expiry to say which field holds the row id.
 Without a token a number is shown as the chain holds it; "decimals <n>" scales a plain number. --token on update
 sets, changes or (with nothing after =) clears a column's token.
 --preview checks everything and saves nothing.
 
 Examples:
   contract-dev table list
-  contract-dev table create "Withdrawal rounds" --group "Wildcat markets" --opens WithdrawalBatchCreated --closes WithdrawalBatchClosed --count WithdrawalQueued:Queued --hidden
-  contract-dev table create "Withdrawal rounds" --group "Wildcat markets" --opens WithdrawalBatchCreated \
-    --sum "WithdrawalQueued.normalizedAmount:Requested token asset()" \
-    --formula "Outstanding=max({Requested} - {Paid}, 0); token asset(); show usd" \
-    --status "Stage: Expired=latest(WithdrawalBatchExpired); Paying=seen(WithdrawalBatchPayment); Queued" \
-    --status "Health: Overdue={Stage} == \"Expired\" and timeIn({Stage}) > 24h; At risk={Outstanding} > 100000; Healthy" \
-    --finished "{Stage} == \"Expired\" and {Outstanding} == 0"
+  contract-dev table create "Withdrawal rounds" --group "Wildcat markets" --opens WithdrawalBatchCreated --closes WithdrawalBatchClosed --count "WithdrawalQueued:Queued on expiry" --hidden
+  contract-dev table create "Withdrawal rounds" --group "Wildcat markets" --opens WithdrawalBatchCreated --id-shown date \\
+    --sum "WithdrawalQueued.normalizedAmount:Requested on expiry token asset()" \\
+    --sum "WithdrawalBatchPayment.normalizedAmountPaid:Paid on expiry token asset()" \\
+    --event WithdrawalBatchExpired.expiry \\
+    --formula "Outstanding=max({Requested} - {Paid}, 0); token asset(); show usd" \\
+    --status "Stage: Expired=latest(WithdrawalBatchExpired); Paying=seen(WithdrawalBatchPayment); Queued" \\
+    --status "Health: Overdue={Stage} == \\"Expired\\" and timeIn({Stage}) > 24h; At risk={Outstanding} > 100000; Healthy" \\
+    --finished "{Stage} == \\"Expired\\" and {Outstanding} == 0"
   contract-dev table show "Withdrawal rounds" --by week --among done
   contract-dev table show "Withdrawal rounds" --item 2026-10-13
 `;
@@ -162,14 +173,22 @@ export function formulasFrom(flags: ParsedFlags): Record<string, unknown>[] {
     const [expr = '', ...more] = (eq > 0 ? raw.slice(eq + 1) : '').split(';').map((x) => x.trim());
     if (!label || !expr) throw new Error('--formula takes Label=expression: --formula "Outstanding={Requested} - {Paid}".');
     const formula: Record<string, unknown> = { label, expr };
+    const calls: Record<string, unknown>[] = [];
     for (const part of more.filter(Boolean)) {
+      // the formula's own reads: "; call held=totalAssets() on asset() decimals 18", "; call eth=balance(self)", "; call owed=slot(self, keccak(id(), 3))"
+      const call = /^call\s+(.+)$/s.exec(part);
+      if (call) {
+        calls.push(parseFormulaCall(call[1]));
+        continue;
+      }
       const m = /^(token|show|unit)\s+(\S+)$/.exec(part);
-      if (!m) throw new Error(`--formula: after the expression come "; token <token>", "; show usd" or "; unit <unit>" (got: ${part})`);
+      if (!m) throw new Error(`--formula: after the expression come "; call <name>=<call>", "; token <token>", "; show usd" or "; unit <unit>" (got: ${part})`);
       if (m[1] === 'token') formula.token = tokenRef(m[2], '--formula');
       else if (m[1] === 'show') formula.show = showOf(m[2], '--formula');
       else formula.unit = m[2];
     }
     if (formula.show && !formula.token) throw new Error('--formula: show needs a token.');
+    if (calls.length > 0) formula.calls = calls;
     out.push(formula);
   }
   return out;
@@ -210,26 +229,42 @@ export function amountSuffix(whole: string, what: string): { rest: string; token
 }
 
 /** `--count WithdrawalQueued:Queued` and `--sum WithdrawalQueued.normalizedAmount:Queued amount` as the tool's columns. */
+/** A trailing `on <field>`: the event's field that holds the row id, stated when more than one could. */
+function takeOn(raw: string): { rest: string; on?: string } {
+  const m = /\s+on\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/.exec(raw);
+  return m ? { rest: raw.slice(0, m.index), on: m[1] } : { rest: raw };
+}
+
 export function columnsFrom(flags: ParsedFlags): Record<string, unknown>[] {
   const split = (raw: string): [string, string | null] => {
     const at = raw.indexOf(':');
     return at > 0 ? [raw.slice(0, at).trim(), raw.slice(at + 1).trim() || null] : [raw.trim(), null];
   };
   const out: Record<string, unknown>[] = [];
-  for (const raw of flagAll(flags, 'count')) {
+  for (const whole of flagAll(flags, 'count')) {
+    const { rest: raw, on } = takeOn(whole);
     const [event, label] = split(raw);
     if (!event) throw new Error('--count takes an event name, like --count WithdrawalQueued.');
-    out.push({ label: label ?? `${event} count`, event, fold: 'count' });
+    out.push({ label: label ?? `${event} count`, event, fold: 'count', ...(on ? { on } : {}) });
   }
   for (const whole of flagAll(flags, 'sum')) {
     // `… token asset() show usd` or `… decimals 18`: what the amount is, only as stated; left out, the plain number
-    const { rest, ...amount } = amountSuffix(whole, '--sum');
+    const { rest: beforeAmount, ...amount } = amountSuffix(whole, '--sum');
+    const { rest, on } = takeOn(beforeAmount);
     const [ref, label] = split(rest);
     const dot = ref.lastIndexOf('.');
     if (dot <= 0 || dot === ref.length - 1) throw new Error('--sum takes Event.field, like --sum WithdrawalQueued.normalizedAmount.');
-    out.push({ label: label ?? `${ref.slice(dot + 1)}`, event: ref.slice(0, dot), field: ref.slice(dot + 1), fold: 'sum', ...amount });
+    out.push({ label: label ?? `${ref.slice(dot + 1)}`, event: ref.slice(0, dot), field: ref.slice(dot + 1), fold: 'sum', ...(on ? { on } : {}), ...amount });
   }
   return out;
+}
+
+/** --event "<Event>.<field>": an event the rules name, with the field that holds the row id (stated when more than one could). */
+function eventsFrom(flags: ParsedFlags): string[] {
+  return flagAll(flags, 'event')
+    .filter((v) => v !== 'true')
+    .map((v) => v.trim())
+    .filter(Boolean);
 }
 
 async function createTable(args: string[]): Promise<unknown> {
@@ -243,6 +278,10 @@ async function createTable(args: string[]): Promise<unknown> {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }
+  const closesOn = flag(flags, 'closes-on');
+  if (closesOn !== undefined) input.closesOn = closesOn;
+  const events = eventsFrom(flags);
+  if (events.length > 0) input.events = events;
   const statuses = statusesFrom(flags);
   if (statuses.length > 0) input.statuses = statuses;
   const formulas = formulasFrom(flags);
@@ -250,6 +289,12 @@ async function createTable(args: string[]): Promise<unknown> {
   const columns = columnsFrom(flags);
   if (columns.length > 0) input.columns = columns;
   if (flag(flags, 'hidden') !== undefined) input.listed = false;
+  // a number id is a number unless you say it is a date (an expiry, a deadline): nothing is read from its name
+  const idShown = flag(flags, 'id-shown');
+  if (idShown !== undefined) {
+    if (idShown !== 'date' && idShown !== 'number') throw new Error(`--id-shown takes date or number (got: ${idShown})`);
+    input.idShown = idShown;
+  }
   if (flag(flags, 'preview') !== undefined) input.preview = true;
   const result = await runTool<Record<string, unknown>>(requireAuth(), 'create_table', input);
   for (const line of printResult(result)) console.log(line);
@@ -268,6 +313,7 @@ async function updateTable(args: string[], renaming: boolean): Promise<unknown> 
   const never = flag(flags, 'never-finishes') !== undefined;
   const statuses = statusesFrom(flags);
   const formulas = formulasFrom(flags);
+  const events = eventsFrom(flags);
   const tokens = flagAll(flags, 'token').map((raw) => {
     const eq = raw.indexOf('=');
     const column = eq > 0 ? raw.slice(0, eq).trim() : '';
@@ -278,7 +324,7 @@ async function updateTable(args: string[], renaming: boolean): Promise<unknown> 
     return { column, token: token ? tokenRef(token, '--token') : '', ...(shown ? { show: shown } : {}) };
   });
   if (show && hide) throw new Error('Pick one: --show or --hide.');
-  if (!name && !show && !hide && finished === undefined && !never && statuses.length === 0 && formulas.length === 0 && tokens.length === 0)
+  if (!name && !show && !hide && finished === undefined && !never && statuses.length === 0 && formulas.length === 0 && tokens.length === 0 && events.length === 0)
     throw new Error('Nothing to change: pass --name "<name>", --status …, --formula …, --token …, --finished "<rule>", --never-finishes, --show or --hide.');
   const input: Record<string, unknown> = {
     table,
@@ -286,6 +332,7 @@ async function updateTable(args: string[], renaming: boolean): Promise<unknown> 
     ...(statuses.length > 0 ? { statuses } : {}),
     ...(formulas.length > 0 ? { formulas } : {}),
     ...(tokens.length > 0 ? { tokens } : {}),
+    ...(events.length > 0 ? { events } : {}),
     ...(finished !== undefined ? { finished } : never ? { finished: '' } : {}),
     ...(show ? { listed: true } : hide ? { listed: false } : {}),
   };

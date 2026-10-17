@@ -1,7 +1,7 @@
 // Questions over the platform's tools: find, describe, compare, activity query. Each sends the
 // tool its input, prints the answer as tables, and hands --json the tool's own result, so a
 // person at the terminal and an agent read the same figures.
-import { parseFlags, flag, flagAll, type ParsedFlags } from './_args';
+import { parseFlags, flag, type ParsedFlags } from './_args';
 import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag, limitFlag, lookupNames, nameKey, RANGES, servedRangeNote, type Range } from '../data';
@@ -19,10 +19,9 @@ Usage:
   contract-dev describe <contract> [--chain <id>]   What a watched contract is: kinds, standards, groups, TVL, owner,
                                                     implementation, token; its events and write functions (what it
                                                     calls: contract-dev dependencies <contract>)
-  contract-dev compare [scope] [--by <measure>] [--event <name>] [--window <w>] [--limit <n>]
+  contract-dev compare [scope] [--by <measure>] [--window <w>] [--limit <n>]
                                                     Rank the contracts in a scope by one measure, against the window before
-  contract-dev activity query --measure events|transactions|wallets [--event <name>]… [scope]
-                              [--by contract,day,event] [--window <w>] [--tz <zone>]
+  contract-dev activity query --measure transactions|wallets [scope] [--by contract,day] [--window <w>] [--tz <zone>]
                                                     Counts per contract per day (a pivot), or by whatever --by names
 
 Scope (compare, activity query) — the whole workspace, or one of:
@@ -30,17 +29,17 @@ Scope (compare, activity query) — the whole workspace, or one of:
   --contract <ref>          One watched contract, by address or name (--chain picks between chains)
   --chain <id|name>         One chain
 
---by (compare): transactions · activeWallets · volumeInUsd · volumeOutUsd · tvlUsd · revertedShare ·
-                events (with --event <name>) · swaps · swapVolumeUsd · feesUsd (pools). Default transactions.
---by (activity query): any of contract, day, event, comma-separated. Default contract,day.
+--by (compare): transactions · activeWallets · volumeInUsd · volumeOutUsd · tvlUsd · revertedShare. Default transactions.
+--by (activity query): contract, day or both, comma-separated. Default contract,day.
+Events (counted, summed or ranked per contract or day, in formulas): \`contract-dev events --event <Name> --by …\`.
 --window 1h|24h|7d|30d|90d (default 7d). A Free workspace reads 24h; the answer says so when it was clamped.
 --tz: the IANA zone the days are cut in (default: this machine's).
 
 Examples:
   contract-dev find pools
   contract-dev describe steth
-  contract-dev compare --group pools --by events --event Swap --window 7d
-  contract-dev activity query --measure events --event Swap --group pools --by contract,day
+  contract-dev compare --group pools --by activeWallets --window 7d
+  contract-dev activity query --measure transactions --group pools --by contract,day
 `;
 
 const HELP_WORDS = ['help', '-h', '--help'];
@@ -262,14 +261,13 @@ export async function describeCommand(args: string[]): Promise<Described | void>
 
 // ── compare ──
 
-const MEASURES = ['transactions', 'activeWallets', 'volumeInUsd', 'volumeOutUsd', 'tvlUsd', 'revertedShare', 'events', 'swaps', 'swapVolumeUsd', 'feesUsd'] as const;
+const MEASURES = ['transactions', 'activeWallets', 'volumeInUsd', 'volumeOutUsd', 'tvlUsd', 'revertedShare'] as const;
 type Measure = (typeof MEASURES)[number];
 
 export interface CompareResult {
   scope: string;
   window: string;
   by: Measure;
-  event: string | null;
   unit: 'count' | 'usd' | 'share';
   rows: Array<{ chainId: number; address: string; name: string; value: number | null; prev: number | null; changePct: number | null }>;
 }
@@ -300,17 +298,12 @@ export async function compareCommand(args: string[]): Promise<CompareResult | vo
   const flags = parseFlags(args);
   const scope = scopeFromFlags(flags);
   const by = measureFlag(flags);
-  const event = flag(flags, 'event');
-  if (event === 'true') throw new Error('--event needs the event\'s name');
-  if (by === 'events' && event === undefined) throw new Error('--by events needs --event <name> (`contract-dev events <contract>` lists them).');
-  if (by !== 'events' && event !== undefined) throw new Error('--event goes with --by events');
   const window = windowFlag(flags);
   const input: Record<string, unknown> = { ...(scope ? { scope } : {}), window, by };
-  if (event !== undefined) input.event = event;
   if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 25, 100);
 
   const r = await runTool<CompareResult>(requireAuth(), 'compare_activity', input);
-  console.log(`${scopeWords(r.scope)} · by ${r.by}${r.event ? ` ${r.event}` : ''} · last ${r.window ?? window}`);
+  console.log(`${scopeWords(r.scope)} · by ${r.by} · last ${r.window ?? window}`);
   const clamped = servedRangeNote(window, r.window);
   if (clamped) console.log(clamped);
   const rows = r.rows ?? [];
@@ -332,9 +325,9 @@ export async function compareCommand(args: string[]): Promise<CompareResult | vo
 
 // ── activity query ──
 
-const QUERY_MEASURES = ['events', 'transactions', 'wallets'] as const;
+const QUERY_MEASURES = ['transactions', 'wallets'] as const;
 type QueryMeasure = (typeof QUERY_MEASURES)[number];
-const DIMENSIONS = ['contract', 'day', 'event'] as const;
+const DIMENSIONS = ['contract', 'day'] as const;
 type Dimension = (typeof DIMENSIONS)[number];
 
 export interface ActivityQueryRow {
@@ -342,7 +335,6 @@ export interface ActivityQueryRow {
   address?: string;
   name?: string;
   day?: string;
-  event?: string;
   value: number;
 }
 
@@ -351,18 +343,16 @@ export interface ActivityQueryResult {
   window: string;
   measure: QueryMeasure;
   groupBy: Dimension[];
-  unknownEvents: string[];
   unavailable: 'store' | null;
   rows: ActivityQueryRow[];
 }
 
-const MEASURE_HEADER: Record<QueryMeasure, string> = { events: 'Events', transactions: 'Transactions', wallets: 'Wallets' };
+const MEASURE_HEADER: Record<QueryMeasure, string> = { transactions: 'Transactions', wallets: 'Wallets' };
 
 const rowLabel = (r: ActivityQueryRow): string => nameOr(r.name, r.address);
 
 /**
- * Grouped by contract and day: one row per contract (and per event, when grouped by that too),
- * one column per day, oldest first, and the window's total. A day with nothing counted prints 0:
+ * Grouped by contract and day: one row per contract, one column per day, oldest first, and the window's total. A day with nothing counted prints 0:
  * the store answered, and it counted nothing. Distinct wallets do not add up across days, so
  * the wallets measure gets no total column.
  */
@@ -370,8 +360,8 @@ export function pivotLines(rows: ActivityQueryRow[], measure: QueryMeasure): str
   const days = Array.from(new Set(rows.map((r) => r.day ?? ''))).sort();
   const groups = new Map<string, { label: string; byDay: Map<string, number>; total: number }>();
   for (const r of rows) {
-    const key = `${r.chainId}:${(r.address ?? '').toLowerCase()}|${r.event ?? ''}`;
-    const g = groups.get(key) ?? { label: r.event ? `${rowLabel(r)} · ${r.event}` : rowLabel(r), byDay: new Map<string, number>(), total: 0 };
+    const key = `${r.chainId}:${(r.address ?? '').toLowerCase()}`;
+    const g = groups.get(key) ?? { label: rowLabel(r), byDay: new Map<string, number>(), total: 0 };
     const day = r.day ?? '';
     g.byDay.set(day, (g.byDay.get(day) ?? 0) + r.value);
     g.total += r.value;
@@ -380,7 +370,7 @@ export function pivotLines(rows: ActivityQueryRow[], measure: QueryMeasure): str
   const list = Array.from(groups.values()).sort((a, b) => b.total - a.total);
   type Group = (typeof list)[number];
   const columns: Column<Group>[] = [
-    { header: rows.some((r) => r.event) ? 'Contract · Event' : 'Contract', value: (g) => g.label, max: 40 },
+    { header: 'Contract', value: (g) => g.label, max: 40 },
     ...days.map((d): Column<Group> => ({ header: d, value: (g) => fmtInt(g.byDay.get(d) ?? 0), align: 'right' })),
     ...(measure === 'wallets' ? [] : [{ header: 'Total', value: (g: Group) => fmtInt(g.total), align: 'right' as const }]),
   ];
@@ -392,7 +382,6 @@ export function plainLines(rows: ActivityQueryRow[], groupBy: Dimension[], measu
   const columns: Column<ActivityQueryRow>[] = [];
   if (groupBy.includes('contract')) columns.push({ header: 'Contract', value: rowLabel, max: 40 });
   if (groupBy.includes('day')) columns.push({ header: 'Day', value: (r) => r.day ?? DASH });
-  if (groupBy.includes('event')) columns.push({ header: 'Event', value: (r) => r.event ?? DASH, max: 32 });
   columns.push({ header: MEASURE_HEADER[measure] ?? 'Value', value: (r) => fmtInt(r.value), align: 'right' });
   return table(rows, columns);
 }
@@ -407,12 +396,6 @@ export async function activityQueryCommand(args: string[]): Promise<ActivityQuer
   if (measureRaw === undefined || measureRaw === 'true') throw new Error(`--measure is required: one of ${QUERY_MEASURES.join(', ')}`);
   const measure = QUERY_MEASURES.find((m) => m === measureRaw.trim().toLowerCase());
   if (!measure) throw new Error(`--measure must be one of ${QUERY_MEASURES.join(', ')} (got: ${measureRaw})`);
-  const events = flagAll(flags, 'event')
-    .filter((v) => v !== 'true')
-    .flatMap((v) => v.split(','))
-    .map((v) => v.trim())
-    .filter(Boolean);
-  if (events.length && measure !== 'events') throw new Error('--event goes with --measure events');
   const byRaw = flag(flags, 'by');
   let groupBy: Dimension[] | undefined;
   if (byRaw !== undefined) {
@@ -428,12 +411,11 @@ export async function activityQueryCommand(args: string[]): Promise<ActivityQuer
   const window = windowFlag(flags);
   const timezone = parseTimeZone(flag(flags, 'tz'));
   const input: Record<string, unknown> = { ...(scope ? { scope } : {}), measure, window, timezone };
-  if (events.length) input.events = events;
   if (groupBy) input.groupBy = groupBy;
 
   const r = await runTool<ActivityQueryResult>(requireAuth(), 'query_activity', input);
   const served = r.groupBy ?? groupBy ?? ['contract', 'day'];
-  const head = [scopeWords(r.scope), `${measure}${events.length ? ` ${events.join(', ')}` : ''}`, `last ${r.window ?? window}`, served.length ? `by ${served.join(', ')}` : 'in total'];
+  const head = [scopeWords(r.scope), measure, `last ${r.window ?? window}`, served.length ? `by ${served.join(', ')}` : 'in total'];
   if (served.includes('day')) head.push(`days in ${timezone}`);
   console.log(head.join(' · '));
   const clamped = servedRangeNote(window, r.window);
@@ -442,7 +424,6 @@ export async function activityQueryCommand(args: string[]): Promise<ActivityQuer
     console.log('Data unavailable. Retry in a moment.');
     return r;
   }
-  if (r.unknownEvents?.length) console.log(`No contract in scope declares ${r.unknownEvents.map((e) => `"${e}"`).join(', ')}.`);
   const rows = r.rows ?? [];
   if (!rows.length) {
     console.log(`No ${measure} in the window.`);

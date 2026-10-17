@@ -51,6 +51,15 @@ export function flagAll(flags: ParsedFlags, name: string): string[] {
   return typeof v === 'string' ? [v] : [];
 }
 
+/**
+ * Refuse a flag the command does not take, naming the ones it does: a flag dropped silently
+ * changes what the command means (an alert condition left out fires on everything).
+ */
+export function onlyFlags(flags: ParsedFlags, command: string, takes: readonly string[]): void {
+  const unknown = Object.keys(flags).filter((k) => k !== '_' && !takes.includes(k));
+  if (unknown.length) throw new Error(`Unknown flag --${unknown[0]} for ${command}. It takes ${takes.map((f) => `--${f}`).join(', ')}.`);
+}
+
 export function requirePositional(positional: string[], idx: number, label: string): string {
   const v = positional[idx];
   if (!v) throw new Error(`Missing required ${label}`);

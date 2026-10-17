@@ -1,4 +1,4 @@
-import { monitorCommand, parseWhere, parseDuration, buildIntent, backtestLines, shellQuote } from '../../src/cli/commands/monitor';
+import { monitorCommand, parseDuration, buildIntent, backtestLines, shellQuote } from '../../src/cli/commands/monitor';
 import { parseFlags } from '../../src/cli/commands/_args';
 import { run } from '../../src/cli/index';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
@@ -30,16 +30,20 @@ const ok = (result: unknown) => ({ payload: { ok: true, result, ms: 40 } });
 describe('monitor compile', () => {
     useEnvAuth();
 
-    it('sends --token as the stated token of each field, and refuses one that is not an address, self or a view', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/compile_monitor': () => ok(compiled) });
-        await monitorCommand(['compile', '--on', 'steth', '--event', 'Transfer', '--where', 'value at least 1,000', '--token', 'value=self']);
-        expect(calls[0].body.input.tokens).toEqual([{ field: 'value', token: 'self' }]);
-        await expect(monitorCommand(['compile', '--on', 'steth', '--event', 'Transfer', '--token', 'value=stETH'])).rejects.toThrow(/--token takes <field>=<token>/);
+    it('refuses a flag an event monitor does not take before calling, naming the ones it takes', async () => {
+        const calls = mockApi({});
+        await expect(monitorCommand(['compile', '--on', 'steth', '--event', 'Transfer', '--where', 'value at least 1,000'])).rejects.toThrow(
+            'Unknown flag --where for monitor compile. It takes --on, --group, --chain, --event, --silence, --method, --for, --when, --name, --to, --yes.',
+        );
+        await expect(monitorCommand(['add', '--on', 'pool', '--event', 'Swap', '--usd-above', '1000000'])).rejects.toThrow(/^Unknown flag --usd-above for monitor add\./);
+        await expect(monitorCommand(['add', '--on', 'pool', '--event', 'Swap', '--event', 'Mint', '--token', 'amount0=token0()'])).rejects.toThrow(/^Unknown flag --token for monitor add\./);
+        expect(calls).toHaveLength(0);
     });
 
-    it('turns --on/--event/--where/--to/--name/--chain into the intent and prints the sentence, conditions, backtest, notes and the add line', async () => {
+    it('turns --on/--event/--when/--to/--name/--chain into the intent and prints the sentence, conditions, backtest, notes and the add line', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/compile_monitor': () => ok(compiled) });
-        const args = ['compile', '--on', 'steth', '--event', 'Transfer', '--where', 'value at least 1,000 stETH', '--where', `to is not ${ZERO}`, '--to', '#alerts', '--to', 'telegram,ch1', '--name', 'Big transfers', '--chain', '1'];
+        const when = `amount(value, emitter()) >= 1000 and to != ${ZERO}`;
+        const args = ['compile', '--on', 'steth', '--event', 'Transfer', '--when', when, '--to', '#alerts', '--to', 'telegram,ch1', '--name', 'Big transfers', '--chain', '1'];
         const result = await monitorCommand(args);
         expect(calls[0].path).toBe('/api/mainnet/tools/compile_monitor');
         expect(calls[0].body).toEqual({
@@ -48,10 +52,7 @@ describe('monitor compile', () => {
                 contract: 'steth',
                 chainId: 1,
                 event: 'Transfer',
-                where: [
-                    { field: 'value', op: 'at least', value: '1,000 stETH' },
-                    { field: 'to', op: 'is not', value: ZERO },
-                ],
+                when,
                 name: 'Big transfers',
                 destinations: ['#alerts', 'telegram', 'ch1'],
             },
@@ -67,7 +68,7 @@ describe('monitor compile', () => {
             `    2026-10-11 22:00 UTC  0xd6ad…cfac  from=0x1111…1111 to=0x2222…2222 value=2,000 stETH  ${TX('b')}`,
             `    2026-10-10 09:45 UTC  0xd6ad…cfac  from=0x1111…1111 to=0x2222…2222 value=1,001 stETH  ${TX('c')}`,
             '  note: value: compared in base units (no token unit could be resolved for this field).',
-            `Save it with: contract-dev monitor add --on steth --event Transfer --where "value at least 1,000 stETH" --where "to is not ${ZERO}" --to "#alerts" --to telegram,ch1 --name "Big transfers" --chain 1`,
+            `Save it with: contract-dev monitor add --on steth --event Transfer --when "${when}" --to "#alerts" --to telegram,ch1 --name "Big transfers" --chain 1`,
         ]);
         expect(result).toEqual(compiled);
     });
@@ -108,30 +109,18 @@ describe('monitor compile', () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/compile_monitor': () => ({ status: 400, payload: { ok: false, error: 'Transfer has no comparable field "amount". Its fields: from (address), to (address), value (uint256).', code: 'NO_FIELD' } }),
         });
-        await expect(monitorCommand(['compile', '--on', 'steth', '--event', 'Transfer', '--where', 'amount above 5'])).rejects.toThrow('Transfer has no comparable field "amount". Its fields: from (address), to (address), value (uint256).');
+        await expect(monitorCommand(['compile', '--on', 'steth', '--event', 'Transfer', '--when', 'amount > 5'])).rejects.toThrow('Transfer has no comparable field "amount". Its fields: from (address), to (address), value (uint256).');
         expect(calls).toHaveLength(1);
         await expect(monitorCommand(['compile', '--event', 'Transfer'])).rejects.toThrow(/Say where: --on <contract>/);
         await expect(monitorCommand(['compile', '--on', 'steth', '--group', 'Lido', '--event', 'Transfer'])).rejects.toThrow(/not both/);
         await expect(monitorCommand(['compile', '--on', 'steth'])).rejects.toThrow(/Say what to watch: --event <Name>/);
         await expect(monitorCommand(['compile', '--on', 'steth', '--event', 'Transfer', '--method', 'submit'])).rejects.toThrow(/--method is for a silence monitor/);
         await expect(monitorCommand(['compile', '--on', 'steth', '--event', 'Transfer', '--for', '1h'])).rejects.toThrow(/--for is for a silence monitor/);
-        await expect(monitorCommand(['compile', '--on', 'steth', '--silence', '--where', 'value above 5'])).rejects.toThrow(/--where is for an event monitor/);
+        await expect(monitorCommand(['compile', '--on', 'steth', '--silence', '--when', 'value > 5'])).rejects.toThrow(/--when is for an event monitor/);
         await expect(monitorCommand(['compile', '--on', 'steth', '--silence', '--event', 'Transfer', '--method', 'submit'])).rejects.toThrow(/an event or a method, not both/);
         await expect(monitorCommand(['compile', '--on', 'steth', '--event'])).rejects.toThrow(/--event needs the event's name/);
-        await expect(monitorCommand(['compile', '--on', 'steth', '--event', 'Transfer', '--where', 'value'])).rejects.toThrow(/--where must read "<field> <op> <value>"/);
+        await expect(monitorCommand(['compile', '--on', 'steth', '--event', 'Transfer', '--when'])).rejects.toThrow(/--when needs the formula/);
         expect(calls).toHaveLength(1);
-    });
-
-    it('parseWhere reads word ops, two-word ops, symbols with or without spaces, and values with spaces', () => {
-        expect(parseWhere('amount0 at least 10,000 USDC')).toEqual({ field: 'amount0', op: 'at least', value: '10,000 USDC' });
-        expect(parseWhere('to is not 0xabc')).toEqual({ field: 'to', op: 'is not', value: '0xabc' });
-        expect(parseWhere('isDelinquent is true')).toEqual({ field: 'isDelinquent', op: 'is', value: 'true' });
-        expect(parseWhere('value ABOVE 5')).toEqual({ field: 'value', op: 'above', value: '5' });
-        expect(parseWhere('value >= 5')).toEqual({ field: 'value', op: '>=', value: '5' });
-        expect(parseWhere('value>=5')).toEqual({ field: 'value', op: '>=', value: '5' });
-        expect(parseWhere('  shares != 0 ')).toEqual({ field: 'shares', op: '!=', value: '0' });
-        expect(() => parseWhere('value beyond 5')).toThrow(/ops: is, is not, above, at least, below, at most/);
-        expect(() => parseWhere('value at least')).toThrow(/--where must read/);
     });
 
     it('parseDuration: minutes, hours, days, weeks, seconds; a minute to 30 days', () => {
@@ -168,9 +157,9 @@ describe('monitor add from a sentence', () => {
     it('--event calls create_monitor with the intent and prints the sentence and the id: saving replays nothing', async () => {
         const created = { monitor: { id: 'inv9', name: 'Big transfers', kind: 'eventFired', status: 'warming' }, sentence: compiled.sentence, backtest: null };
         const calls = mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok(created) });
-        const result = await monitorCommand(['add', '--on', 'steth', '--event', 'Transfer', '--where', 'value at least 1,000 stETH', '--to', '#alerts', '--name', 'Big transfers']);
+        const result = await monitorCommand(['add', '--on', 'steth', '--event', 'Transfer', '--when', 'amount(value, emitter()) >= 1000', '--to', '#alerts', '--name', 'Big transfers']);
         expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tools/create_monitor']);
-        expect(calls[0].body).toEqual({ input: { mode: 'event', contract: 'steth', event: 'Transfer', where: [{ field: 'value', op: 'at least', value: '1,000 stETH' }], name: 'Big transfers', destinations: ['#alerts'] } });
+        expect(calls[0].body).toEqual({ input: { mode: 'event', contract: 'steth', event: 'Transfer', when: 'amount(value, emitter()) >= 1000', name: 'Big transfers', destinations: ['#alerts'] } });
         const out = printed();
         expect(out).toEqual([compiled.sentence, 'Created monitor "Big transfers" (inv9).']);
         expect(result).toEqual(created);
@@ -188,20 +177,6 @@ describe('monitor add from a sentence', () => {
 
         mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ({ status: 403, payload: { ok: false, error: 'This workspace has used all of its monitors.', code: 'UPGRADE_REQUIRED' } }) });
         await expect(monitorCommand(['add', '--on', 'steth', '--event', 'Transfer'])).rejects.toThrow('This workspace has used all of its monitors.');
-    });
-
-    it('the threshold form is untouched: a metric with --below still posts an invariant, never a tool', async () => {
-        const metrics = [{ id: 'm1', chainId: 1, address: STETH, kind: 'nativeBalance', label: 'Treasury · Native balance', params: null, enabled: true, lastValue: 30000 }];
-        const channels = [{ id: 'ch1', kind: 'telegram', enabled: true, label: null, target: '-100123' }];
-        const calls = mockApi({
-            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: metrics } }),
-            'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
-            'POST /api/mainnet/invariants': (c) => ({ status: 201, payload: { invariant: { id: 'inv1', name: c.body.name, exprText: 'treasury_native_balance >= 25000', warnExprText: null, channelIds: c.body.channelIds, inputs: [] } } }),
-        });
-        await monitorCommand(['add', 'Treasury · Native balance', '--below', '25000', '--to', 'telegram']);
-        expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tracked-metrics?include=unlisted', '/api/cli/alert-channels', '/api/mainnet/invariants']);
-        expect(printed()[0]).toBe('Created monitor "Treasury · Native balance" (inv1): treasury_native_balance >= 25000');
-        await expect(monitorCommand(['add', 'Treasury · Native balance', '--to', 'telegram'])).rejects.toThrow(/needs a rule/);
     });
 });
 
@@ -265,11 +240,26 @@ describe('monitor add: several events, dollars', () => {
         expect(out).toHaveLength(3);
     });
 
-    it('--where goes with one event only; --usd-above sends usdAbove and takes $ and commas', async () => {
-        await expect(monitorCommand(['add', '--on', 'pool', '--event', 'Swap', '--event', 'Mint', '--where', 'amount0 above 5'])).rejects.toThrow(/--where goes with one event/);
+    it('a dollar line is a usd() formula in --when, sent as written', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok({ monitor: { id: 'm1', name: 'Big swaps' }, sentence: 'Swap worth more than $1,000,000', backtest: null }) });
-        await monitorCommand(['add', '--on', 'pool', '--event', 'Swap', '--usd-above', '$1,000,000', '--name', 'Big swaps']);
-        expect(calls[0].body.input).toEqual({ mode: 'event', contract: 'pool', event: 'Swap', usdAbove: 1_000_000, name: 'Big swaps' });
-        await expect(monitorCommand(['add', '--on', 'pool', '--event', 'Swap', '--usd-above', 'lots'])).rejects.toThrow(/needs a dollar amount/);
+        await monitorCommand(['add', '--on', 'pool', '--event', 'Swap', '--when', 'usd(abs(amount0), token0()) > 1000000', '--name', 'Big swaps']);
+        expect(calls[0].body.input).toEqual({ mode: 'event', contract: 'pool', event: 'Swap', when: 'usd(abs(amount0), token0()) > 1000000', name: 'Big swaps' });
+    });
+});
+
+describe('--when, one formula', () => {
+    useEnvAuth();
+
+    it('an event monitor sends its formula as when', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/compile_monitor': () => ({ payload: { ok: true, result: compiled, ms: 40 } }) });
+        await monitorCommand(['compile', '--on', 'steth', '--event', 'Transfer', '--when', 'amount(value, emitter()) >= 1000']);
+        expect(calls[0].body.input).toMatchObject({ mode: 'event', contract: 'steth', event: 'Transfer', when: 'amount(value, emitter()) >= 1000' });
+    });
+
+    it('a tracked value with --when goes to add_value_monitor; a bare --warn number is refused', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/add_value_monitor': () => ({ payload: { ok: true, result: { monitor: { id: 'm1', name: 'Treasury', rule: 'treasury >= 25000' } }, ms: 40 } }) });
+        await monitorCommand(['add', 'Treasury', '--when', 'value < 25000', '--warn', 'value < 30000', '--to', '#alerts']);
+        expect(calls[0].body.input).toEqual({ value: 'Treasury', when: 'value < 25000', warn: 'value < 30000', to: ['#alerts'] });
+        await expect(monitorCommand(['add', 'Treasury', '--when', 'value < 25000', '--warn', '30000'])).rejects.toThrow('--warn is a formula: --warn "value < 30000".');
     });
 });

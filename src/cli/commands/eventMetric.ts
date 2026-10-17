@@ -4,7 +4,7 @@
 // series, and the records behind it), update (rename, or replace parts of the definition: the
 // history is read again) and delete. They live under `contract-dev metric`, beside tracked values.
 // --json hands back the tool's own result.
-import { parseFlags, flag, flagAll, requirePositional, type ParsedFlags } from './_args';
+import { parseFlags, flag, flagAll, onlyFlags, requirePositional, type ParsedFlags } from './_args';
 import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag } from '../data';
@@ -34,11 +34,21 @@ export const EVENT_METRIC_HELP = `Event metrics — a number added up from event
                                                       recorded each minute from now: the plain sum, or in dollars when
                                                       the column states its token (or --token: an address, self, or a
                                                       view each contract answers, like asset()), each priced in its own
-  contract-dev metric monitor <metric> --name "<name>" [--to <destination>…] [--level warning] [--preview]
-                              --when "<condition>"    Every new record that meets it pages, with its transaction
-                            | --window <15m|1h|24h…> (--above <n> | --below <n> | --rises <pct> | --falls <pct>
-                              | --usual <times> --baseline-days <n>) [--per total|each]
-                                                      The metric over a moving window; alerts while it holds
+  contract-dev metric monitor <metric> --name "<name>" --when "<formula>" [--per total|each] [--level critical|warning]
+                              [--to <destination>…] [--preview]
+                                                      An alert on a metric, one formula:
+                                                        value > 1000              each new record that meets it pages,
+                                                                                  with its transaction (an event metric)
+                                                        total(1h) > 5000000       the metric over a moving window, against
+                                                                                  a line (< for below)
+                                                        total(1h) > before(1h) * 1.1    up more than 10% on the hour before
+                                                        total(24h) < before(24h) * 0.5  down more than half on the day before
+                                                        total(1h) > 3 * usual(1h, 7d)   over three times its usual hour,
+                                                                                  averaged over 7 days
+                                                        value > 50000             an item or group metric's level now
+                                                      A window is 5 minutes to 7 days, and alerts while it holds. --per
+                                                      is required on a split metric: total (as a whole) or each (every
+                                                      contract on its own)
 
 A read calls a view as of the start of the event's transaction: on the emitting contract unless "on" names another
 (a parameter, an earlier read, or 0x…); "with" passes arguments. A view that reads no storage is read once.
@@ -80,7 +90,7 @@ function topLevel(text: string): string[] {
   return out;
 }
 
-const READ_HELP = '--read takes name=call, then optionally ".output", "on <target>" and "with <args>": --read "price=slot0().sqrtPriceX96", --read "dec=decimals() returns (uint8) on t0", --read "f=getFee(address) on 0xReg… with emitter()".';
+const READ_HELP = '--read takes name=call, then optionally ".output", "on <target>" and "with <args>": --read "price=slot0().sqrtPriceX96", --read "dec=decimals() returns (uint8) on t0", --read "f=getFee(address) on 0xReg… with emitter()"; a coin balance --read "eth=balance(emitter())"; a storage word --read "cap=slot(emitter(), 7)" or --read "owed=slot(emitter(), keccak(sender(), 3))"; each read exactly as of the event\'s transaction.';
 
 /** `--read "f=getFee(address) returns (uint24) on 0xReg… with emitter()"` as the tool's read. */
 export function parseRead(raw: string, fixed: Set<string>): Record<string, unknown> {
@@ -219,37 +229,24 @@ export async function deleteEventMetric(args: string[]): Promise<unknown> {
 export async function monitorEventMetric(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) return void console.log(EVENT_METRIC_HELP);
   const flags = parseFlags(args);
+  onlyFlags(flags, 'metric monitor', ['name', 'when', 'per', 'level', 'to', 'preview']);
   const metric = requirePositional(flags._ as string[], 0, 'metric');
   const name = flag(flags, 'name');
   if (!name) throw new Error('--name says what it watches for: --name "Large swap fee".');
   // without --to the monitor records its alerts on its page until a destination is linked, like every monitor
   const to = flagAll(flags, 'to').filter((t) => t !== 'true');
-  const input: Record<string, unknown> = { metric, name, ...(to.length ? { to } : {}) };
   const when = flag(flags, 'when');
-  if (when !== undefined) input.when = when;
-  for (const key of ['window', 'per', 'level'] as const) {
+  if (when === undefined || when === 'true' || !when.trim()) throw new Error('--when says when it alerts: --when "value > 1000" (each record), "total(1h) > before(1h) * 1.1" (a window), "value > 50000" (an item or group metric).');
+  const input: Record<string, unknown> = { metric, name, when, ...(to.length ? { to } : {}) };
+  for (const key of ['per', 'level'] as const) {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }
-  for (const key of ['above', 'below'] as const) {
-    const v = flag(flags, key);
-    if (v !== undefined) input[key] = /^-?\d+(\.\d+)?$/.test(String(v)) ? Number(v) : String(v);
-  }
-  for (const key of ['rises', 'falls', 'usual'] as const) {
-    const v = flag(flags, key);
-    if (v !== undefined) {
-      const n = Number(String(v).replace(/[%x×]$/i, ''));
-      if (!Number.isFinite(n)) throw new Error(`--${key} takes a number.`);
-      input[key] = n;
-    }
-  }
-  const days = flag(flags, 'baseline-days');
-  if (days !== undefined) input.baselineDays = Number(String(days).replace(/d$/, ''));
   if (flag(flags, 'preview') !== undefined) input.preview = true;
   return print('add_metric_monitor', input);
 }
 
-const CALL_HELP = '--call takes name=call, then optionally ".output", "on <address>", "with <args>" and "decimals <n>": --call "pooled=getTotalPooledEther() decimals 18".';
+const CALL_HELP = '--call takes name=call, then optionally ".output", "on <target>", "with <args>" and "decimals <n>": --call "pooled=getTotalPooledEther() decimals 18"; a coin balance is --call "eth=balance(self)"; a storage word --call "cap=slot(self, 7)" or --call "owed=slot(self, keccak(0xLender…, 3))".';
 
 /** `--call "debt=totalDebt() on 0x… with 0xabc…, 5 decimals 18"` as the tool's call. */
 export function parseFormulaCall(raw: string): Record<string, unknown> {
@@ -269,15 +266,22 @@ export function parseFormulaCall(raw: string): Record<string, unknown> {
 /** `track formula <contract> --label … --call … --value …`: a value worked out from several views at one block. */
 export async function trackFormula(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) {
-    console.log(`contract-dev track formula <contract> --label "<name>" --call "<name>=<call> [on <address>] [with <args>] [decimals <n>]"… --value "<expression>" [--chain <id>] [--preview]
+    console.log(`contract-dev track formula <contract> --label "<name>" --call "<name>=<call> [on <target>] [with <args>] [decimals <n>]"… --value "<expression>" [--chain <id>] [--preview]
 
-A value worked out from several view calls read at the same block, sampled each minute, charted, reported and
-monitored like any tracked value. Calls go to <contract> unless they name another with "on". The value is an
-expression over the calls' names (buffer - debt, assets / supply, max(a - b, 0)), worked out exactly.
+A value worked out from several reads at the same block, sampled every block, charted, reported and monitored
+like any tracked value. A call is a view (getBuffer(), getFee(address) with 0x…; on <contract> unless "on"
+names another: a 0x address, or a view the contract answers with one, like asset()), a coin balance
+(balance(self), balance(0x…)), or a storage word (slot(self, 7); slot(self, keccak(0xLender…, 3)) for a
+mapping's key). A view that returns an array answers a list: owners[1], len(owners), indexOf(owners, 0x…),
+sum(amounts). The value is an expression over the calls' names (buffer - debt, assets / supply, max(a - b, 0)),
+worked out exactly; dollars only through a stated token: usd(held, 0xa0b8…) at the current price, amount(raw, 0x…)
+by the token's decimals, where the token is its 0x address or a call that answers one (t0 = token0()).
 
-Example:
+Examples:
   contract-dev track formula 0xae7ab96520de3a18e5e111b5eaab095312d7fe84 --label "stETH share rate" \\
     --call "pooled=getTotalPooledEther() decimals 18" --call "shares=getTotalShares() decimals 18" --value "pooled / shares"
+  contract-dev track formula 0xVault… --label "Headroom" --call "held=totalAssets()" --call "debt=totalDebt() on 0xRisk…" \\
+    --call "eth=balance(self)" --value "usd(held, 0xa0b8…) - usd(debt, 0xa0b8…) + usd(eth, 0x0000000000000000000000000000000000000000)"
 `);
     return;
   }

@@ -2,7 +2,8 @@
 // members), the rules that keep it filled, its name pattern, its columns and its monitors — and
 // `factory`, the question asked before a rule: what did this factory deploy, and is it watched.
 // Each command sends the tool its input, prints the answer, and hands --json the tool's own result.
-import { parseFlags, flag, requireFlag, requirePositional, type ParsedFlags } from './_args';
+import { parseFlags, flag, flagAll, onlyFlags, requireFlag, requirePositional, type ParsedFlags } from './_args';
+import { parseFormulaCall } from './eventMetric';
 import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag, limitFlag } from '../data';
@@ -13,7 +14,7 @@ const HELP = `contract-dev group — a group of contracts: the rules that fill i
 
 Usage:
   contract-dev group show <group>                     Rules, table columns, monitors and members with each column's value
-  contract-dev group rule add <group> --factory <address> [--event <Name>] [--field <arg>] [--chain <id|name>]
+  contract-dev group rule add <group> --factory <address> --event <Name> --field <arg> [--chain <id|name>]
                               [--name-pattern "…"] [--recent] [--preview]
                                                       Every contract the factory has ever deployed joins the group, in
                                                       the background (thousands take a while), then each new one;
@@ -29,49 +30,59 @@ Usage:
                               [--decimals-from "decimals()"] [--token <token> [--show usd]] [--unit int|pct|duration|rate|raw] [--attribute]
                               [--type address|uint|bool|string] [--key <key>] [--preview]
                                                       A column on the group's table: one read on every member, tracked
-  contract-dev group monitor add <group> --name "…" --column <key|label> (--above <n> | --below <n> |
-                              --above-column <key> | --below-column <key>) [--warn-pct <n>] [--preview]
+  contract-dev group column add <group> --label "…" [--call "<name>=<call> [on <target>] [with <args>] [decimals <n>]"]…
+                              --formula "<expr>" [--type bool] [--token <token> [--show usd]] [--unit …] [--key <key>] [--preview]
+                                                      A FORMULA column: calls resolved on every member (a view, balance(self),
+                                                      slot(self, <key>)) and an expression over them and the group's other
+                                                      columns ({Held} - {Required}), one calculated value per member; a
+                                                      yes/no (--type bool, or inferred) a count roll-up counts
+  contract-dev group monitor add <group> --name "…" --column <key|label> --when "<formula>" [--warn "<formula>"] [--preview]
                                                       One monitor on every member, judged on a column of the table
 
 --preview on rule add, name-pattern, column add and monitor add shows what would happen — the contracts
 found, the names, the first readings, the monitor's sentence — and saves nothing.
 --chain takes an id or a name (ethereum, arbitrum, avalanche, sepolia); the server reads ethereum without one.
---event / --field name the factory's creation event and the argument that is the new contract; left out, the
-server guesses from the ABI (\`contract-dev factory <address>\` shows what it would read).
+--event / --field name the factory's creation event and its address argument that is the new contract. Both are
+required: nothing is picked from names. Without them the answer lists every event with an address argument.
 --args: the read's argument values in order, comma-separated. Nothing is assumed about what a reading is: --token
 says it is an amount of a token (its 0x address, self for each member itself, or a view each member answers with the
 token's address, like asset()); its decimals then scale it, --show usd puts it in dollars, and a roll-up can price it.
 Without one it is the plain number: --decimals scales the raw word, --decimals-from names a view on each member that
 answers its own scale. --attribute reads a non-numeric value once.
---above / --below are in the column's display unit (95 for 95% on a pct column); --above-column and
---below-column compare against another column of the same table. --warn-pct adds a warning tier that many
-percent before the line.
+--when names the column's reading as value: value < 1000000, value > 95 (in the column's display unit, 95 for 95%
+on a pct column), or value > {Cap} against another column of the same table. --warn is the same comparison nearer
+the healthy side, a warning tier: --warn "value < 1100000" beside --when "value < 1000000", --warn "value > {Cap} * 0.9"
+beside --when "value > {Cap}".
 
 Examples:
   contract-dev group show pools
   contract-dev group rule add pools --factory 0x1F98431c8aD98523631AE4a59f267346ea31F984 --event PoolCreated --field pool --preview
   contract-dev group name-pattern pools "{token0().symbol()}/{token1().symbol()} pool"
   contract-dev group column add vaults --label "Assets" --read "totalAssets()" --token "asset()" --show usd
-  contract-dev group monitor add vaults --name "Vault draining" --column assets --below 1000000 --warn-pct 10
+  contract-dev group column add vaults --label "Headroom" --call "held=totalAssets()" --call "required=coverageLiquidity()" \\
+    --formula "held - required" --token "asset()" --show usd
+  contract-dev group column add vaults --label "Breached" --formula "{Held} < {Required}"
+  contract-dev group monitor add vaults --name "Vault draining" --column assets --when "value < 1000000" --warn "value < 1100000"
+  contract-dev group monitor add vaults --name "Over cap" --column util --when "value > {Cap}"
 `;
 
 const FACTORY_HELP = `contract-dev factory — the contracts a factory deployed
 
 Usage:
-  contract-dev factory <address> [--chain <id|name>] [--event <Name>] [--field <arg>] [--limit <n>]
-                                                      How many, the newest with their names and dates, which are watched
-  contract-dev factory <address> --watch --group <name>
+  contract-dev factory <address> --event <Name> --field <arg> [--chain <id|name>] [--limit <n>]
+                                                      How many, the newest with their dates, which are watched
+  contract-dev factory <address> --event <Name> --field <arg> --watch --group <name>
                                                       Then watch the ones not yet watched, tagged into the group
 
-The creation event (PoolCreated, PairCreated, MarketDeployed…) is guessed from the factory's ABI. The answer
-says what it read and, when it guessed, lists every event with an address argument, so --event <Name>
---field <arg> can correct it. A long history is read as far as one go allows; the answer then says how far
+--event is the factory's event that announces a new contract (PoolCreated, MarketDeployed…) and --field its address
+argument that IS the new contract (pool, market…). Both are required: nothing is picked from names. Without them
+the answer lists every event with an address argument. The new contracts get no invented names: name them with
+contract-dev group name-pattern <group> "<pattern>". A long history is read as far as one go allows; the answer then says how far
 it got, and the total is a floor. --watch takes the newest not yet watched, up to 150 at a time: on a factory
 with thousands of children, watch the ones that matter by address instead. Afterwards a rule keeps the group
-filled: contract-dev group rule add <group> --factory <address>.
+filled: contract-dev group rule add <group> --factory <address> --event <Name> --field <arg>.
 
 Examples:
-  contract-dev factory 0x1F98431c8aD98523631AE4a59f267346ea31F984
   contract-dev factory 0x1F98431c8aD98523631AE4a59f267346ea31F984 --event PoolCreated --field pool --limit 50
   contract-dev factory 0x02Ca7772FF14a9F6c1a08aF385aA96bb1b34175A --event VaultCreated --field vault --watch --group Lido
 `;
@@ -112,6 +123,10 @@ export interface GroupColumn {
   decimals: number;
   decimalsFrom: string | null;
   unit: ColumnUnit;
+  /** A formula column (the read grammar): its expression, its calls, and `type` bool when it answers yes or no. */
+  expr?: string;
+  type?: string;
+  calls?: Array<{ name: string; kind?: string; signature?: string; on?: string; args?: string[]; key?: string; decimals?: number }>;
   kind: string;
 }
 
@@ -170,10 +185,36 @@ export interface NamePatternResult {
 export interface ColumnResult {
   preview?: true;
   group: string;
-  column: { key: string; label: string; kind: string; signature: string; args: string[]; word: number; decimals: number; unit: ColumnUnit; decimalsFrom?: string | null };
-  sample: Array<{ address: string; name: string; value: number | null }>;
+  column: {
+    key: string;
+    label: string;
+    kind: string;
+    signature: string;
+    args: string[];
+    word: number;
+    decimals: number;
+    unit: ColumnUnit;
+    decimalsFrom?: string | null;
+    /** A formula column: its calls and its expression; `type` bool when it answers yes or no. */
+    calls?: Array<{ name: string; kind?: string; signature?: string; on?: string; args?: string[]; key?: string; decimals?: number }>;
+    expr?: string;
+    type?: string;
+    token?: string;
+    show?: string;
+  };
+  sample: Array<{ address: string; name: string; value: number | string | null; error?: string }>;
   contracts: number;
   note?: string | null;
+}
+
+/** A formula column's call in words: `held = totalAssets() on asset() decimals 18`, `eth = balance(self)`, `cap = slot(self, 7)`. */
+function callWords(c: NonNullable<ColumnResult['column']['calls']>[number]): string {
+  const on = c.on && c.on !== 'self' ? c.on : null;
+  let text: string;
+  if (c.kind === 'balance') text = `balance(${on ?? 'self'})`;
+  else if (c.kind === 'slot') text = `slot(${on ?? 'self'}, ${c.key ?? '0'})`;
+  else text = `${c.signature ?? ''}${on ? ` on ${on}` : ''}${c.args?.length ? ` with ${c.args.join(', ')}` : ''}`;
+  return `${c.name} = ${text}${c.decimals ? ` decimals ${c.decimals}` : ''}`;
 }
 
 export interface GroupMonitorResult {
@@ -187,7 +228,7 @@ export interface FactoryResult {
   factory: string;
   chainId: number;
   events: string[];
-  used: Array<{ event: string; field: string; by: 'pick' | 'heuristic' }>;
+  used: Array<{ event: string; field: string }>;
   candidates: Array<{ event: string; addressArgs: string[] }>;
   total: number;
   complete: boolean;
@@ -199,7 +240,7 @@ export interface FactoryResult {
   since: string | null;
   watched: number;
   notWatched: number;
-  newest: Array<{ address: string; name: string | null; at: string | null; watched: boolean }>;
+  newest: Array<{ address: string; at: string | null; watched: boolean }>;
   notWatchedAddresses: string[];
   notWatchedMore?: number;
 }
@@ -276,7 +317,7 @@ export function groupLines(g: GroupDescription): string[] {
         [
           { header: 'Key', value: (c) => c.key },
           { header: 'Label', value: (c) => c.label, max: 32 },
-          { header: 'Read', value: (c) => `${c.read}${c.args?.length ? ` (${c.args.join(', ')})` : ''}`, max: 48 },
+          { header: 'Read', value: (c) => (c.kind === 'formula' ? `formula ${c.expr ?? ''}${c.calls?.length ? ` with ${c.calls.map(callWords).join('; ')}` : ''}` : `${c.read}${c.args?.length ? ` (${c.args.join(', ')})` : ''}`), max: 64 },
           { header: 'Unit', value: (c) => c.unit ?? 'raw' },
           { header: 'Decimals', value: decimalsWords },
         ],
@@ -314,7 +355,12 @@ export function groupLines(g: GroupDescription): string[] {
           { header: 'Chain', value: (m) => chainLabel(m.chainId) },
           { header: 'Name', value: (m) => m.name || DASH, max: 40 },
           { header: 'Address', value: (m) => m.address },
-          ...columns.map((c) => ({ header: c.key, value: (m: GroupMember) => fmtColumnValue(m.values?.[c.key], c.unit), align: 'right' as const })),
+          ...columns.map((c) => ({
+            header: c.key,
+            // a yes/no formula column reads 1 or 0
+            value: (m: GroupMember) => (c.kind === 'formula' && c.type === 'bool' ? (m.values?.[c.key] == null ? DASH : m.values?.[c.key] ? 'Yes' : 'No') : fmtColumnValue(m.values?.[c.key], c.unit)),
+            align: 'right' as const,
+          })),
         ],
         '  ',
       ),
@@ -369,21 +415,25 @@ export function namePatternLines(r: NamePatternResult): string[] {
 export function columnLines(r: ColumnResult): string[] {
   const c = r.column;
   const read = `${c.signature}${c.args?.length ? ` with ${c.args.join(', ')}` : ''}`;
-  const lines = [
-    r.preview ? 'Preview: nothing saved.' : `Added column "${c.label}" (${c.key}) to ${r.group} · ${plural(r.contracts, 'contract')}.`,
-    `Column ${c.key} · ${c.label} · reads ${read} · ${c.unit ?? 'raw'} · decimals ${decimalsWords(c)}`,
-  ];
+  const lines = [r.preview ? 'Preview: nothing saved.' : `Added column "${c.label}" (${c.key}) to ${r.group} · ${plural(r.contracts, 'contract')}.`];
+  if (c.kind === 'formula') {
+    const amount = c.token ? ` · amount of ${c.token}${c.show === 'usd' ? ' shown in dollars' : ''}` : '';
+    lines.push(`Column ${c.key} · ${c.label} · formula ${c.expr ?? ''} · ${c.type === 'bool' ? 'yes/no' : (c.unit ?? 'raw')}${amount}`);
+    for (const call of c.calls ?? []) lines.push(`  ${callWords(call)}`);
+  } else lines.push(`Column ${c.key} · ${c.label} · reads ${read} · ${c.unit ?? 'raw'} · decimals ${decimalsWords(c)}`);
   const sample = r.sample ?? [];
   if (sample.length) lines.push('', `Readings (${fmtInt(sample.length)})`);
   else if (r.preview) lines.push('', 'No readings yet.');
   if (sample.length) {
+    const yesNo = c.kind === 'formula' && c.type === 'bool';
     lines.push(
       ...table(
         sample,
         [
           { header: 'Name', value: (s) => s.name || DASH, max: 40 },
           { header: 'Address', value: (s) => s.address },
-          { header: 'Value', value: (s) => fmtColumnValue(s.value, c.unit), align: 'right' },
+          { header: 'Value', value: (s) => (s.error ? DASH : yesNo ? (s.value == null ? DASH : Number(s.value) ? 'Yes' : 'No') : fmtColumnValue(s.value == null ? null : Number(s.value), c.unit)), align: 'right' },
+          ...(sample.some((s) => s.error) ? [{ header: 'Reason', value: (s: (typeof sample)[number]) => s.error ?? '', max: 60 }] : []),
         ],
         '  ',
       ),
@@ -398,11 +448,11 @@ export function groupMonitorLines(r: GroupMonitorResult): string[] {
   return [r.preview ? 'Preview: nothing saved.' : `Added monitor "${m.name}" (${m.id}) to ${r.group}.`, m.words, `Covers ${plural(m.contracts ?? r.contracts, 'contract')}.`];
 }
 
-/** What was read and whether it was a guess, the totals, the newest contracts, and the other readings on a guess. */
+/** What was read, the totals, and the newest contracts. */
 export function factoryLines(r: FactoryResult): string[] {
   const used = r.used?.[0];
   const lines: string[] = [];
-  if (used) lines.push(`Read ${used.event}.${used.field} (${used.by === 'pick' ? 'your pick' : 'guessed'})`);
+  if (used) lines.push(`Read ${used.event}.${used.field}`);
   const coverage = r.complete
     ? 'the whole history'
     : r.readBackTo !== undefined
@@ -414,15 +464,11 @@ export function factoryLines(r: FactoryResult): string[] {
     lines.push(
       '',
       ...table(newest, [
-        { header: 'Name', value: (c) => c.name || DASH, max: 40 },
         { header: 'Address', value: (c) => c.address },
         { header: 'Deployed', value: (c) => c.at ?? DASH },
         { header: 'Watched', value: (c) => (c.watched ? 'yes' : 'no') },
       ]),
     );
-  }
-  if (used?.by === 'heuristic' && r.candidates?.length) {
-    lines.push('', `Guessed from the ABI. Events with an address argument: ${r.candidates.map((c) => `${c.event}(${c.addressArgs.join(', ')})`).join(', ')} — pass --event <Name> --field <arg> to pick.`);
   }
   return lines;
 }
@@ -529,6 +575,8 @@ async function addRule(args: string[]): Promise<RuleResult | void> {
   if (registry !== undefined && (event !== undefined || field !== undefined)) throw new Error('--event and --field go with --factory');
   if (registry !== undefined && (fn === undefined || fn === 'true')) throw new Error('--registry needs --function "<view()>", the one that lists the contracts.');
   if (factory !== undefined && fn !== undefined) throw new Error('--function goes with --registry');
+  if (factory !== undefined && (event === undefined || event === 'true' || field === undefined || field === 'true'))
+    throw new Error("--factory needs --event <Name> (the event that announces a new contract) and --field <arg> (its address argument that is the new contract). contract-dev describe <factory> lists its events.");
   const pattern = flag(flags, 'name-pattern');
   if (pattern === 'true') throw new Error('--name-pattern needs the pattern, in quotes');
   const chainId = chainFlag(flags);
@@ -537,8 +585,8 @@ async function addRule(args: string[]): Promise<RuleResult | void> {
   if (chainId !== undefined) input.chainId = chainId;
   if (factory !== undefined) {
     input.factory = factory;
-    if (event !== undefined) input.event = event;
-    if (field !== undefined) input.field = field;
+    input.event = event;
+    input.field = field;
   } else {
     input.registry = registry;
     input.function = fn;
@@ -574,6 +622,7 @@ async function namePatternCommand(args: string[]): Promise<NamePatternResult | v
 
 const UNITS = ['usd', 'int', 'pct', 'duration', 'rate', 'raw'] as const;
 const TYPES = ['address', 'uint', 'bool', 'string'] as const;
+const COLUMN_HELP = 'A column is one read on every member (--read "totalAssets()"), or a formula: --call "held=totalAssets()" --call "eth=balance(self)" --formula "held - {Required}" (try: contract-dev group help).';
 
 async function columnCommand(args: string[]): Promise<unknown> {
   const [verb, ...rest] = args;
@@ -602,8 +651,18 @@ async function addColumn(args: string[]): Promise<ColumnResult | void> {
   const flags = parseFlags(args);
   const group = requirePositional(flags._ as string[], 0, 'group');
   const label = requireFlag(flags, 'label');
-  const read = requireFlag(flags, 'read');
-  const input: Record<string, unknown> = { group, label, read };
+  // one read on every member (--read), or a formula column: --call … (each a view, balance(…) or slot(…)) and --formula
+  const read = flag(flags, 'read');
+  const calls = flagAll(flags, 'call').map(parseFormulaCall);
+  const formula = flag(flags, 'formula');
+  if ((read === undefined || read === 'true') && (formula === undefined || formula === 'true')) throw new Error(COLUMN_HELP);
+  if (read !== undefined && read !== 'true' && (formula !== undefined || calls.length > 0)) throw new Error('Pass --read for one view on every member, or --call … --formula "<expr>" for a formula column, not both.');
+  const input: Record<string, unknown> = { group, label };
+  if (read !== undefined && read !== 'true') input.read = read;
+  if (formula !== undefined && formula !== 'true') {
+    input.formula = formula;
+    if (calls.length > 0) input.calls = calls;
+  }
   const key = flag(flags, 'key');
   if (key !== undefined && key !== 'true') input.key = key;
   const argsRaw = flag(flags, 'args');
@@ -665,21 +724,19 @@ async function addGroupMonitor(args: string[]): Promise<GroupMonitorResult | voi
   }
   const flags = parseFlags(args);
   const group = requirePositional(flags._ as string[], 0, 'group');
+  onlyFlags(flags, 'group monitor add', ['name', 'column', 'when', 'warn', 'preview']);
   const name = requireFlag(flags, 'name');
   const column = requireFlag(flags, 'column');
-  const lines = (['above', 'below', 'above-column', 'below-column'] as const).filter((f) => flag(flags, f) !== undefined);
-  if (lines.length !== 1) throw new Error('Draw one line: --above <n>, --below <n>, --above-column <key> or --below-column <key>.');
-  const [line] = lines;
-  const input: Record<string, unknown> = { group, name, column, when: line.startsWith('above') ? 'above' : 'below' };
-  if (line === 'above' || line === 'below') {
-    input.threshold = numberFlag(flags, line);
-  } else {
-    const other = flag(flags, line);
-    if (other === 'true' || !other) throw new Error(`--${line} needs the other column's key`);
-    input.otherColumn = other;
+  // one formula in the shared grammar, judged by the server: value < 1000000, value > {Required}
+  const when = flag(flags, 'when');
+  if (when === undefined || when === 'true' || !when.trim()) throw new Error('Draw the line with --when: --when "value < 1000000" (or "value > {Other column}").');
+  const input: Record<string, unknown> = { group, name, column, when };
+  const warn = flag(flags, 'warn');
+  if (warn !== undefined) {
+    if (warn === 'true' || !warn.trim()) throw new Error('--warn needs the formula: --warn "value < 1100000".');
+    if (/^-?[\d.,%]+$/.test(warn.trim())) throw new Error(`--warn is a formula: the same comparison as --when, nearer the healthy side (--warn "value < 1100000" beside --when "value < 1000000").`);
+    input.warn = warn;
   }
-  const warnPct = numberFlag(flags, 'warn-pct');
-  if (warnPct !== undefined) input.warnPct = warnPct;
   if (previewFlag(flags)) input.preview = true;
 
   const r = await runTool<GroupMonitorResult>(requireAuth(), 'add_group_monitor', input);
@@ -705,11 +762,11 @@ export async function factoryCommand(args: string[]): Promise<FactoryResult | (F
   if (chainId !== undefined) input.chainId = chainId;
   if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 20, 500);
   const event = flag(flags, 'event');
-  if (event === 'true') throw new Error("--event needs the event's name");
-  if (event !== undefined) input.event = event;
   const field = flag(flags, 'field');
-  if (field === 'true') throw new Error("--field needs the argument's name");
-  if (field !== undefined) input.field = field;
+  if (event === undefined || event === 'true' || field === undefined || field === 'true')
+    throw new Error("Say which event announces a new contract and which of its address arguments is the new contract: --event <Name> --field <arg>. contract-dev describe <factory> lists its events.");
+  input.event = event;
+  input.field = field;
 
   const auth = requireAuth();
   const r = await runTool<FactoryResult>(auth, 'factory_contracts', input);
@@ -722,15 +779,11 @@ export async function factoryCommand(args: string[]): Promise<FactoryResult | (F
     console.log('Every contract it deployed is watched already.');
     return r;
   }
-  // The names the factory answer already knows go along, in the same order as the addresses.
-  const known = new Map((r.newest ?? []).map((c) => [c.address.toLowerCase(), c.name ?? '']));
-  const names = addresses.map((a) => known.get(a.toLowerCase()) ?? '');
-  // a factory's children are named by their pair or the group's pattern: the explorer lookup (a second each) is skipped
+  // a factory's children are named by the group's name pattern: the explorer lookup (a second each) is skipped
   const watched = await runTool<WatchContractsResult>(auth, 'watch_contracts', {
     lookupNames: false,
     chainId: r.chainId,
     addresses,
-    ...(names.some(Boolean) ? { names } : {}),
     group,
     ...(addresses.length > MANY ? { confirmMany: true } : {}),
   });
