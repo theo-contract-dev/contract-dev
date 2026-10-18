@@ -10,36 +10,18 @@ import { oracleLines, type ConsoleOracles } from './oracles';
 import { STANDARD_LABEL } from './inspect';
 import { parseTimeZone } from './report';
 
-const HELP = `contract-dev find / describe / compare / activity query — ask the workspace a question
+const HELP = `contract-dev find / describe — ask the workspace a question
 
 Usage:
   contract-dev find <query>                         What a name points at: contracts (by name, address or a kind word:
                                                     pools, vaults, tokens, nfts, proxies), groups, metrics, monitors,
                                                     reports, destinations
   contract-dev describe <contract> [--chain <id>]   What a watched contract is: kinds, standards, groups, TVL, owner,
-                                                    implementation, token; its events and write functions (what it
-                                                    calls: contract-dev dependencies <contract>)
-  contract-dev compare [scope] [--by <measure>] [--window <w>] [--limit <n>]
-                                                    Rank the contracts in a scope by one measure, against the window before
-  contract-dev activity query --measure transactions|wallets [scope] [--by contract,day] [--window <w>] [--tz <zone>]
-                                                    Counts per contract per day (a pivot), or by whatever --by names
-
-Scope (compare, activity query) — the whole workspace, or one of:
-  --group <name>            A group of contracts
-  --contract <ref>          One watched contract, by address or name (--chain picks between chains)
-  --chain <id|name>         One chain
-
---by (compare): transactions · activeWallets · volumeInUsd · volumeOutUsd · tvlUsd · revertedShare. Default transactions.
---by (activity query): contract, day or both, comma-separated. Default contract,day.
-Events (counted, summed or ranked per contract or day, in formulas): \`contract-dev events --event <Name> --by …\`.
---window 1h|24h|7d|30d|90d (default 7d). A Free workspace reads 24h; the answer says so when it was clamped.
---tz: the IANA zone the days are cut in (default: this machine's).
+                                                    implementation, token; its events and write functions
 
 Examples:
   contract-dev find pools
   contract-dev describe steth
-  contract-dev compare --group pools --by activeWallets --window 7d
-  contract-dev activity query --measure transactions --group pools --by contract,day
 `;
 
 const HELP_WORDS = ['help', '-h', '--help'];
@@ -290,38 +272,6 @@ function measureFlag(flags: ParsedFlags): Measure {
   return hit;
 }
 
-export async function compareCommand(args: string[]): Promise<CompareResult | void> {
-  if (HELP_WORDS.includes(args[0])) {
-    console.log(HELP);
-    return;
-  }
-  const flags = parseFlags(args);
-  const scope = scopeFromFlags(flags);
-  const by = measureFlag(flags);
-  const window = windowFlag(flags);
-  const input: Record<string, unknown> = { ...(scope ? { scope } : {}), window, by };
-  if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 25, 100);
-
-  const r = await runTool<CompareResult>(requireAuth(), 'compare_activity', input);
-  console.log(`${scopeWords(r.scope)} · by ${r.by} · last ${r.window ?? window}`);
-  const clamped = servedRangeNote(window, r.window);
-  if (clamped) console.log(clamped);
-  const rows = r.rows ?? [];
-  if (!rows.length) {
-    console.log('No contracts in scope.');
-    return r;
-  }
-  console.log('');
-  for (const line of table(rows, [
-    { header: 'Name', value: (x) => x.name, max: 36 },
-    { header: 'Value', value: (x) => fmtByUnit(x.value, r.unit), align: 'right' },
-    { header: 'Previous', value: (x) => fmtByUnit(x.prev, r.unit), align: 'right' },
-    { header: 'Change', value: (x) => fmtChangePct(x.changePct), align: 'right' },
-  ])) {
-    console.log(line);
-  }
-  return r;
-}
 
 // ── activity query ──
 
@@ -386,51 +336,3 @@ export function plainLines(rows: ActivityQueryRow[], groupBy: Dimension[], measu
   return table(rows, columns);
 }
 
-export async function activityQueryCommand(args: string[]): Promise<ActivityQueryResult | void> {
-  if (HELP_WORDS.includes(args[0])) {
-    console.log(HELP);
-    return;
-  }
-  const flags = parseFlags(args);
-  const measureRaw = flag(flags, 'measure');
-  if (measureRaw === undefined || measureRaw === 'true') throw new Error(`--measure is required: one of ${QUERY_MEASURES.join(', ')}`);
-  const measure = QUERY_MEASURES.find((m) => m === measureRaw.trim().toLowerCase());
-  if (!measure) throw new Error(`--measure must be one of ${QUERY_MEASURES.join(', ')} (got: ${measureRaw})`);
-  const byRaw = flag(flags, 'by');
-  let groupBy: Dimension[] | undefined;
-  if (byRaw !== undefined) {
-    if (byRaw === 'true') throw new Error(`--by needs dimensions: any of ${DIMENSIONS.join(', ')}, comma-separated`);
-    groupBy = [];
-    for (const part of byRaw.split(',').map((v) => v.trim().toLowerCase()).filter(Boolean)) {
-      const dim = DIMENSIONS.find((d) => d === part);
-      if (!dim) throw new Error(`--by must name ${DIMENSIONS.join(', ')} (got: ${part})`);
-      if (!groupBy.includes(dim)) groupBy.push(dim);
-    }
-  }
-  const scope = scopeFromFlags(flags);
-  const window = windowFlag(flags);
-  const timezone = parseTimeZone(flag(flags, 'tz'));
-  const input: Record<string, unknown> = { ...(scope ? { scope } : {}), measure, window, timezone };
-  if (groupBy) input.groupBy = groupBy;
-
-  const r = await runTool<ActivityQueryResult>(requireAuth(), 'query_activity', input);
-  const served = r.groupBy ?? groupBy ?? ['contract', 'day'];
-  const head = [scopeWords(r.scope), measure, `last ${r.window ?? window}`, served.length ? `by ${served.join(', ')}` : 'in total'];
-  if (served.includes('day')) head.push(`days in ${timezone}`);
-  console.log(head.join(' · '));
-  const clamped = servedRangeNote(window, r.window);
-  if (clamped) console.log(clamped);
-  if (r.unavailable) {
-    console.log('Data unavailable. Retry in a moment.');
-    return r;
-  }
-  const rows = r.rows ?? [];
-  if (!rows.length) {
-    console.log(`No ${measure} in the window.`);
-    return r;
-  }
-  console.log('');
-  const lines = served.includes('contract') && served.includes('day') ? pivotLines(rows, measure) : plainLines(rows, served, measure);
-  for (const line of lines) console.log(line);
-  return r;
-}

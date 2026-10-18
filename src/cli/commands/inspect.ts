@@ -14,8 +14,6 @@ Usage:
                                                how that moved, its last 24 hours (transactions, wallets, value
                                                moved, a token's own volume), its monitors and tracked metrics
   contract-dev contracts stats [--range]       Every watched contract side by side: value, change, transactions, volume
-  contract-dev dependencies <contract>         The contracts it calls out to, method by method, and the price
-                                               feeds it reads: each one's value, age against its heartbeat, verdict
 
 <contract> is an address or a watched contract's name. Add --json for the full answers.
 `;
@@ -180,7 +178,7 @@ export async function showContract(args: string[]): Promise<unknown> {
   console.log(c.name ?? c.address);
   const width = Math.max(...rows.map(([k]) => k.length));
   for (const [k, v] of rows) console.log(`  ${k.padEnd(width)}  ${v}`);
-  console.log(`\nMore: contract-dev activity|methods|events|flows|users|tvl|positions|dependencies ${c.address}`);
+  console.log(`\nMore: contract-dev events|tvl ${c.address} · contract-dev query transactions|transfers|wallets --contract ${c.address}`);
   return { contract: c, facts, identity, activity: feed, flows, users, tvl, tokenVolume: volume, abi: settings, health, metrics };
 }
 
@@ -197,53 +195,6 @@ interface ConsoleBundle {
   >;
 }
 
-export async function contractStats(args: string[]): Promise<unknown> {
-  if (['help', '-h', '--help'].includes(args[0])) {
-    console.log(SHOW_HELP);
-    return;
-  }
-  const flags = parseFlags(args);
-  const range = parseRange(flags, RANGES, '24h');
-  const chainId = chainFlag(flags);
-  const auth = requireAuth();
-  const bundle = await apiRequest<ConsoleBundle>(auth, 'GET', `/api/mainnet/console?range=${range}`, undefined, { timeoutMs: 90_000 });
-  const rows = (bundle.contracts ?? [])
-    .filter((c) => chainId === undefined || c.chainId === chainId)
-    .map((c) => {
-      const a = bundle.byAccount?.[`${c.chainId}:${c.address.toLowerCase()}`] ?? {};
-      const sum = <T>(xs: T[] | undefined, f: (x: T) => number) => (xs ? xs.reduce((s, x) => s + (f(x) ?? 0), 0) : null);
-      return {
-        ...c,
-        txs: sum(a.tx, (b) => b.n),
-        failed: sum(a.tx, (b) => b.failed),
-        volumeUsd: sum(a.vol, (b) => b.usd),
-        valueThen: a.tvlPrev?.thenUsd ?? null,
-        valueNow: a.tvlPrev?.nowUsd ?? c.tvlUsd,
-      };
-    })
-    .sort((x, y) => (y.tvlUsd ?? -1) - (x.tvlUsd ?? -1));
-  console.log(`${plural(rows.length, 'contract')} · last ${bundle.range ?? range}`);
-  const clamped = servedRangeNote(range, bundle.range);
-  if (clamped) console.log(clamped);
-  console.log('');
-  if (!rows.length) {
-    console.log('No watched contracts. Watch one with `contract-dev watch <address>`.');
-    return { ...bundle, rows };
-  }
-  for (const line of table(rows, [
-    { header: 'Contract', value: (r) => nameOr(r.label, r.address), max: 32 },
-    { header: 'Chain', value: (r) => chainLabel(r.chainId) },
-    { header: 'Value', value: (r) => fmtUsd(r.tvlUsd), align: 'right' },
-    { header: 'Change', value: (r) => (r.valueNow != null && r.valueThen != null ? fmtUsdSigned(r.valueNow - r.valueThen) : DASH), align: 'right' },
-    { header: 'Transactions', value: (r) => fmtInt(r.txs), align: 'right' },
-    { header: 'Failed', value: (r) => fmtInt(r.failed), align: 'right' },
-    { header: 'Volume', value: (r) => fmtUsd(r.volumeUsd), align: 'right' },
-    { header: 'Address', value: (r) => r.address },
-  ])) {
-    console.log(line);
-  }
-  return { range: bundle.range, contracts: rows };
-}
 
 interface DependenciesPayload {
   chainId: number;
@@ -255,50 +206,3 @@ interface DependenciesPayload {
   oracles?: ConsoleOracles | null;
 }
 
-export async function dependenciesCommand(args: string[]): Promise<DependenciesPayload | void> {
-  if (!args.length || ['help', '-h', '--help'].includes(args[0])) {
-    console.log(SHOW_HELP);
-    return;
-  }
-  const flags = parseFlags(args);
-  const range = parseRange(flags, RANGES, '24h');
-  const limit = limitFlag(flags, 50, 500);
-  const auth = requireAuth();
-  const c = await resolveContract(auth, flags._[0], chainFlag(flags));
-  const d = await apiRequest<DependenciesPayload>(auth, 'GET', `/api/mainnet/console/dependencies?chainId=${c.chainId}&address=${c.address.toLowerCase()}&range=${range}`, undefined, {
-    timeoutMs: 60_000,
-  });
-  console.log(`${c.name ?? shortAddr(c.address)} · ${chainLabel(c.chainId)} · what it calls · last ${d.range ?? range}`);
-  const clamped = servedRangeNote(range, d.range);
-  if (clamped) console.log(clamped);
-  const rows = (d.rows ?? []).slice(0, limit);
-  if (!rows.length) {
-    console.log('\nNo calls out to other contracts in the window.');
-    return d;
-  }
-  // The price feeds first, as the tab shows them: a feed is a callee like any other, with its reading and verdict.
-  const oracles = oracleLines(d.oracles);
-  if (oracles.length) {
-    console.log('');
-    for (const line of oracles) console.log(line);
-    console.log('');
-  }
-  const all = d.rows ?? [];
-  const callees = new Set(all.map((r) => r.to.toLowerCase()));
-  console.log(`${plural(callees.size, 'contract')} · ${plural(all.reduce((s, r) => s + r.calls, 0), 'call')} · ${plural(all.reduce((s, r) => s + r.reverts, 0), 'revert')}\n`);
-  const [names, watched] = await Promise.all([lookupNames(auth, rows.map((r) => ({ chainId: c.chainId, address: r.to }))), workspaceContracts(auth).catch(() => [])]);
-  const isWatched = new Set(watched.filter((w) => w.chainId === c.chainId).map((w) => w.address.toLowerCase()));
-  for (const line of table(rows, [
-    { header: 'Calls into', value: (r) => `${nameOr(names.get(nameKey(c.chainId, r.to)), r.to)}${isWatched.has(r.to.toLowerCase()) ? ' (watched)' : ''}`, max: 36 },
-    { header: 'Method', value: (r) => r.name ?? r.selector ?? DASH, max: 28 },
-    { header: 'Type', value: (r) => r.callType.toLowerCase() },
-    { header: 'Calls', value: (r) => fmtInt(r.calls), align: 'right' },
-    { header: 'Reverts', value: (r) => fmtInt(r.reverts), align: 'right' },
-    { header: 'Last', value: (r) => fmtAge(r.lastAt), align: 'right' },
-    { header: 'Address', value: (r) => r.to },
-  ])) {
-    console.log(line);
-  }
-  if (all.length > rows.length) console.log(`… ${fmtInt(all.length - rows.length)} more (--limit, or --json for all)`);
-  return d;
-}

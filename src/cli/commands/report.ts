@@ -14,7 +14,6 @@ Usage:
   contract-dev report list                                List reports (scope, cadence, destinations, next send, last run)
   contract-dev report create [--template daily|weekly] [--name "…"] [--scope <scope>] [--row <kind>[:<param>]]…
                              [--to <dest>…] [--at <hour>] [--on <weekday>] [--tz <zone>]
-  contract-dev report preview [the same flags]            The table a draft would send, computed now, saved nowhere
   contract-dev report create --every 10m|1h|6h --name "…" --row <kind>[:<param>][ | <window>]… [--window 24h|7d|30d|90d]
                              [--snapshot] [--only-when "<expr>"] [--scope <scope>] [--to <dest>…]
                                                           A table every N minutes on the UTC clock; --snapshot prints
@@ -31,13 +30,12 @@ Usage:
                              --message "<text>" [--when "<condition>"] [--digest 30m] [--scope <scope>] [--name "…"] [--to <dest>…]
                                                           A message each time it happens; --digest sends the matches as
                                                           one message every so often instead
-  contract-dev report preview --each --metric … --when … --message …   How many it would have sent, and the newest few
   contract-dev report show <id|name>                      Settings, the latest table, every run and where it went
   contract-dev report run <id|name>                       Send it now (its destinations get it within a minute)
   contract-dev report pause <id|name> / resume <id|name>
   contract-dev report delete <id|name>
 
-Flags (create and preview):
+Flags (create):
   --template daily|weekly   Start from the app's template: its name, cadence and rows
   --name "<text>"           The report's name (required without a template)
   --scope <scope>           workspace (default) · tag:<group> · a watched contract's address or name
@@ -87,7 +85,6 @@ Examples:
   contract-dev report create --template daily --to "#alerts"
   contract-dev report create --template weekly --scope tag:pools --on friday --at 17 --to telegram
   contract-dev report create --name "Swaps" --scope steth --row transactions --row eventCount:Swap --to "#alerts"
-  contract-dev report preview --template daily --scope steth
 
 A daily report prints the last 24h, its change against the day before, then 7d and 30d; a
 weekly one 7d, its change, then 30d and 90d. A report is named by its id or, when
@@ -177,11 +174,6 @@ export interface ReportsPayload {
   catalogue: Record<string, CatalogueEntry>;
   templates: Record<ReportCadence, { name: string; rows: ReportRowSpec[] }>;
   quota: { plan: string; used: number; limit: number; columns: 'period' | 'full' };
-}
-
-export interface PreviewPayload {
-  table: unknown;
-  text: string;
 }
 
 // ── the schedule, in words ──
@@ -487,8 +479,6 @@ export async function reportCommand(args: string[] = []): Promise<unknown> {
     case 'create':
     case 'add':
       return await createReport(rest);
-    case 'preview':
-      return await previewReport(rest);
     case 'run':
     case 'send':
       return await runReport(rest);
@@ -600,7 +590,7 @@ function shapeFlags(flags: ReturnType<typeof parseFlags>): { everyMinutes?: numb
   return out;
 }
 
-// A create or preview body from the flags, the way the app's drawer builds one: a template
+// A create body from the flags, the way the app's drawer builds one: a template
 // gives the name, cadence and rows; --row replaces the rows; --on makes it weekly; --every
 // makes it an interval report.
 async function buildDraft(auth: ResolvedAuth, flags: ReturnType<typeof parseFlags>, payload: ReportsPayload, mode: 'create' | 'preview'): Promise<Draft> {
@@ -704,17 +694,6 @@ function eachParts(flags: ReturnType<typeof parseFlags>): EachParts {
   return out;
 }
 
-interface EachPreview {
-  each: { days: number; from: string | null; looked: number; matches: number; unvalued?: number; samples: { time: string; text: string; txUrl: string }[] };
-  note: string;
-}
-
-function printEachPreview(p: EachPreview['each']): void {
-  console.log(p.matches === 0 ? `None of the metric's records since ${p.from ? fmtLocalTime(at(p.from)) : 'it began'} would have sent.` : `It would have sent ${p.matches} message${p.matches === 1 ? '' : 's'} since ${p.from ? fmtLocalTime(at(p.from)) : 'the metric began'}.`);
-  for (const s of p.samples) console.log(`  ${fmtLocalTime(at(s.time))}  ${s.text}`);
-  if (p.unvalued) console.log(`${p.unvalued} of ${p.looked} records have no value (a token with no price, a read with no answer) and can never send.`);
-}
-
 async function createEachReport(auth: ResolvedAuth, flags: ReturnType<typeof parseFlags>, refs: string[]): Promise<ReportView> {
   const parts = eachParts(flags);
   const nameRaw = flag(flags, 'name');
@@ -750,34 +729,6 @@ async function createReport(args: string[]): Promise<ReportView> {
   console.log("First table queued: it shows on the report's page within a minute, then the report runs on schedule.");
   if (!channelIds.length) console.log("No destination yet: the table shows on the report's page in the app until one is linked.");
   return report;
-}
-
-async function previewReport(args: string[]): Promise<PreviewPayload | EachPreview> {
-  const flags = parseFlags(args);
-  const auth = requireAuth();
-  if (isEach(flags)) {
-    const parts = eachParts(flags);
-    if (!parts.metric) throw new Error('A preview looks back over an event metric\'s records (--each --metric … --when …). A report on another trigger has nothing to look back on: create it and it sends from now.');
-    const preview = await runTool<EachPreview>(auth, 'preview_report', { cadence: 'each', ...parts });
-    printEachPreview(preview.each);
-    return preview;
-  }
-  const payload = await loadReports(auth);
-  const draft = await buildDraft(auth, flags, payload, 'preview');
-  const body = {
-    ...(draft.name ? { name: draft.name } : {}),
-    scope: draft.scope,
-    cadence: draft.cadence,
-    timezone: draft.timezone,
-    ...(draft.everyMinutes !== undefined ? { everyMinutes: draft.everyMinutes } : {}),
-    ...(draft.window !== undefined ? { window: draft.window } : {}),
-    ...(draft.compare !== undefined ? { compare: draft.compare } : {}),
-    rows: draft.rows,
-  };
-  // Computing a table reads every window the rows need; the server allows itself a minute.
-  const preview = await apiRequest<PreviewPayload>(auth, 'POST', '/api/mainnet/reports/preview', body, { timeoutMs: 60_000 });
-  console.log(preview.text);
-  return preview;
 }
 
 async function runReport(args: string[]): Promise<ReportRunView> {

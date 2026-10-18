@@ -1,6 +1,6 @@
 // The platform's tools — the typed questions and actions a chat agent loads — over one route:
 // GET /api/mainnet/tools lists them, POST /api/mainnet/tools/<name> runs one as this key.
-// `find`, `describe`, `compare`, `activity query` and `monitor compile` read through here, so a
+// `find`, `describe`, `compare`, `activity query` and `monitor add` read through here, so a
 // person at the terminal and an agent get the same answer to the same question.
 import { apiRequest, ApiRequestError, ResolvedAuth } from './credentials';
 

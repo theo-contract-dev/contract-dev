@@ -116,7 +116,7 @@ export async function statusCommand(args: string[] = []): Promise<StatusReport |
     const where = a.chainId != null && a.address ? `  [chain ${a.chainId} ${shortHex(a.address)}]` : '';
     console.log(`  ${a.level.padEnd(7)} ${a.name} — ${a.what}${where}  since ${a.since}`);
   }
-  if (report.openAlerts.length > 10) console.log(`  … ${report.openAlerts.length - 10} more (contract-dev incidents)`);
+  if (report.openAlerts.length > 10) console.log(`  … ${report.openAlerts.length - 10} more (contract-dev alerts)`);
   if (stagenetsRes) {
     const names = report.stagenets.map((s) => `${s.name}${s.active ? '*' : ''}${s.online ? '' : ' (offline)'}`);
     console.log(`Stagenets:     ${formatInt(report.stagenets.length)}${names.length ? ` · ${names.join(', ')}` : ''}`);

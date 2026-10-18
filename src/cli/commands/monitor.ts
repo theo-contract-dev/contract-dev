@@ -11,14 +11,12 @@ import { parseUntil, type InvariantExpr } from '../monitor-expr';
 const HELP = `contract-dev monitor — alert when a tracked value crosses a line, an event is emitted, or a contract goes quiet
 
 Usage:
-  contract-dev monitors                                   List monitors (status, rule, open incident)
+  contract-dev monitors                                   List monitors (status, rule, open alert)
   contract-dev monitor add <value> --when "<formula>" [--warn "<formula>"] [--to <dest,…>] [--name "…"] [--max-age <sec>]
                                                           A monitor on a tracked value
-  contract-dev monitor compile --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]… [--name "…"]
-  contract-dev monitor compile --on <contract> --silence [--method <name> | --event <Name>] [--for 24h] [--to <dest>]…
-                                                          What the monitor would say, and how often it would have fired in
-                                                          the last 7 days; saved nowhere
-  contract-dev monitor add (the same flags)               Save it
+  contract-dev monitor add --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]… [--name "…"]
+  contract-dev monitor add --on <contract> --silence --event <Name> [--for 24h] [--to <dest>]…
+                                                          An event monitor, or a contract going quiet; saved at once
   contract-dev monitor show <id|name> [--range]           Rule, inputs, destinations, recent episodes; a silence monitor's
                                                           sightings, how long it has been quiet, and the quiet stretches
   contract-dev monitor sightings <id|name> [--range] [--limit]   Every sighting a silence monitor counts, newest first
@@ -75,10 +73,9 @@ From a sentence (an event monitor, or a silence monitor):
   --to <dest>              Destinations by id, label or kind; repeat or comma-separate. Optional here: without
                            one the monitor records alerts on its page and pages nobody.
 add saves at once and replays nothing; a monitor that turns out noisy is removed with \`monitor delete\`.
-compile previews the same flags with a 7-day replay of how often it would have fired; it is slow on busy contracts.
   contract-dev monitor add --on steth --event Transfer --when "amount(value, emitter()) >= 1000" --to "#alerts"
   contract-dev monitor add --on pool --event Swap --when "usd(abs(amount0), token0()) > 1000000" --name "Big swaps"
-  contract-dev monitor compile --on steth --silence --method submit --for 6h
+  contract-dev monitor add --on steth --silence --event Submitted --for 6h
 
 Default monitors — control-change, dependency-failure, revert-spike — take pause / resume /
 snooze / unsnooze / set --to / exclude / include by that slug or by name; they have no
@@ -351,8 +348,6 @@ export async function monitorCommand(args: string[]): Promise<unknown> {
   switch (sub) {
     case 'add':
       return await addMonitor(rest);
-    case 'compile':
-      return await compileSubcommand(rest);
     case 'show':
       return await showMonitor(rest);
     case 'set':
@@ -394,7 +389,7 @@ export async function monitorCommand(args: string[]): Promise<unknown> {
 /** The flags a monitor on a tracked value takes, and the ones `monitor set` takes. */
 const VALUE_FLAGS = ['when', 'warn', 'to', 'name', 'max-age'] as const;
 const SET_FLAGS = ['when', 'warn', 'no-warn', 'to', 'max-age', 'no-max-age', 'name'] as const;
-/** The flags an event or silence monitor takes (add and compile). */
+/** The flags an event or silence monitor takes. */
 const INTENT_FLAGS = ['on', 'group', 'chain', 'event', 'silence', 'method', 'for', 'when', 'name', 'to', 'yes'] as const;
 
 /** A --when / --warn formula as given; a bare number is refused, as it says nothing about which way. */
@@ -412,7 +407,7 @@ interface ValueMonitorResult {
 
 async function addMonitor(args: string[]): Promise<unknown> {
   const flags = parseFlags(args);
-  // --on / --event / --silence: a monitor from a sentence, compiled and saved by the server.
+  // --on / --event / --silence: a monitor from a sentence, built and saved by the server.
   if (isIntentForm(flags)) return await addMonitorFromIntent(flags);
   onlyFlags(flags, 'monitor add', VALUE_FLAGS);
   const ref = requirePositional(flags._ as string[], 0, 'tracked value (id or label)');
@@ -484,9 +479,8 @@ async function setMonitor(args: string[]): Promise<Invariant | ValueMonitorResul
 
 // ── a monitor from a sentence: --on <contract> --event <Name> [--when …] / --silence [--method …] [--for …] ──
 //
-// The server's compile_monitor tool turns the intent into the exact monitor: the sentence it
-// will print, the conditions in the field's units, a backtest over the last 7 days. `compile`
-// shows that and saves nothing; `add` with the same flags calls create_monitor.
+// The server's create_monitor tool turns the intent into the exact monitor — the sentence it
+// will print, the conditions in the field's units — and saves it at once.
 
 export interface MonitorIntent {
   mode: 'event' | 'silence';
@@ -513,17 +507,6 @@ export interface BacktestFiring {
 
 export type Backtest = { window: string; matches: number; recent: BacktestFiring[]; scanned?: number; capped?: boolean } | { window: string; occurrences: number; lastSeenAt: string | null };
 
-export interface CompiledMonitor {
-  body: Record<string, unknown>;
-  name: string;
-  sentence: string;
-  contract: { chainId: number; address: string; name: string };
-  conditions: string[];
-  channelIds: string[];
-  backtest: Backtest | null;
-  notes: string[];
-}
-
 export interface CreatedFromIntent {
   monitor: Invariant;
   sentence: string;
@@ -542,7 +525,7 @@ export function parseDuration(raw: string, label = '--for'): number {
 
 const isIntentForm = (flags: ParsedFlags): boolean => flag(flags, 'on') !== undefined || flag(flags, 'group') !== undefined || flag(flags, 'event') !== undefined || flag(flags, 'silence') !== undefined;
 
-/** The flags → the intent compile_monitor and create_monitor take. */
+/** The flags → the intent create_monitor takes. */
 export function buildIntent(flags: ParsedFlags, command = 'monitor add'): MonitorIntent {
   onlyFlags(flags, command, INTENT_FLAGS);
   const on = flag(flags, 'on');
@@ -604,41 +587,6 @@ export function backtestLines(b: Backtest | null | undefined): string[] {
     return lines;
   }
   return [`  backtest:    Seen ${plural(b.occurrences, 'time')} in ${windowDays(b.window)}${b.lastSeenAt ? `, last ${fmtTime(Date.parse(b.lastSeenAt))}` : ''}`];
-}
-
-/** What `compile` prints: the sentence, the subject, the conditions, the destinations, the backtest, the notes. */
-export function compiledLines(c: CompiledMonitor, intent: MonitorIntent): string[] {
-  const lines = [
-    c.sentence,
-    `  name:        ${c.name}`,
-    `  on:          ${c.contract.name} (${chainLabel(c.contract.chainId)} ${c.contract.address})`,
-    `  conditions:  ${c.conditions.length ? c.conditions.join(' · ') : 'none'}`,
-    `  sends to:    ${c.channelIds.length ? (intent.destinations ?? []).join(', ') || plural(c.channelIds.length, 'destination') : 'nobody'}`,
-    ...backtestLines(c.backtest),
-  ];
-  for (const note of c.notes ?? []) lines.push(`  note: ${note}`);
-  return lines;
-}
-
-/** An argument as a person would retype it on the shell: bare when it is plain, double-quoted otherwise. */
-export const shellQuote = (arg: string): string => (/^[A-Za-z0-9_\-.,:/=@+%]+$/.test(arg) ? arg : `"${arg.replace(/(["\\$`])/g, '\\$1')}"`);
-
-async function compileSubcommand(args: string[]): Promise<CompiledMonitor | void> {
-  if (!args.length || ['help', '-h', '--help'].includes(args[0])) {
-    console.log(HELP);
-    return;
-  }
-  const flags = parseFlags(args);
-  const intent = buildIntent(flags, 'monitor compile');
-  const compiled = await runTool<CompiledMonitor & GroupSet>(requireAuth(), 'compile_monitor', { ...intent });
-  if (intent.group) {
-    for (const line of groupSetLines(compiled, intent.group)) console.log(line);
-    console.log(`Save them with: contract-dev monitor add ${args.map(shellQuote).join(' ')}`);
-    return compiled;
-  }
-  for (const line of compiledLines(compiled, intent)) console.log(line);
-  console.log(`Save it with: contract-dev monitor add ${args.map(shellQuote).join(' ')}`);
-  return compiled;
 }
 
 /** What the server answers for a group: a sentence for all, the contracts it fitted, and the ones it left out. */

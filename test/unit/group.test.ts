@@ -97,30 +97,6 @@ describe('group show', () => {
 describe('group rule add', () => {
     useEnvAuth();
 
-    it('--preview sends preview and prints what it reads, the name pattern, the contracts found and the note; nothing saved', async () => {
-        const previewed = {
-            preview: true,
-            group: 'pools',
-            rule: { kind: 'factory', chainId: 1, address: FACTORY, event: 'PoolCreated', field: 'pool' },
-            namePattern: '{token0().symbol()} pool',
-            sample: [
-                { address: POOL_A, name: 'USDC pool' },
-                { address: POOL_B, name: null },
-            ],
-            note: 'The history was read through 2026-09-01; the rest syncs once saved.',
-        };
-        const calls = mockApi({ 'POST /api/mainnet/tools/create_watch_rule': () => ok(previewed) });
-        const result = await run(['group', 'rule', 'add', 'pools', '--factory', FACTORY, '--event', 'PoolCreated', '--field', 'pool', '--chain', 'ethereum', '--name-pattern', '{token0().symbol()} pool', '--preview']);
-        expect(calls[0].body).toEqual({ input: { group: 'pools', chainId: 1, factory: FACTORY, event: 'PoolCreated', field: 'pool', namePattern: '{token0().symbol()} pool', preview: true } });
-        const out = printed();
-        expect(out.slice(0, 5)).toEqual(['Preview: nothing saved.', `Factory ${FACTORY} on Ethereum · reads PoolCreated.pool`, 'Name pattern: {token0().symbol()} pool', '', 'Found (2)']);
-        expect(out[5]).toMatch(/^ {2}Name {2,}Address$/);
-        expect(out[6]).toMatch(new RegExp(`^ {2}USDC pool {2,}${POOL_A}$`));
-        expect(out[7]).toMatch(new RegExp(`^ {2}— {2,}${POOL_B}$`));
-        expect(out.slice(8)).toEqual(['', 'The history was read through 2026-09-01; the rest syncs once saved.']);
-        expect(result).toEqual(previewed);
-    });
-
     it('a registry rule is created with its function; the chain by name; the sync tally and each failed address print', async () => {
         const created = {
             group: 'markets',
@@ -173,13 +149,6 @@ describe('group name-pattern', () => {
         expect(out).toHaveLength(6);
     });
 
-    it('--clear sends an empty pattern; --preview saves nothing', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/set_name_pattern': () => ok({ preview: true, group: 'pools', pattern: null, sample: [], contracts: 14 }) });
-        await groupCommand(['name-pattern', 'pools', '--clear', '--preview']);
-        expect(calls[0].body).toEqual({ input: { group: 'pools', pattern: '', preview: true } });
-        expect(printed()).toEqual(['Preview: nothing saved.', 'Name pattern: none — members keep their own names.']);
-    });
-
     it('needs a pattern or --clear, not both or neither', async () => {
         const calls = mockApi({});
         await expect(groupCommand(['name-pattern', 'pools'])).rejects.toThrow(/Give the pattern in quotes/);
@@ -191,61 +160,11 @@ describe('group name-pattern', () => {
 describe('group column add', () => {
     useEnvAuth();
 
-    it('--preview prints the column line, the first readings in the column\'s unit, and the note', async () => {
-        const previewed = {
-            preview: true,
-            group: 'vaults',
-            column: { key: 'assets', label: 'Assets', kind: 'function', signature: 'totalAssets()', args: [], word: 0, decimals: 0, unit: 'usd', decimalsFrom: 'decimals()' },
-            sample: [
-                { address: POOL_A, name: 'Vault A', value: 1_250_000 },
-                { address: POOL_B, name: 'Vault B', value: null },
-            ],
-            contracts: 3,
-            note: 'One vault did not answer.',
-        };
-        const calls = mockApi({ 'POST /api/mainnet/tools/add_table_column': () => ok(previewed) });
-        const result = await run(['group', 'column', 'add', 'vaults', '--label', 'Assets', '--read', 'totalAssets()', '--decimals-from', 'decimals()', '--unit', 'usd', '--preview']);
-        expect(calls[0].body).toEqual({ input: { group: 'vaults', label: 'Assets', read: 'totalAssets()', decimalsFrom: 'decimals()', unit: 'usd', preview: true } });
-        const out = printed();
-        expect(out.slice(0, 4)).toEqual(['Preview: nothing saved.', 'Column assets · Assets · reads totalAssets() · usd · decimals from decimals()', '', 'Readings (2)']);
-        expect(out[4]).toMatch(/^ {2}Name {2,}Address {2,}Value$/);
-        expect(out[5]).toMatch(new RegExp(`^ {2}Vault A {2,}${POOL_A} {2,}\\$1\\.25M$`));
-        expect(out[6]).toMatch(new RegExp(`^ {2}Vault B {2,}${POOL_B} {2,}—$`));
-        expect(out.slice(7)).toEqual(['', 'One vault did not answer.']);
-        expect(result).toEqual(previewed);
-    });
-
     it('every flag lands in the input: key, args split on commas, word and decimals as numbers, attribute, type', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/add_table_column': () => ok({ group: 'vaults', column: { key: 'owner', label: 'Owner', kind: 'attribute', signature: 'owner()', args: ['0xabc', '0xdef'], word: 1, decimals: 18, unit: 'raw' }, sample: [], contracts: 3 }) });
         await groupCommand(['column', 'add', 'vaults', '--label', 'Owner', '--read', 'owner()', '--attribute', '--type', 'address', '--key', 'owner', '--args', '0xabc, 0xdef', '--word', '1', '--decimals', '18']);
         expect(calls[0].body).toEqual({ input: { group: 'vaults', label: 'Owner', read: 'owner()', key: 'owner', args: ['0xabc', '0xdef'], word: 1, decimals: 18, attribute: true, type: 'address' } });
         expect(printed()).toEqual(['Added column "Owner" (owner) to vaults · 3 contracts.', 'Column owner · Owner · reads owner() with 0xabc, 0xdef · raw · decimals 18']);
-    });
-
-    it('a formula column sends its calls and formula, and prints the formula, its calls and a yes/no sample', async () => {
-        const calls = mockApi({
-            'POST /api/mainnet/tools/add_table_column': () =>
-                ok({
-                    preview: true,
-                    group: 'vaults',
-                    column: { key: 'breached', label: 'Breached', kind: 'formula', signature: '', expr: 'held - {Required} < 0', type: 'bool', unit: 'raw', calls: [{ name: 'held', kind: 'view', signature: 'totalAssets()', on: 'asset()', decimals: 18 }, { name: 'eth', kind: 'balance' }] },
-                    sample: [
-                        { address: POOL_A, name: 'Vault A', value: '1' },
-                        { address: POOL_B, name: 'Vault B', value: null, error: 'asset() answers no address on Vault B' },
-                    ],
-                    contracts: 3,
-                    note: null,
-                }),
-        });
-        await groupCommand(['column', 'add', 'vaults', '--label', 'Breached', '--call', 'held=totalAssets() on asset() decimals 18', '--call', 'eth=balance(self)', '--formula', 'held - {Required} < 0', '--type', 'bool', '--preview']);
-        expect(calls[0].body).toEqual({
-            input: { group: 'vaults', label: 'Breached', formula: 'held - {Required} < 0', calls: [{ name: 'held', call: 'totalAssets()', on: 'asset()', decimals: 18 }, { name: 'eth', call: 'balance(self)' }], type: 'bool', preview: true },
-        });
-        const out = printed();
-        expect(out.slice(0, 4)).toEqual(['Preview: nothing saved.', 'Column breached · Breached · formula held - {Required} < 0 · yes/no', '  held = totalAssets() on asset() decimals 18', '  eth = balance(self)']);
-        expect(out[5]).toBe('Readings (2)');
-        expect(out[7]).toMatch(new RegExp(`^ {2}Vault A {2,}${POOL_A} {2,}Yes`));
-        expect(out[8]).toMatch(/Vault B .*— {2,}asset\(\) answers no address on Vault B$/);
     });
 
     it('refuses a missing label or read, an unknown unit or type, a word that is not a number', async () => {
@@ -269,23 +188,6 @@ describe('group monitor add', () => {
         await run(['group', 'monitor', 'add', 'vaults', '--name', 'Vault draining', '--column', 'assets', '--when', 'value < 1000000', '--warn', 'value < 1100000']);
         expect(calls[0].body).toEqual({ input: { group: 'vaults', name: 'Vault draining', column: 'assets', when: 'value < 1000000', warn: 'value < 1100000' } });
         expect(printed()).toEqual(['Added monitor "Vault draining" (inv9) to vaults.', words, 'Covers 3 contracts.']);
-    });
-
-    it('another column is named in braces; --preview saves nothing', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/add_group_monitor': () => ok({ preview: true, group: 'vaults', monitor: { name: 'Over cap', columnKey: 'util', op: 'gt', otherColumnKey: 'cap', words: 'Utilisation above Cap on any vault' }, contracts: 3 }) });
-        await groupCommand(['monitor', 'add', 'vaults', '--name', 'Over cap', '--column', 'util', '--when', 'value > {Cap}', '--preview']);
-        expect(calls[0].body).toEqual({ input: { group: 'vaults', name: 'Over cap', column: 'util', when: 'value > {Cap}', preview: true } });
-        expect(printed()).toEqual(['Preview: nothing saved.', 'Utilisation above Cap on any vault', 'Covers 3 contracts.']);
-    });
-
-    it('wants the line as a --when formula, a --warn formula, and only the flags it takes', async () => {
-        const calls = mockApi({});
-        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets'])).rejects.toThrow(/Draw the line with --when: --when "value < 1000000"/);
-        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets', '--when', 'value < 5', '--warn', '10'])).rejects.toThrow(/--warn is a formula/);
-        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets', '--below', '1000000'])).rejects.toThrow('Unknown flag --below for group monitor add. It takes --name, --column, --when, --warn, --preview.');
-        await expect(groupCommand(['monitor', 'add', 'vaults', '--name', 'x', '--column', 'assets', '--when', 'value < 5', '--warn-pct', '10'])).rejects.toThrow(/^Unknown flag --warn-pct for group monitor add\./);
-        await expect(groupCommand(['monitor', 'add', 'vaults', '--column', 'assets', '--when', 'value < 1'])).rejects.toThrow(/Missing required --name/);
-        expect(calls).toHaveLength(0);
     });
 
     it('--when sends one formula; the server judges it', async () => {

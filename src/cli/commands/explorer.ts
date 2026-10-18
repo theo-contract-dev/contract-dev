@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path';
 import { parseFlags, flag } from './_args';
 import { requireAuth, apiRequest, ResolvedAuth } from '../credentials';
+import { runTool } from '../tools';
 import { chainFlag, isAddress, limitFlag, resolveContract, workspaceContracts } from '../data';
 import { DASH, chainLabel, fmtAge, fmtCompact, fmtInt, fmtUsd, nameOr, plural, shortAddr, table } from '../view';
 import { relPath } from '../format';
@@ -10,8 +11,7 @@ import { feedPanelRows, loadFeed, type ChainlinkFeedFacts } from './oracles';
 const HELP = `contract-dev explorer lookups — any transaction, address or block on a supported chain
 
 Usage:
-  contract-dev tx <hash> [--chain] [--trace] [--state]   A transaction: outcome, decoded call, fees, transfers, logs;
-                                                         --trace for its call tree, --state for what it changed
+  contract-dev tx <hash> [--chain]                       A transaction: outcome, decoded call, fees, transfers, logs
   contract-dev address <0x…> [--chain] [--limit]         An address: balance, what it is, its recent transactions;
                                                          a Chainlink feed says what it reads now and its published terms
   contract-dev block <number> [--chain] [--limit]        A block and its transactions
@@ -163,42 +163,6 @@ export async function txCommand(args: string[]): Promise<unknown> {
   }
 
   const out: Record<string, unknown> = { chainId, tx };
-  if (flag(flags, 'trace') === 'true') {
-    const trace = await apiRequest<{ status: string; frames: TraceFrame[]; truncated: boolean }>(auth, 'GET', `/api/mainnet/explorer/tx/trace?chainId=${chainId}&hash=${tx.hash}`, undefined, {
-      timeoutMs: 60_000,
-    });
-    out.trace = trace;
-    console.log(`\nCall tree${trace.truncated ? ' (truncated)' : ''}`);
-    if (trace.status !== 'ok') console.log(`  ${trace.status === 'unsupported' ? `Call traces are not available on ${chainLabel(chainId)}.` : 'Call trace unavailable. Retry in a moment.'}`);
-    for (const f of trace.frames ?? []) {
-      const target = f.to ? shortAddr(f.to) : 'new contract';
-      const what = f.method ? `${f.method}(${argList(f.args)})` : f.selector ?? '';
-      const failed = f.error ? `  ✗ ${f.revertReason ?? f.error}` : '';
-      const value = f.valueWei && f.valueWei !== '0' ? `  ${fmtNative(f.valueWei, chainId)}` : '';
-      console.log(`  ${'  '.repeat(f.depth)}${f.type.toLowerCase()} ${target}${what ? `.${what}` : ''}${value}  gas ${fmtInt(f.gasUsed)}${failed}`);
-    }
-  }
-  if (flag(flags, 'state') === 'true') {
-    const state = await apiRequest<{ status: string; accounts: StateAccount[] }>(auth, 'GET', `/api/mainnet/explorer/tx/state?chainId=${chainId}&hash=${tx.hash}`, undefined, {
-      timeoutMs: 60_000,
-    });
-    out.state = state;
-    console.log('\nState changes');
-    if (state.status !== 'ok') console.log(`  ${state.status === 'unsupported' ? `State changes are not available on ${chainLabel(chainId)}.` : 'State changes unavailable. Retry in a moment.'}`);
-    for (const a of state.accounts ?? []) {
-      const parts: string[] = [];
-      if (a.balance) {
-        const delta = (BigInt(a.balance.after) - BigInt(a.balance.before)).toString();
-        parts.push(`balance ${delta.startsWith('-') ? '' : '+'}${fmtNative(delta, chainId)}`);
-      }
-      if (a.nonce) parts.push(`nonce ${a.nonce.before} → ${a.nonce.after}`);
-      if (a.code) parts.push(`code ${fmtInt(a.code.before)} → ${fmtInt(a.code.after)} bytes`);
-      if (a.storage?.length) parts.push(plural(a.storage.length, 'slot'));
-      console.log(`  ${a.address}  ${parts.join(' · ')}`);
-      for (const s of (a.storage ?? []).slice(0, 8)) console.log(`      ${s.slot}: ${s.before} → ${s.after}`);
-      if ((a.storage ?? []).length > 8) console.log(`      … ${fmtInt(a.storage.length - 8)} more (--json)`);
-    }
-  }
   return out;
 }
 
@@ -436,6 +400,41 @@ export function sourceFiles(name: string, sourceCode: string): Record<string, st
   return { [`${name || 'Contract'}.sol`]: sourceCode };
 }
 
+/** The overview or one function, as the assistant's contract_source tool answers it. */
+function printSource(r: Record<string, any>): void {
+  console.log(`${r.name ?? r.contractName ?? 'Contract'}${r.contractName && r.contractName !== r.name ? ` · ${r.contractName}` : ''}${r.language ? ` · ${r.language}` : ''}${r.compiler ? ` ${r.compiler}` : ''}${r.url ? ` · ${r.url}` : ''}`);
+  if (r.function) {
+    if (r.found === false) {
+      console.log(`${r.function}: not found${Array.isArray(r.near) && r.near.length ? `. Near: ${r.near.join(', ')}` : ''}${r.note ? `. ${r.note}` : ''}`);
+      return;
+    }
+    for (const c of r.code ?? []) {
+      console.log(`\n${c.role === 'function' ? '' : `${c.role}: `}${c.name} — ${c.at}`);
+      console.log(c.sourceText);
+    }
+    if (Array.isArray(r.reads) && r.reads.length) {
+      console.log('\nReads');
+      for (const x of r.reads) console.log(`  ${x.name} (${x.kind}) — ${x.at}: ${x.sourceText}`);
+    }
+    if (Array.isArray(r.types) && r.types.length) {
+      console.log('\nTypes');
+      for (const x of r.types) console.log(`  ${x.name} — ${x.at}\n${x.sourceText}`);
+    }
+    if (Array.isArray(r.notShown) && r.notShown.length) console.log(`\nNot shown: ${r.notShown.map((n: any) => n.name ?? n).join(', ')}`);
+    return;
+  }
+  if (r.about) console.log(`\n${r.about}`);
+  if (Array.isArray(r.inherits) && r.inherits.length) console.log(`Inherits ${r.inherits.join(', ')}`);
+  const writes = Array.isArray(r.writeFunctions) ? r.writeFunctions : [];
+  console.log(`\nWrites (${fmtInt(Number(r.writes ?? writes.length))}${r.moreWrites ? `, ${fmtInt(r.moreWrites)} more` : ''})`);
+  for (const w of writes) console.log(`  ${w.signature}${w.authorNotes ? `  — ${w.authorNotes}` : ''}`);
+  const reads = Array.isArray(r.functions) ? r.functions : [];
+  console.log(`\nReads (${fmtInt(Number(r.reads ?? reads.length))}${r.more ? `, ${fmtInt(r.more)} more: --limit 50 or --query <words>` : ''})`);
+  for (const f of reads) console.log(`  ${f.signature} → ${f.returns}${f.authorNotes ? `  — ${f.authorNotes}` : ''}`);
+  if (r.note) console.log(`\n${r.note}`);
+  console.log('\nOne function in full: --function <name>. The files: --files, or --out <dir> to write them.');
+}
+
 export async function sourceCommand(args: string[]): Promise<unknown> {
   if (help(args)) {
     console.log(HELP);
@@ -443,7 +442,19 @@ export async function sourceCommand(args: string[]): Promise<unknown> {
   }
   const flags = parseFlags(args);
   const ref = flags._[0];
+  if (!ref) throw new Error('Name the contract: contract-dev source <contract>.');
   const auth = requireAuth();
+  const outDir = flag(flags, 'out');
+  if ((!outDir || outDir === 'true') && flag(flags, 'files') !== 'true') {
+    const fn = flag(flags, 'function');
+    const q = flag(flags, 'query');
+    const chainId = chainFlag(flags);
+    const input: Record<string, unknown> = { contract: ref, ...(chainId !== undefined ? { chainId } : {}), ...(fn && fn !== 'true' ? { function: fn } : {}), ...(q && q !== 'true' ? { query: q } : {}) };
+    if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 20, 50);
+    const r = await runTool<Record<string, any>>(auth, 'contract_source', input);
+    printSource(r);
+    return r;
+  }
   let address = ref;
   let chainId = chainFlag(flags);
   if (!isAddress(ref)) {

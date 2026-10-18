@@ -1,23 +1,25 @@
 import { readFileSync } from 'node:fs';
-import { contractStats, showContract } from './inspect';
+import { showContract } from './inspect';
 import { parseFlags, flag, requirePositional, type ParsedFlags } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { runTool } from '../tools';
 import { formatUsd } from '../format';
 import { fmtInt, plural } from '../view';
+import { watchWalletCommand } from './wallets';
 
-const HELP = `contract-dev watch — watch mainnet contracts on your workspace's dashboard
+const HELP = `contract-dev watch — watch mainnet contracts (and wallets) on your workspace's dashboard
 
 Usage:
   contract-dev watch <address> [flags]                 Watch a contract
+  contract-dev watch wallet <address> [--chain <id>] [--name <label>] [--group <name>]
+                                                       Watch a wallet — an address with no code (try: wallets help)
   contract-dev watch <address>[=<name>]… [--chain <id>] [--group <name>]
                                                        Watch several at once, each named, tagged into a group when one is named
   contract-dev watch list [--chain <id>]               List watched contracts
   contract-dev rename <address> <name> [--chain <id>]  Rename a watched contract (clears with "")
   contract-dev contracts set-abi <address> --abi <file> Set the ABI on a contract already watched (--clear removes it)
-  contract-dev unwatch <address> [--chain <id>]        Stop watching a contract
+  contract-dev unwatch <address> [<address>…] [--chain <id>]   Stop watching one or several contracts (name or address)
   contract-dev contracts show <address|name>          One contract at a glance: what it is, what it holds, its last 24h
-  contract-dev contracts stats [--range]               Every watched contract side by side: value, transactions, volume
 
 Flags (watch <address>):
   --chain <id>     Chain the contract lives on (default: 1). Names work: ethereum, arbitrum,
@@ -50,8 +52,9 @@ contracts rename <address> <name> · contracts remove <address>.
 Requires \`contract-dev login\`.
 `;
 
-// The unified shape returned by the app's watchlist API. The API also holds watched
-// wallets in this shape; the CLI is contracts-only and filters them out everywhere.
+// The unified shape returned by the app's watchlist API: a contract or a wallet (accountType),
+// each watched per (chain, address). The contract commands filter to contracts; `wallets`
+// (./wallets) is the wallet side; rename and unwatch take either.
 export interface WatchedAccount {
   id: string;
   chainId: number;
@@ -104,21 +107,22 @@ export function describeAccount(account: WatchedAccount): string {
   return account.name ? `${account.name} (${account.address})` : account.address;
 }
 
-// Resolve one watched contract from an address (+ optional chain). Contracts are
-// per-(chain, address), so --chain disambiguates. Shared by unwatch / rename and by the
-// metric commands that name a subject.
+// Resolve one watched account (a contract or a wallet) from an address (+ optional chain).
+// Accounts are per-(chain, address), so --chain disambiguates. Shared by unwatch / rename and
+// by the metric commands that name a subject; `kind` narrows to one side.
 export async function findWatchedAccount(
   auth: ResolvedAuth,
   address: string,
   chainId: number | undefined,
+  kind?: 'contract' | 'wallet',
 ): Promise<WatchedAccount> {
   const lower = address.toLowerCase();
-  const { accounts } = await apiRequest<{ accounts: WatchedAccount[] }>(auth, 'GET', '/api/mainnet/accounts?accountType=contract');
+  const { accounts } = await apiRequest<{ accounts: WatchedAccount[] }>(auth, 'GET', `/api/mainnet/accounts${kind ? `?accountType=${kind}` : ''}`);
   const matches = (accounts ?? []).filter(
-    (a) => a.accountType === 'contract' && a.address.toLowerCase() === lower && (chainId === undefined || a.chainId === chainId),
+    (a) => (kind === undefined || a.accountType === kind) && a.address.toLowerCase() === lower && (chainId === undefined || a.chainId === chainId),
   );
   if (matches.length === 0) {
-    throw new Error(`No watched contract found for ${address}${chainId !== undefined ? ` on chain ${chainId}` : ''}`);
+    throw new Error(`No watched ${kind ?? 'contract or wallet'} found for ${address}${chainId !== undefined ? ` on chain ${chainId}` : ''}`);
   }
   if (matches.length > 1) {
     const chains = matches.map((m) => m.chainId).join(', ');
@@ -130,6 +134,9 @@ export async function findWatchedAccount(
 export async function watchCommand(args: string[]): Promise<unknown> {
   const [sub] = args;
   switch (sub) {
+    case 'wallet':
+    case 'wallets':
+      return await watchWalletCommand(args.slice(1));
     case 'list':
       return await listSubcommand(args.slice(1));
     case 'add':
@@ -300,7 +307,7 @@ async function addSubcommand(args: string[]): Promise<WatchedAccount | WatchCont
   const auth = requireAuth();
   const detected = await apiRequest<Detection>(auth, 'POST', '/api/mainnet/accounts/detect', { chainId, address });
   if (detected.accountType !== 'contract') {
-    throw new Error(`${address} has no code on chain ${chainId} — it's a wallet. The CLI watches contracts; add wallets in the app.`);
+    throw new Error(`${address} has no code on chain ${chainId} — it's a wallet. Watch it with \`contract-dev watch wallet ${address} --chain ${chainId}\`.`);
   }
   if (detected.hasAbi === false && !abi) {
     console.log(
@@ -364,8 +371,6 @@ export async function contractsCommand(args: string[]): Promise<unknown> {
     case 'show':
     case 'info':
       return await showContract(rest);
-    case 'stats':
-      return await contractStats(rest);
     case 'help':
     case '-h':
     case '--help':
@@ -417,6 +422,17 @@ export async function unwatchCommand(args: string[]): Promise<{ ok: true; id: st
   const chainId = chainRaw === undefined ? undefined : parseChainId(chainRaw, '--chain');
 
   const auth = requireAuth();
+  const refs = flags._ as string[];
+  if (refs.length > 1) {
+    // several at once: every name is matched before anything is removed, and their monitors and tracked values go with them
+    const r = await runTool<{ unwatched: { name: string; chainId: number; address: string; monitors: number; trackedValues: number }[]; failed: { contract: string; error: string }[] }>(auth, 'unwatch_contracts', {
+      contracts: refs,
+      ...(chainId !== undefined ? { chainId } : {}),
+    });
+    for (const u of r.unwatched) console.log(`Stopped watching ${u.name} (${u.address} on chain ${u.chainId})${u.monitors || u.trackedValues ? ` · removed ${plural(u.monitors, 'monitor')} and ${plural(u.trackedValues, 'tracked value')}` : ''}.`);
+    for (const f of r.failed) console.log(`${f.contract}: ${f.error}`);
+    return { ok: true, id: '', address: refs.join(','), chainId: chainId ?? 0 };
+  }
   const target = await findWatchedAccount(auth, address, chainId);
   await apiRequest(auth, 'DELETE', `/api/mainnet/accounts/${target.id}`);
   console.log(`Stopped watching ${describeAccount(target)}.`);

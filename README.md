@@ -59,12 +59,16 @@ contract-dev group show pools                                      # rules, colu
 contract-dev group rule add pools --factory 0x1F98... --event PoolCreated --field pool --preview   # what it would find; drop --preview to save
 contract-dev group rule add markets --registry 0xReg... --function "getAllMarkets()" --chain arbitrum
 contract-dev group name-pattern pools "{token0().symbol()}/{token1().symbol()} pool"
-contract-dev group column add vaults --label "Assets" --read "totalAssets()" --decimals-from "decimals()" --unit usd
-contract-dev group monitor add vaults --name "Vault draining" --column assets --below 1000000 --warn-pct 10
+contract-dev group column add vaults --label "Assets" --read "totalAssets()" --token "asset()" --show usd   # a read on every member, priced in its stated token
+contract-dev group column add vaults --label "Headroom" --call "held=totalAssets()" --call "required=coverageLiquidity()" --formula "held - required" --token "asset()" --show usd
+contract-dev group column add vaults --label "Breached" --formula "{Held} < {Required}"      # a yes/no column
+contract-dev group monitor add vaults --name "Vault draining" --column assets --when "value < 1000000" --warn "value < 1100000"
+contract-dev group monitor add vaults --name "Over cap" --column util --when "value > {Cap}"
 ```
 
-`--preview` on any of the writes shows what would happen — the contracts found, the names,
-the first readings, the monitor's sentence — and saves nothing.
+`--preview` on `group rule add` shows what the rule would find and saves nothing. A column states
+its token (`--token`: an address, `self`, or a view each member answers, like `asset()`) or it is
+the plain number; `--show usd` puts it in dollars.
 
 ## Tables and history
 
@@ -75,7 +79,8 @@ firing of some events since launch, with no table.
 ```bash
 contract-dev table list                                             # every table, hidden ones too
 contract-dev table create "Withdrawal rounds" --group "Wildcat markets" --opens WithdrawalBatchCreated --closes WithdrawalBatchClosed --count WithdrawalQueued:Queued --hidden
-contract-dev table show "Withdrawal rounds" --by week --among closed # openings and closings, how long rows stay open, the biggest
+contract-dev table show "Withdrawal rounds" --by week --among done   # openings and closings, how long rows stay open, the biggest
+contract-dev query table "Withdrawal rounds" --where '{Stage} == "Paying"' --sort "{Outstanding}"   # its rows, filtered and ranked
 contract-dev history --group "Wildcat markets" --event WithdrawalQueued --by week   # since launch: by week, sizes, top wallets, when
 ```
 
@@ -115,32 +120,57 @@ contract-dev metrics export <id|label> --range 90d      # the history as CSV (--
 contract-dev untrack <id|label> [...]                   # also removes monitors that read it
 ```
 
+### Event metrics, open totals and roll-ups
+
+An event metric adds up a figure from the contracts' events, each view read exactly as of the
+event's own transaction, with the records behind every number; a table metric is a number over
+a table's open rows; a group metric rolls a group column up across its members.
+
+```bash
+contract-dev metric define "Swap fees" --group pools --event Swap --read "fee=fee()" --read "t0=token0()" --read "t1=token1()" \
+  --field "in0=if(amount0 > 0, amount0, 0)" --field "in1=if(amount1 > 0, amount1, 0)" \
+  --value "usd(in0 * fee / 1000000, t0) + usd(in1 * fee / 1000000, t1)"       # saves at once; history fills in the background
+contract-dev metric show "Swap fees" --days 7 --records 10                      # total, the largest contracts, a series, the records
+contract-dev metric monitor "Swap fees" --name "Fee spike" --when "total(1h) > 3 * usual(1h, 7d)" --per total --to "#alerts"
+contract-dev metric table "Outstanding" --table "Withdrawal rounds" --column "Outstanding" --among active
+contract-dev metric group "Total held" --group vaults --column assets           # each member priced in its own token
+contract-dev track formula 0xLido... --label "Share rate" --call "pooled=getTotalPooledEther() decimals 18" --call "shares=getTotalShares() decimals 18" --value "pooled / shares"
+contract-dev metric update "Swap fees" --history 30 / metric delete "Swap fees"
+```
+
+`contract-dev metric define help` has the expression language: the event's parameters by name,
+the reads, `amount(raw, token)`, `usd(raw, token)` (the token's price on the event's day), `if()`,
+`min()`, `max()`. A metric monitor's `--when` is a condition on each new record (`value > 1000`)
+or over a window: `total(1h) > 50000`, `total(24h) < before(24h) * 0.5`, `total(1h) > 3 * usual(1h, 7d)`.
+
 Tracking a value that is already tracked returns the existing metric.
 
 Anywhere a metric is named, its id or (unambiguous) label works.
 
 ## Monitor
 
-A monitor is an alert rule on a tracked metric, an optional warning tier on the
-healthy side of it, and the destinations it pages:
+A monitor is one `--when` formula, in the language of metrics and tables, with an optional
+warning tier on the healthy side of it and the destinations it pages. It saves at once and
+replays nothing; one that turns out noisy is deleted.
 
 ```bash
 contract-dev channels                                   # alert destinations (connect them in the app under Monitoring → Destinations)
 contract-dev channels test telegram                     # test / enable / disable / remove <id|label>
-contract-dev monitor add "Treasury · Native balance" --below 25000 --warn 30000 --to telegram
-contract-dev monitor add "Vault reserves" --below-metric "Vault liabilities" --warn-pct 5 --to "#alerts"
-contract-dev monitors                                   # status, rule, open incident
+contract-dev monitor add "Treasury · Native balance" --when "value < 25000" --warn "value < 30000" --to telegram
+contract-dev monitor add "Vault liabilities" --when "value > {Vault reserves}" --warn "value > {Vault reserves} * 0.95" --to "#alerts"
+contract-dev monitor add "stETH share rate" --when "value < ago(24h) * 0.8"    # against itself a day ago (up to 90 days); previous for the reading before
+contract-dev monitors                                   # status, rule, open alert
 contract-dev monitor show <id|name>
 contract-dev monitor show "Rewards stopped"             # a silence monitor: its sightings, how long quiet, the quiet stretches
 contract-dev monitor sightings "Rewards stopped" --range 7d   # every sighting it counts, newest first
-contract-dev monitor set <id|name> --below 20000 --to "#ops"   # edit the rule / warning / destinations
+contract-dev monitor set <id|name> --when "value < 20000" --to "#ops"   # edit the rule / warning (--warn, --no-warn) / destinations
 contract-dev monitor snooze <id|name> 2h                # mute pages, keep evaluating
 contract-dev monitor pause <id|name> / resume / rename / unsnooze / delete
 ```
 
-`--to` takes channel ids, labels (`#alerts`) or kinds (`telegram`, when the
-workspace has one) — required on `add`, since a monitor with nowhere to send
-alerts nobody. A new monitor is named after its metric unless you pass `--name`.
+`--to` takes channel ids, labels (`#alerts`) or kinds (`telegram`, when the workspace has
+one). It is optional: without one the monitor records alerts on its page in the app until a
+destination is linked there. A new monitor is named after its value unless you pass `--name`.
 
 The three default monitors every watched contract gets — `control-change`,
 `dependency-failure`, `revert-spike` — are listed by `monitors` and take
@@ -153,65 +183,59 @@ contract-dev monitor show revert-spike                  # the contracts it cover
 ```
 
 ```bash
-contract-dev incidents [--days 30] [--limit 50]         # what fired (open episodes are always included)
-contract-dev incidents show <id>                        # evidence, deliveries, who acked
-contract-dev incidents ack <id> / unack <id>            # stop the reminders; the all-clear still comes
+contract-dev alerts [--days 30] [--limit 50]            # what fired (open episodes are always included)
+contract-dev alerts show <id>                           # evidence, deliveries, who acked
+contract-dev alerts ack <id> / unack <id>               # stop the reminders; the all-clear still comes
 ```
 
-### Monitors from a sentence
+### Event and silence monitors
 
-An event monitor fires when a contract emits an event, on conditions over its fields; a
-silence monitor when a contract goes quiet. Say it in flags, compile it to see what the
-monitor would say and how often it would have fired in the last 7 days, then add it with
-the same flags:
+An event monitor fires when a contract emits an event, on a condition over its fields; a
+silence monitor when a contract goes quiet. `--group` instead of `--on` makes one monitor on
+each contract of the group that has the event:
 
 ```bash
-contract-dev monitor compile --on steth --event Transfer --where "value at least 1,000 stETH" --to "#alerts"
-contract-dev monitor compile --on pool --event Swap --where "amount0 above 10,000 USDC" --where "recipient is not 0x0000000000000000000000000000000000000000" --name "Big swaps"
-contract-dev monitor compile --on steth --silence --method submit --for 6h --to telegram     # no submit() for 6 hours
-contract-dev monitor compile --on steth --silence --event Submitted --for 3d                 # no Submitted event for 3 days
-contract-dev monitor add --on steth --event Transfer --where "value at least 1,000 stETH" --to "#alerts"   # save it
+contract-dev monitor add --on steth --event Transfer --when "amount(value, emitter()) >= 1000" --to "#alerts"
+contract-dev monitor add --on pool --event Swap --when "usd(abs(amount0), token0()) > 1000000 and recipient != 0x0000000000000000000000000000000000000000" --name "Big swaps"
+contract-dev monitor add --group pools --event Upgraded --event Paused --event AdminChanged   # every control change, one call
+contract-dev monitor add --on steth --silence --event Submitted --for 3d                      # no Submitted event for 3 days
 ```
 
-`compile` prints the sentence, the conditions as the server read them (in the field's own
-unit — never dollars, there is no price at judging time), the backtest with the newest firings
-(time, sender, arguments), any notes, and the `monitor add` line that saves it. `--where` takes
-`is`, `is not`, `above`, `at least`, `below`, `at most` or the symbols; `--for` takes `90m`,
-`24h`, `3d`. `--to` is optional here: without one the monitor records alerts on its page and
-pages nobody.
+`--when` is comparisons of the event's fields joined by `and`, or one field's values joined by
+`or`. A field compared bare is in base units; `amount(field, token)` is a token amount and
+`usd(abs(field), token)` a dollar line (turned into the token at today's price, once). The token
+is a 0x address, `emitter()` for the contract itself, or a view the contract answers with one
+(`token0()`, `asset()`), as `describe` shows each field checked; nothing is read from a field's
+name. Without `--when` every emission alerts. `--for` takes `90m`, `24h`, `3d`. How often a rule
+would have fired is a question for `contract-dev events` with the same condition.
 
 ## Read your data
 
 Everything the dashboard shows, from the terminal. `<contract>` is an address or a
 watched contract's name (`steth` finds "Lido: stETH"); leave it out for the whole
-workspace. Windows are `--range 24h|7d|30d|90d` (Free workspaces keep 24 hours).
+workspace. Activity comes from the activity ledger: what the chain emitted about every
+watched contract, kept over the plan's window (90 days on Free, a year on Team), `--days <n>`.
+The other windows are `--range 24h|7d|30d|90d` (Free workspaces keep 24 hours there).
 
 ```bash
-contract-dev activity steth                     # transactions that reached it, newest first
-contract-dev activity steth --calls             # every call into it, internal ones included (--events, --transfers)
-contract-dev activity --failed --chain arbitrum # what reverted, across the workspace
-contract-dev methods steth                      # calls per method: reverts, callers, gas
-contract-dev methods steth transfer             # one method: callers, revert reasons, arguments, recent calls
-contract-dev methods steth transfer --paths     # the contracts calls come through
+contract-dev query transactions --contract steth --days 7                   # transactions that reached it, newest first: who, via what, which method
+contract-dev query transactions --group pools --days 30 --by day --count    # per day; --failed, --direct, --method <name>, --signer 0x…
+contract-dev query transfers --contract steth --out --by counterparty --sum "{USD}"   # value out, by who received it (--in, --token USDC)
+contract-dev query wallets --group pools --days 7 --where '{Status} == "new"'          # the wallets behind them: new or returning, first and last seen
 contract-dev events steth                       # events emitted, event by event, and the ones that never fired
-contract-dev flows steth                        # value in and out: by token, by counterparty
-contract-dev flows usdc                         # a token adds its own senders and receivers, holder to holder
-contract-dev flows steth --in --limit 100       # every counterparty sending in, largest first
-contract-dev counterparty 0x1b7a…               # one counterparty's dealings with your contracts
-contract-dev users steth                        # active wallets, how they arrive, the busiest (--routes, --wallets)
+contract-dev events --group pools --event Swap --read "t0=token0()" --fixed t0 --by contract --sum "usd(abs(amount0), t0)"   # volume per pool
+contract-dev history steth --event WithdrawalQueued --by week   # every firing since launch
 contract-dev tvl                                # value held: now, its change, by chain and token
 contract-dev contracts show steth               # its Overview tab: what it is, value and its change, last 24h, monitors, metrics
-contract-dev contracts stats --range 7d         # every contract side by side
-contract-dev positions <contract>               # positions in lending markets and vaults
-contract-dev positions <contract> steakhouse --range 7d   # one in full: facts, the series, the timeline
 contract-dev holders <contract>                 # a token's holders
-contract-dev dependencies steth                 # the contracts it calls out to, and the price feeds it reads
+contract-dev who 0x1b7a… --holdings             # who an address is; what it holds
+contract-dev read steth getTotalPooledEther --decimals 18 --at 2026-01-01   # a view function, now or in the past
 ```
 
 And any transaction, address or block on Ethereum, Arbitrum, Avalanche or Sepolia:
 
 ```bash
-contract-dev tx 0x03d2… --trace --state         # decoded call, fees, transfers, logs; call tree; state changes
+contract-dev tx 0x03d2…                         # outcome, decoded call, fees, transfers, logs
 contract-dev address 0x889e…                    # balance, identity, recent transactions; a Chainlink feed's reading
 contract-dev block 26093226 --chain ethereum
 contract-dev wallet 0x47ac… [--approvals|--txs]
@@ -233,15 +257,16 @@ weekly one 7d, its change, then 30d and 90d.
 contract-dev report create --template daily --to "#alerts"          # the app's daily template, 09:00 in this machine's zone
 contract-dev report create --template weekly --scope tag:pools --on friday --at 17 --tz Europe/London --to telegram
 contract-dev report create --name "Swaps" --scope steth --row transactions --row eventCount:Swap --row "trackedMetric:Vault reserves" --to "#alerts"
-contract-dev report preview --template daily --scope steth          # the table it would send, computed now, saved nowhere
 contract-dev report list                                            # scope, cadence, destinations, next send, last run
 contract-dev report show "Daily report"                             # settings, the latest table, every run and where it went
 contract-dev report run "Daily report"                              # send it now
+contract-dev report update "Daily report" --to "#ops"               # the parts that change
 contract-dev report pause "Daily report" / resume / delete
 ```
 
 `--row` takes a kind (`activeWallets`, `transactions`, `revertedShare`, `volumeInUsd`,
-`volumeOutUsd`, `tvlUsd`, `alertsOpened`, `eventCount:<event>`, `trackedMetric:<id|label>`),
+`volumeOutUsd`, `tvlUsd`, `alertsOpened`, `eventCount:<event>`, `trackedMetric:<id|label>`,
+`customMetric:<name>`),
 one per flag and in order; given, they replace the template's rows. `--to` takes the
 same destinations as `monitor add`; without one the report still runs on schedule and its
 table shows on the report's page in the app until a destination is linked there. Anywhere
@@ -249,37 +274,42 @@ a report is named, its id or (unambiguous) name works.
 
 ## Ask questions
 
-Four commands answer the questions people ask of a workspace, through the same tools a
-chat agent calls, so the terminal and the agent give the same figures:
+The question commands go through the same tools a chat agent calls, so the terminal and the
+agent give the same figures. `query` asks any dataset the platform keeps a question in one
+grammar, the table language:
 
 ```bash
 contract-dev find pools                                  # the watched contracts that behave like pools
 contract-dev find lido                                   # contracts, groups, metrics, monitors, reports, destinations named like it
-contract-dev describe steth                              # kinds, standards, owner, TVL; its events and their fields; write functions; what it calls
-contract-dev compare --group pools --by volumeInUsd --window 7d              # rank a group, against the week before
-contract-dev compare --by events --event Swap --chain arbitrum --limit 10    # which contracts emitted the most Swaps
-contract-dev compare --by revertedShare                                      # the whole workspace, by reverted share
-contract-dev activity query --measure events --event Swap --group pools --by contract,day   # swaps per pool per day, as a pivot
-contract-dev activity query --measure wallets --contract steth --by day --window 30d --tz Europe/London
-contract-dev activity query --measure transactions --by contract            # one count per contract
+contract-dev describe steth                              # kinds, standards, owner, TVL; its events and their fields; write functions
+contract-dev query contracts --group pools --sort "{TVL}"                                # rank a group by a column
+contract-dev query contracts --group markets --show headroom="{Held} - {Required}" --where "headroom < 0" --sort headroom --asc
+contract-dev query contracts --group markets --read cov="coverageLiquidity() in asset()" --sort cov --asc   # a view read on every member now
+contract-dev query contracts --group markets --by kind --sum "{Supplied}"                # fold rows into groups
+contract-dev query table "Withdrawal rounds" --where '{Stage} == "Paying" and age > 7d' --sort "{Outstanding}"
+contract-dev query metric Deposits --days 30 --by day --sum "{value}"                    # what is behind a metric
+contract-dev query monitors --where '{State} == "breached"'
+contract-dev query alerts --days 30 --by monitor --count
+contract-dev query reports
 ```
 
-Scope is the whole workspace, `--group <name>`, `--contract <address|name>` or `--chain <id|name>`.
-`compare --by` takes `transactions`, `activeWallets`, `volumeInUsd`, `volumeOutUsd`, `tvlUsd`,
-`revertedShare` or `events` (with `--event`); `activity query --measure` takes `events`,
-`transactions` or `wallets` and `--by` any of `contract`, `day`, `event`. Grouped by contract and
-day the counts print as a pivot: a row per contract, a column per day, a total. Windows are
-`--window 24h|7d|30d|90d`; a Free workspace reads 24h and the output says when it was clamped.
+The clauses are the same for every dataset (transactions, transfers and wallets above included):
+`--where "<expr>"` keeps rows, `--show <name>="<expr>"` works out a column usable below it,
+`--sort "<expr>" [--asc]` ranks, `--by <a,b>` with `--count` or `--sum|--avg|--min|--max "<expr>"`
+folds rows into groups, `--total <a,b>` adds columns up over every matching row, `--limit <n>` pages
+(the answer says how many matched). Columns are named by label in braces (`{Held}`) or by key; a
+status column holds its option name; durations read `24h`, `7d`. Scope is the whole workspace,
+`--group <name>`, `--contract <address|name>` or `--chain <id|name>`.
 
 ## Agents
 
 Every command takes `--json` and prints the server's payload, nothing else. Underneath, the
-ask commands and `monitor compile` call the platform's tools, which an agent can also call by
+question commands, `query` and `events` call the platform's tools, which an agent can also call by
 name:
 
 ```bash
 contract-dev tool list                                   # every tool: name, scope, title
-contract-dev tool show compare_activity                  # its description and input schema
+contract-dev tool show query_transactions                # its description and input schema
 contract-dev tool run find --input '{"query":"pools"}'   # run one; the result as JSON, a refusal exits 1
 contract-dev tool run compile_monitor --input @monitor.json
 ```
@@ -344,44 +374,41 @@ contract-dev workspace            Show or switch the workspace the CLI acts on
 contract-dev logout               Revoke the key and delete the saved credentials
 contract-dev status               The workspace at a glance
 
-contract-dev watch                Watch mainnet contracts, one or several; --group tags them
+contract-dev watch                Watch mainnet contracts, one or several; --group tags them; watch wallet <address> for a wallet
+contract-dev wallets              list / add / rename / remove watched wallets (addresses with no code)
 contract-dev rename               Rename a watched contract
 contract-dev unwatch              Stop watching a contract
 contract-dev factory              The contracts a factory deployed; --watch --group watches the new ones
 contract-dev group                show / rule add / name-pattern / column add / monitor add on a group
 
 contract-dev metrics              List / show / export / rename / pause / resume tracked metrics
-contract-dev track                Track an on-chain value
+contract-dev metric               define / show / update / delete / monitor / table / group: event metrics and roll-ups
+contract-dev track                Track an on-chain value; track formula for a value worked out from several views
 contract-dev untrack              Stop tracking
+contract-dev table                list / show / create / update / delete tables of things inside contracts (rounds, loans, proposals)
 
-contract-dev activity             Transactions, calls, events and transfers on your contracts
-contract-dev methods              Calls per method; one method in full; the paths into it
-contract-dev events               Events emitted, event by event
-contract-dev flows                Value in and out, by token and counterparty
-contract-dev counterparty         One counterparty's dealings with your contracts
-contract-dev users                Active wallets, how they arrive, the busiest
+contract-dev query                One dataset as a table: contracts / table / metric / monitors / alerts / reports / transactions / transfers / wallets
+contract-dev events               Events emitted, event by event; any question over recent events, in the formula language
+contract-dev history              Every firing of an event since launch: counts by period, wallets, the largest
 contract-dev tvl                  Value held, its change, what it is made of
-contract-dev contracts            show <contract> / stats: one contract, or all side by side
-contract-dev positions            A contract's lending and vault positions; one of them in full
+contract-dev contracts            list / show <contract> / set-abi
 contract-dev holders              A token's holders
-contract-dev dependencies         The contracts a contract calls out to, and the price feeds it reads
 contract-dev find                 What a name points at: contracts, groups, metrics, monitors, reports, destinations
-contract-dev describe             What a contract is: kinds, standards, owner, TVL, events, write functions, what it calls
-contract-dev compare              Rank the contracts in a scope by one measure, against the window before
-contract-dev activity query       Counts per contract per day (a pivot), or by contract, day, event
-contract-dev tx                   A transaction; --trace, --state
+contract-dev describe             What a contract is: kinds, standards, owner, TVL, events, write functions
+contract-dev who                  Who an address, ENS name or label is; --holdings for what it holds
+contract-dev read                 Call a view function, now or at a past date or block
+contract-dev tx                   A transaction: outcome, decoded call, fees, transfers, logs
 contract-dev address              An address: balance, identity, recent transactions
 contract-dev block                A block and its transactions
 contract-dev wallet               A wallet's tokens, approvals, transactions
 contract-dev source               A contract's verified source
 
 contract-dev monitors             List monitors
-contract-dev monitor              Add / show / set / pause / snooze / delete a monitor; exclude / include on a default; sightings on a silence monitor
-contract-dev monitor compile      A monitor from a sentence (--on --event --where / --silence --for): its sentence and backtest; add saves it
-contract-dev incidents            List / show / ack alert episodes
+contract-dev monitor              Add / show / set / rename / pause / snooze / delete a monitor; exclude / include on a default; sightings on a silence monitor
+contract-dev alerts               List / show / ack / unack alert episodes (`incidents` still works)
 contract-dev channels             List / test / enable / disable / remove alert destinations
 
-contract-dev report               List / create / preview / show / run / pause / resume / delete a scheduled report
+contract-dev report               List / create / show / run / update / pause / resume / delete a scheduled report
 
 contract-dev tool                 list / show / run the platform's tools by name, for agents and scripts
 

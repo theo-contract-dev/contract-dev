@@ -4,7 +4,7 @@
 // Each command sends the tool its input, prints the answer, and hands --json the tool's own result.
 import { parseFlags, flag, flagAll, onlyFlags, requireFlag, requirePositional, type ParsedFlags } from './_args';
 import { parseFormulaCall } from './eventMetric';
-import { requireAuth } from '../credentials';
+import { apiRequest, requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag, limitFlag } from '../data';
 import { watchSummaryLines, type WatchContractsResult } from './watch';
@@ -15,32 +15,32 @@ const HELP = `contract-dev group — a group of contracts: the rules that fill i
 Usage:
   contract-dev group show <group>                     Rules, table columns, monitors and members with each column's value
   contract-dev group rule add <group> --factory <address> --event <Name> --field <arg> [--chain <id|name>]
-                              [--name-pattern "…"] [--recent] [--preview]
+                              [--name-pattern "…"] [--recent]
                                                       Every contract the factory has ever deployed joins the group, in
                                                       the background (thousands take a while), then each new one;
                                                       --recent: only the last few weeks and what comes next
   contract-dev group rule add <group> --registry <address> --function "getAllMarkets()" [--chain <id|name>]
-                              [--name-pattern "…"] [--preview]
+                              [--name-pattern "…"]
                                                       Every contract the registry lists joins the group
-  contract-dev group name-pattern <group> "<pattern>" [--preview]
+  contract-dev group name-pattern <group> "<pattern>"
                                                       Name every member from its own reads: "{token0().symbol()} pool"
   contract-dev group name-pattern <group> --clear     Members keep their own names again
   contract-dev group column add <group> --label "…" --read "totalAssets()" [--args a,b] [--word <n>] [--decimals <n>]
                               (then: contract-dev metric group "<name>" --group <group> --column <key> rolls it up)
                               [--decimals-from "decimals()"] [--token <token> [--show usd]] [--unit int|pct|duration|rate|raw] [--attribute]
-                              [--type address|uint|bool|string] [--key <key>] [--preview]
-                                                      A column on the group's table: one read on every member, tracked
+                              [--type address|uint|bool|string] [--key <key>]
+                                                      A column on the group's table: one read on every member, refreshed
+                                                      every minute (tracked per block once a group monitor reads it)
   contract-dev group column add <group> --label "…" [--call "<name>=<call> [on <target>] [with <args>] [decimals <n>]"]…
-                              --formula "<expr>" [--type bool] [--token <token> [--show usd]] [--unit …] [--key <key>] [--preview]
+                              --formula "<expr>" [--type bool] [--token <token> [--show usd]] [--unit …] [--key <key>]
                                                       A FORMULA column: calls resolved on every member (a view, balance(self),
                                                       slot(self, <key>)) and an expression over them and the group's other
                                                       columns ({Held} - {Required}), one calculated value per member; a
                                                       yes/no (--type bool, or inferred) a count roll-up counts
-  contract-dev group monitor add <group> --name "…" --column <key|label> --when "<formula>" [--warn "<formula>"] [--preview]
+  contract-dev group monitor add <group> --name "…" --column <key|label> --when "<formula>" [--warn "<formula>"]
                                                       One monitor on every member, judged on a column of the table
+  contract-dev group monitor delete <group> <id|name>…  Remove a group monitor and the monitor it put on every member
 
---preview on rule add, name-pattern, column add and monitor add shows what would happen — the contracts
-found, the names, the first readings, the monitor's sentence — and saves nothing.
 --chain takes an id or a name (ethereum, arbitrum, avalanche, sepolia); the server reads ethereum without one.
 --event / --field name the factory's creation event and its address argument that is the new contract. Both are
 required: nothing is picked from names. Without them the answer lists every event with an address argument.
@@ -56,7 +56,7 @@ beside --when "value > {Cap}".
 
 Examples:
   contract-dev group show pools
-  contract-dev group rule add pools --factory 0x1F98431c8aD98523631AE4a59f267346ea31F984 --event PoolCreated --field pool --preview
+  contract-dev group rule add pools --factory 0x1F98431c8aD98523631AE4a59f267346ea31F984 --event PoolCreated --field pool
   contract-dev group name-pattern pools "{token0().symbol()}/{token1().symbol()} pool"
   contract-dev group column add vaults --label "Assets" --read "totalAssets()" --token "asset()" --show usd
   contract-dev group column add vaults --label "Headroom" --call "held=totalAssets()" --call "required=coverageLiquidity()" \\
@@ -64,6 +64,7 @@ Examples:
   contract-dev group column add vaults --label "Breached" --formula "{Held} < {Required}"
   contract-dev group monitor add vaults --name "Vault draining" --column assets --when "value < 1000000" --warn "value < 1100000"
   contract-dev group monitor add vaults --name "Over cap" --column util --when "value > {Cap}"
+  contract-dev group monitor delete vaults "Vault draining"
 `;
 
 const FACTORY_HELP = `contract-dev factory — the contracts a factory deployed
@@ -491,8 +492,6 @@ function wordFlag<T extends string>(flags: ParsedFlags, name: string, allowed: r
   return hit;
 }
 
-const previewFlag = (flags: ParsedFlags): boolean => flag(flags, 'preview') === 'true';
-
 // ── commands ──
 
 export async function groupCommand(args: string[]): Promise<unknown> {
@@ -594,7 +593,6 @@ async function addRule(args: string[]): Promise<RuleResult | void> {
   if (pattern !== undefined) input.namePattern = pattern;
   // a factory rule reads the whole history by default; --recent keeps it to the last few weeks and what comes next
   if (flag(flags, 'recent') === 'true') input.history = false;
-  if (previewFlag(flags)) input.preview = true;
 
   const r = await runTool<RuleResult>(requireAuth(), 'create_watch_rule', input);
   for (const line of ruleLines(r)) console.log(line);
@@ -614,7 +612,6 @@ async function namePatternCommand(args: string[]): Promise<NamePatternResult | v
   if (clear && pattern) throw new Error('Give a pattern or --clear, not both.');
   if (!clear && !pattern) throw new Error('Give the pattern in quotes, like "{token0().symbol()} pool", or --clear to drop it.');
   const input: Record<string, unknown> = { group, pattern: clear ? '' : pattern };
-  if (previewFlag(flags)) input.preview = true;
   const r = await runTool<NamePatternResult>(requireAuth(), 'set_name_pattern', input);
   for (const line of namePatternLines(r)) console.log(line);
   return r;
@@ -691,7 +688,6 @@ async function addColumn(args: string[]): Promise<ColumnResult | void> {
   if (flag(flags, 'attribute') === 'true') input.attribute = true;
   const type = wordFlag(flags, 'type', TYPES);
   if (type !== undefined) input.type = type;
-  if (previewFlag(flags)) input.preview = true;
 
   const r = await runTool<ColumnResult>(requireAuth(), 'add_table_column', input);
   for (const line of columnLines(r)) console.log(line);
@@ -704,6 +700,10 @@ async function groupMonitorCommand(args: string[]): Promise<unknown> {
     case 'add':
     case 'create':
       return await addGroupMonitor(rest);
+    case 'delete':
+    case 'remove':
+    case 'rm':
+      return await deleteGroupMonitor(rest);
     case 'help':
     case '-h':
     case '--help':
@@ -724,7 +724,7 @@ async function addGroupMonitor(args: string[]): Promise<GroupMonitorResult | voi
   }
   const flags = parseFlags(args);
   const group = requirePositional(flags._ as string[], 0, 'group');
-  onlyFlags(flags, 'group monitor add', ['name', 'column', 'when', 'warn', 'preview']);
+  onlyFlags(flags, 'group monitor add', ['name', 'column', 'when', 'warn']);
   const name = requireFlag(flags, 'name');
   const column = requireFlag(flags, 'column');
   // one formula in the shared grammar, judged by the server: value < 1000000, value > {Required}
@@ -737,11 +737,45 @@ async function addGroupMonitor(args: string[]): Promise<GroupMonitorResult | voi
     if (/^-?[\d.,%]+$/.test(warn.trim())) throw new Error(`--warn is a formula: the same comparison as --when, nearer the healthy side (--warn "value < 1100000" beside --when "value < 1000000").`);
     input.warn = warn;
   }
-  if (previewFlag(flags)) input.preview = true;
 
   const r = await runTool<GroupMonitorResult>(requireAuth(), 'add_group_monitor', input);
   for (const line of groupMonitorLines(r)) console.log(line);
   return r;
+}
+
+/** `group monitor delete <group> <id|name>…`: the group monitor and every member's monitor made from it. */
+async function deleteGroupMonitor(args: string[]): Promise<{ ok: true; group: string; ids: string[] } | void> {
+  if (!args.length || HELP_WORDS.includes(args[0])) {
+    console.log(HELP);
+    return;
+  }
+  const flags = parseFlags(args);
+  const positional = flags._ as string[];
+  const group = requirePositional(positional, 0, 'group');
+  const refs = positional.slice(1);
+  if (!refs.length) throw new Error(`Name the monitor to delete: contract-dev group monitor delete "${group}" <id|name>. contract-dev group show "${group}" lists them.`);
+  onlyFlags(flags, 'group monitor delete', []);
+  const auth = requireAuth();
+  // every ref resolved against the group before anything is deleted, so a typo deletes nothing
+  const g = await runTool<GroupDescription>(auth, 'describe_group', { group });
+  const monitors = g.monitors ?? [];
+  const targets = refs.map((ref) => {
+    const byId = monitors.find((m) => m.id === ref);
+    if (byId) return byId;
+    const lower = ref.trim().toLowerCase();
+    const byName = monitors.filter((m) => m.name.toLowerCase() === lower);
+    if (byName.length === 1) return byName[0];
+    if (byName.length > 1) throw new Error(`${byName.length} monitors of "${g.group}" are named "${ref}" — use an id: ${byName.map((m) => m.id).join(', ')}. Nothing was deleted.`);
+    throw new Error(`No monitor of "${g.group}" matches "${ref}" (contract-dev group show "${g.group}" lists them). Nothing was deleted.`);
+  });
+  const ids: string[] = [];
+  for (const m of targets) {
+    if (ids.includes(m.id)) continue;
+    await apiRequest(auth, 'DELETE', `/api/console/scope/monitors?tag=${encodeURIComponent(g.group)}&id=${encodeURIComponent(m.id)}`);
+    console.log(`Deleted group monitor "${m.name}" (${m.id}) and the ${plural(m.contracts, 'monitor')} it put on ${g.group}'s members.`);
+    ids.push(m.id);
+  }
+  return { ok: true, group: g.group, ids };
 }
 
 // ── factory ──

@@ -3,11 +3,11 @@
 // columns chosen by rules, formula columns, and a rule that finishes a row. list, show (counts,
 // findings and endings by period, rows per status, how long rows take, the biggest and newest rows,
 // one row by id), create (from event names in the contracts' ABIs; --hidden keeps it off the Tables
-// page) and update (rename, set when rows finish, put on or take off the page). --json hands back
-// the tool's own result.
+// page), update (rename, set when rows finish, put on or take off the page) and delete (the table
+// with its rows, their tracked values and its monitors). --json hands back the tool's own result.
 import { parseFlags, flag, flagAll, requirePositional, type ParsedFlags } from './_args';
 import { parseFormulaCall } from './eventMetric';
-import { requireAuth } from '../credentials';
+import { apiRequest, requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag, limitFlag } from '../data';
 import { printResult } from './_print';
@@ -22,18 +22,19 @@ Usage:
                               [--column <key|label>] [--contract <ref>] [--limit <n>]
                                                       Findings and endings per period, rows per status, how long rows
                                                       take, column totals, the biggest and newest rows, the busiest contracts
-  contract-dev table show <table> --item <id>         One row: its values, its statuses, its watched events and its own
+  contract-dev table show <table> --row <id>          One row: its values, its statuses, its watched events and its own
                                                       events since it was found
+  contract-dev table delete <table>                   Remove it: its rows, their tracked values and its monitors go with it
   contract-dev table create "<name>" --opens <Event> [--status "<Label>: <Opt>=<rule>; <Opt>=<rule>; <Opt>"]…
                               [--formula "<Label>=<expr>[; call <name>=<call>]…[; token <token>][; show usd]"]… [--finished "<rule>"] [--closes <Event>|list] [--id <field>]
                               [--group <group> | --contract <ref>] [--count "<Event>[:label] [on <field>]"]…
                               [--sum "<Event>.<field>[:label] [on <field>] [token <token> [show usd] | decimals <n>]"]…
-                              [--event "<Event>.<field>"]… [--closes-on <field>] [--id-shown date|number] [--hidden] [--preview]
+                              [--event "<Event>.<field>"]… [--closes-on <field>] [--id-shown date|number] [--hidden]
                                                       A table from the contracts' events; its history is read now and
                                                       kept up to date
   contract-dev table update <table> [--name "<name>"] [--status "<Label>: …"]… [--formula "<Label>=<expr>"]…
                               [--token "<Label>=<token> [show usd]"]… [--event "<Event>.<field>"]… [--finished "<rule>" | --never-finishes]
-                              [--show | --hide] [--preview]
+                              [--show | --hide]
                                                       Rename it, add status or formula columns or replace their rules (by
                                                       label), set when its rows finish, put a hidden table on the Tables
                                                       page, or take one off
@@ -51,13 +52,13 @@ rule names is stated the same way with --event "<Event>.<field>", and --closes-o
 is matched by name. Nothing is assumed about what a number is: an amount is a token amount only when you say which token,
 by ending it with "token <token>": its 0x address, self (the contract itself), or a view each contract answers with the
 token's address, like asset(). Its decimals then scale it, and "show usd" puts it in dollars at the current price. A
-formula already in token units takes the same: --formula "Outstanding={Requested} - {Paid}; token asset(); show usd".
+formula already in token units takes the same: --formula "Outstanding={Requested} - {Paid}; token asset(); show usd";
+its own calls then count in that token too (a balanceOf scaled by the asset's decimals) unless one states "decimals <n>".
 A formula folds an event's field by name over the row's events: sum(Event.field), count(Event), min, max, first,
 last. --formula "Still owed=sum(WithdrawalQueued.normalizedAmount) - sum(WithdrawalExecuted.normalizedAmount); token
 asset()" with --event WithdrawalQueued.expiry --event WithdrawalExecuted.expiry to say which field holds the row id.
 Without a token a number is shown as the chain holds it; "decimals <n>" scales a plain number. --token on update
 sets, changes or (with nothing after =) clears a column's token.
---preview checks everything and saves nothing.
 
 Examples:
   contract-dev table list
@@ -71,7 +72,7 @@ Examples:
     --status "Health: Overdue={Stage} == \\"Expired\\" and timeIn({Stage}) > 24h; At risk={Outstanding} > 100000; Healthy" \\
     --finished "{Stage} == \\"Expired\\" and {Outstanding} == 0"
   contract-dev table show "Withdrawal rounds" --by week --among done
-  contract-dev table show "Withdrawal rounds" --item 2026-10-13
+  contract-dev table show "Withdrawal rounds" --row 2026-10-13
 `;
 
 const HELP_WORDS = ['help', '-h', '--help'];
@@ -91,6 +92,10 @@ export async function tableCommand(args: string[]): Promise<unknown> {
     case 'update':
     case 'rename':
       return await updateTable(rest, sub === 'rename');
+    case 'delete':
+    case 'remove':
+    case 'rm':
+      return await deleteTable(rest);
     case 'help':
     case '-h':
     case '--help':
@@ -125,7 +130,7 @@ async function showTable(args: string[]): Promise<unknown> {
   const table = (flags._ as string[]).join(' ').trim();
   if (!table) throw new Error('Name the table (contract-dev table list shows them).');
   const input: Record<string, unknown> = { table };
-  for (const key of ['item', 'contract', 'by', 'since', 'column', 'among'] as const) {
+  for (const key of ['row', 'contract', 'by', 'since', 'column', 'among'] as const) {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }
@@ -138,6 +143,27 @@ async function showTable(args: string[]): Promise<unknown> {
   const result = await runTool<Record<string, unknown>>(requireAuth(), 'describe_table', input);
   for (const line of printResult(result)) console.log(line);
   return result;
+}
+
+/** `table delete <table>`: the table by id or name (hidden ones too), then the server's DELETE, which takes its rows, their tracked values and its monitors with it. */
+async function deleteTable(args: string[]): Promise<{ ok: true; id: string }> {
+  if (!args.length || HELP_WORDS.includes(args[0])) return void console.log(HELP) as never;
+  const flags = parseFlags(args);
+  const ref = (flags._ as string[]).join(' ').trim();
+  if (!ref) throw new Error('Name the table to delete (contract-dev table list shows them).');
+  const auth = requireAuth();
+  const listed = await runTool<{ rows?: Array<{ id: string; name: string }> }>(auth, 'list_tables', {});
+  const rows = listed.rows ?? [];
+  const byId = rows.find((t) => t.id === ref);
+  const byName = rows.filter((t) => t.name.trim().toLowerCase() === ref.toLowerCase());
+  const table = byId ?? (byName.length === 1 ? byName[0] : undefined);
+  if (!table) {
+    if (byName.length > 1) throw new Error(`"${ref}" names ${byName.length} tables (${byName.map((t) => t.id).join(', ')}); pass the id.`);
+    throw new Error(`No table matches "${ref}" (contract-dev table list shows them).`);
+  }
+  await apiRequest(auth, 'DELETE', `/api/console/tables/${table.id}`);
+  console.log(`Deleted table "${table.name}" (${table.id}): its rows, their tracked values and its monitors.`);
+  return { ok: true, id: table.id };
 }
 
 const STATUS_HELP = '--status takes "Label: Option=rule; Option=rule; Option" (the last without a rule is Otherwise): --status "Stage: Closed=latest(WithdrawalBatchClosed); Open".';
@@ -295,7 +321,6 @@ async function createTable(args: string[]): Promise<unknown> {
     if (idShown !== 'date' && idShown !== 'number') throw new Error(`--id-shown takes date or number (got: ${idShown})`);
     input.idShown = idShown;
   }
-  if (flag(flags, 'preview') !== undefined) input.preview = true;
   const result = await runTool<Record<string, unknown>>(requireAuth(), 'create_table', input);
   for (const line of printResult(result)) console.log(line);
   return result;
@@ -336,7 +361,6 @@ async function updateTable(args: string[], renaming: boolean): Promise<unknown> 
     ...(finished !== undefined ? { finished } : never ? { finished: '' } : {}),
     ...(show ? { listed: true } : hide ? { listed: false } : {}),
   };
-  if (flag(flags, 'preview') !== undefined) input.preview = true;
   const result = await runTool<Record<string, unknown>>(requireAuth(), 'update_table', input);
   for (const line of printResult(result)) console.log(line);
   return result;

@@ -2,13 +2,13 @@ import { parseFlags, flag, requirePositional } from './_args';
 import { apiRequest, requireAuth } from '../credentials';
 import { formatValue, shortHex, TrackedMetric } from './metrics';
 
-const HELP = `contract-dev incidents — the workspace's alert episodes
+const HELP = `contract-dev alerts — the workspace's alert episodes
 
 Usage:
-  contract-dev incidents [--days <n>] [--limit <n>]   What fired (default: last 7 days + anything still open)
-  contract-dev incidents show <id>                   One episode in full: evidence, deliveries, who acked
-  contract-dev incidents ack <id>                    Stop the reminders (the all-clear still comes)
-  contract-dev incidents unack <id>                  Hand it back — reminders resume
+  contract-dev alerts [--days <n>] [--limit <n>]   What fired (default: last 7 days + anything still open)
+  contract-dev alerts show <id>                   One episode in full: evidence, deliveries, who acked
+  contract-dev alerts ack <id>                    Stop the reminders (the all-clear still comes)
+  contract-dev alerts unack <id>                  Hand it back — reminders resume
 
 Acking silences repeat pages without silencing the recovery, which pausing the monitor
 would. Windows beyond 24h need a paid plan; the server clamps otherwise.
@@ -53,6 +53,29 @@ interface BuiltinEvidence {
 
 type InputEvidence = Record<string, { raw: string; at: string | null; block?: string }>;
 
+// An event, silence or unanswered monitor's episode carries its own words and the firing behind them.
+interface WatchEvidence {
+  watch: 'eventFired' | 'silence' | 'unanswered';
+  words: string;
+  event?: string | null;
+  txHash?: string | null;
+  logIndex?: number | null;
+  blockNumber?: number | null;
+  from?: string | null;
+  fromLabel?: string | null;
+  args?: Array<{ name: string; type: string; raw: string; text: string }>;
+  values?: Record<string, string>;
+  /** a loop of firings folded into one episode */
+  firings?: number;
+  lastSeen?: number | null;
+  windowSec?: number;
+  open?: number | null;
+  overdue?: number | null;
+  oldest?: { txHash: string; logIndex: number; openedAt: number; fields?: Record<string, string> } | null;
+}
+const isWatchEvidence = (e: unknown): e is WatchEvidence => !!e && typeof e === 'object' && typeof (e as WatchEvidence).watch === 'string' && typeof (e as WatchEvidence).words === 'string';
+const whenSec = (s: number | null | undefined): string => (s == null ? '—' : new Date(s * 1000).toISOString());
+
 const isBuiltinEvidence = (e: unknown): e is BuiltinEvidence =>
   !!e && typeof e === 'object' && typeof (e as BuiltinEvidence).builtin === 'string' && typeof (e as BuiltinEvidence).sentence === 'string';
 
@@ -64,8 +87,8 @@ interface IncidentDetail {
   level: string;
   peakLevel: string;
   alertedAt: string | null;
-  openInputs: InputEvidence | BuiltinEvidence;
-  alertInputs: InputEvidence | BuiltinEvidence | null;
+  openInputs: InputEvidence | BuiltinEvidence | WatchEvidence;
+  alertInputs: InputEvidence | BuiltinEvidence | WatchEvidence | null;
   ackedAt: string | null;
   ackedBy: { name: string | null; email: string | null } | null;
   notifyCount: number;
@@ -106,7 +129,7 @@ export async function incidentsCommand(args: string[]): Promise<unknown> {
       return;
     default:
       if (sub.startsWith('--')) return await listIncidents(args);
-      console.error(`Unknown incidents subcommand: ${sub}\n`);
+      console.error(`Unknown alerts subcommand: ${sub}\n`);
       console.error(HELP);
       process.exit(1);
   }
@@ -129,7 +152,7 @@ async function listIncidents(args: string[]): Promise<IncidentRow[]> {
     `/api/mainnet/incidents${query.length ? `?${query.join('&')}` : ''}`,
   );
   if (!incidents?.length) {
-    console.log(`No incidents in the last ${days} day${days === 1 ? '' : 's'}.`);
+    console.log(`No alerts in the last ${days} day${days === 1 ? '' : 's'}.`);
     return [];
   }
   for (const inc of incidents) {
@@ -157,7 +180,23 @@ async function showIncident(args: string[]): Promise<IncidentDetail> {
   if (incident.ackedAt) console.log(`  acked:  ${incident.ackedAt}${incident.ackedBy ? ` by ${incident.ackedBy.name ?? incident.ackedBy.email ?? 'a member'}` : ''}`);
   const evidence = incident.alertInputs ?? incident.openInputs;
   console.log(`  evidence (${incident.alertInputs ? 'at escalation' : 'at open'}):`);
-  if (isBuiltinEvidence(evidence)) {
+  if (isWatchEvidence(evidence)) {
+    // an event firing, a silence or an unanswered open: its own words, then what it saw
+    console.log(`    ${evidence.words}`);
+    if (evidence.watch === 'eventFired') {
+      if (evidence.firings != null) console.log(`    firings:  ${evidence.firings} in this episode (the newest below)`);
+      if (evidence.event) console.log(`    event:    ${evidence.event}`);
+      if (evidence.txHash) console.log(`    tx:       ${evidence.txHash}${evidence.blockNumber != null ? ` (block ${evidence.blockNumber}${evidence.logIndex != null ? `, log ${evidence.logIndex}` : ''})` : ''}`);
+      if (evidence.from) console.log(`    from:     ${evidence.fromLabel ? `${evidence.fromLabel} ` : ''}${evidence.from}`);
+      for (const a of evidence.args ?? []) console.log(`    ${a.name.padEnd(24)} ${a.text}`);
+      for (const [k, v] of Object.entries(evidence.values ?? {})) console.log(`    ${k.padEnd(24)} ${v}`);
+    } else if (evidence.watch === 'silence') {
+      console.log(`    last seen: ${whenSec(evidence.lastSeen)}${evidence.windowSec ? `   expected within ${Math.round(evidence.windowSec / 60)} min` : ''}`);
+    } else {
+      console.log(`    open: ${evidence.open ?? '—'}   overdue: ${evidence.overdue ?? '—'}${evidence.windowSec ? `   expected within ${Math.round(evidence.windowSec / 60)} min` : ''}`);
+      if (evidence.oldest) console.log(`    oldest:   ${evidence.oldest.txHash} opened ${whenSec(evidence.oldest.openedAt)}`);
+    }
+  } else if (isBuiltinEvidence(evidence)) {
     console.log(`    contract: chain ${evidence.chainId} ${evidence.address}${evidence.label ? ` (${evidence.label})` : ''}`);
     console.log(`    reading:  ${evidence.sentence}`);
     if (evidence.detail) console.log(`              ${evidence.detail}`);

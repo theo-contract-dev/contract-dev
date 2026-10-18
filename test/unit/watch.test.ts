@@ -108,7 +108,7 @@ describe('watch / unwatch (mainnet contracts)', () => {
 
         await unwatchCommand(['0xAAA', '--chain', '8453']);
         expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
-            'GET /api/mainnet/accounts?accountType=contract',
+            'GET /api/mainnet/accounts',
             'DELETE /api/mainnet/accounts/a2',
         ]);
         expect(printed()[0]).toBe('Stopped watching New (0xaaa).');
@@ -123,13 +123,16 @@ describe('watch / unwatch (mainnet contracts)', () => {
         await expect(unwatchCommand(['0xAAA'])).rejects.toThrow(/watched on chains 1, 8453.*--chain/);
     });
 
-    it('a wallet entry never matches, even if the API returned one', async () => {
-        mockApi({
+    it('a watched wallet unwatches like a contract (one table since 2026-10-18)', async () => {
+        const calls = mockApi({
             'GET /api/mainnet/accounts': () => ({
-                payload: { accounts: [{ id: 'w1', chainId: 1, chainIds: [1, 8453], address: '0xbbb', accountType: 'wallet', name: 'Deployer' }] },
+                payload: { accounts: [{ id: 'w1', chainId: 1, chainIds: [1], address: '0xbbb', accountType: 'wallet', name: 'Deployer' }] },
             }),
+            'DELETE /api/mainnet/accounts/w1': () => ({ payload: { ok: true } }),
         });
-        await expect(unwatchCommand(['0xBBB'])).rejects.toThrow(/No watched contract found for 0xBBB/);
+        await unwatchCommand(['0xBBB']);
+        expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /api/mainnet/accounts', 'DELETE /api/mainnet/accounts/w1']);
+        expect(printed()[0]).toBe('Stopped watching Deployer (0xbbb).');
     });
 
     it('several addresses go through the watch_contracts tool in one call: the tally, then each skipped and failed address on its own line', async () => {

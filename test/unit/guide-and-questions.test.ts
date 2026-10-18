@@ -71,21 +71,17 @@ describe('the server guide in the skill', () => {
 describe('question shortcuts', () => {
     useEnvAuth();
 
-    it('who: an address, ENS or name; --activity and --holdings pick the tool', async () => {
+    it('who: an address, ENS or name; --holdings picks the holdings tool', async () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/describe_address': () => ok({ who: 'Wintermute' }),
-            'POST /api/mainnet/tools/address_activity': () => ok({ who: 'Wintermute' }),
             'POST /api/mainnet/tools/address_holdings': () => ok({ who: 'Wintermute' }),
         });
         await run(['who', 'Wintermute', '--chain', '1']);
-        await run(['who', 'vitalik.eth', '--activity']);
         await run(['who', '0xabc', '--holdings']);
         expect(calls.map((c) => [c.path, c.body.input])).toEqual([
             ['/api/mainnet/tools/describe_address', { who: 'Wintermute', chainId: 1 }],
-            ['/api/mainnet/tools/address_activity', { who: 'vitalik.eth' }],
             ['/api/mainnet/tools/address_holdings', { who: '0xabc' }],
         ]);
-        await expect(run(['who', 'x', '--activity', '--holdings'])).rejects.toThrow(/Pick one/);
     });
 
     it('read: one call with its arguments and scale, now or at a past time', async () => {
@@ -99,9 +95,4 @@ describe('question shortcuts', () => {
         await expect(run(['read', 'stETH'])).rejects.toThrow(/Say what to read/);
     });
 
-    it('compare takes the past hour', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/compare_activity': () => ok({ scope: 'pools', window: '1h', by: 'activeWallets', unit: 'count', rows: [] }) });
-        await run(['compare', '--group', 'pools', '--by', 'activeWallets', '--window', '1h']);
-        expect(calls[0].body.input).toMatchObject({ by: 'activeWallets', window: '1h' });
-    });
 });

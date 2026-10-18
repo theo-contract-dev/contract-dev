@@ -365,7 +365,8 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
       return await deleteEventMetric(rest);
     case 'monitor':
       return await monitorEventMetric(rest);
-    case 'item':
+    case 'table':
+    case 'item': // the old name, kept quiet
       return await defineItemMetric(rest);
     case 'group':
       return await defineGroupMetric(rest);

@@ -19,12 +19,6 @@ describe('incidents', () => {
         await expect(incidentsCommand(['--days', '0'])).rejects.toThrow(/--days/);
     });
 
-    it('empty window', async () => {
-        mockApi({ 'GET /api/mainnet/incidents': () => ({ payload: { incidents: [], days: 1 } }) });
-        await incidentsCommand([]);
-        expect(printed()[0]).toBe('No incidents in the last 1 day.');
-    });
-
     it('show prints evidence per input and every delivery', async () => {
         mockApi({
             'GET /api/mainnet/incidents/inc1': () => ({

@@ -16,17 +16,14 @@ import { monitorCommand, monitorsCommand, channelsCommand } from './commands/mon
 import { incidentsCommand } from './commands/incidents';
 import { reportCommand } from './commands/report';
 import { statusCommand } from './commands/status';
-import { activityCommand } from './commands/activity';
-import { methodsCommand } from './commands/methods';
 import { eventsCommand } from './commands/events';
-import { flowsCommand, counterpartyCommand } from './commands/flows';
-import { usersCommand } from './commands/users';
 import { tvlCommand, holdersCommand } from './commands/tvl';
-import { dependenciesCommand } from './commands/inspect';
 import { txCommand, addressCommand, blockCommand, walletCommand, sourceCommand } from './commands/explorer';
-import { findCommand, describeCommand, compareCommand } from './commands/ask';
+import { findCommand, describeCommand } from './commands/ask';
 import { whoCommand, readCommand } from './commands/questions';
+import { queryCommand } from './commands/query';
 import { groupCommand, factoryCommand } from './commands/group';
+import { walletsCommand } from './commands/wallets';
 import { tableCommand } from './commands/table';
 import { historyCommand } from './commands/history';
 import { toolCommand } from './commands/tool';
@@ -46,9 +43,10 @@ Watch contracts:
   contract-dev watch <address>            Watch a mainnet contract (try: watch help)
   contract-dev watch <address> <address>… [--group <name>]   Watch several at once, tagged into a group
   contract-dev watch list                 List watched contracts
-  contract-dev rename <address> <name>    Rename a watched contract
+  contract-dev watch wallet <address> [--chain <id>] [--group <name>]   Watch a wallet (an address with no code); wallets list · rename · remove (try: wallets help)
+  contract-dev rename <address> <name>    Rename a watched contract or wallet
   contract-dev contracts set-abi <address> --abi <file>   Name an unverified contract's methods and events
-  contract-dev unwatch <address>          Stop watching a contract
+  contract-dev unwatch <address> [<address>…]   Stop watching one or several contracts
   contract-dev factory <address>          The contracts a factory deployed; --watch --group <name> watches the new ones (try: factory help)
 
 Groups:
@@ -73,34 +71,27 @@ Metrics:
   contract-dev track <address> <kind>     Track a balance, supply, call result, TVL or method telemetry (try: track help)
   contract-dev untrack <id|label>         Stop tracking
 
-Data (what the dashboard shows; <contract> is an address or a watched contract's name):
-  contract-dev activity [<contract>]      Transactions, calls, events and transfers, newest first (try: activity help)
-  contract-dev methods [<contract>]       Calls per method: reverts, callers, gas; one method in full (try: methods help)
+Data (<contract> is an address or a watched contract's name):
   contract-dev events [<contract>]        Events emitted, event by event, and the ones declared but never fired
   contract-dev events <contract> --event <Name> --sort "<expr>"   The events themselves through formulas: sort, filter, group (try: events help)
   contract-dev history [<contract>] --event <Name>   Every firing since launch: by week, sizes, top wallets, when (try: history help)
-  contract-dev flows [<contract>]         Value in and out: by token, by counterparty; a token's own senders and receivers (try: flows help)
-  contract-dev users [<contract>]         Active wallets, how they arrive, the busiest (try: users help)
   contract-dev tvl [<contract>]           Value held: now, its change, what it is made of (try: tvl help)
-  contract-dev contracts show <contract>  One contract at a glance (its Overview tab) · contracts stats: all side by side
+  contract-dev contracts show <contract>  One contract at a glance (its Overview tab)
   contract-dev holders <contract>         A token's holders
-  contract-dev dependencies <contract>    The contracts it calls out to, and the price feeds it reads
-  contract-dev counterparty <address>     One counterparty's dealings with your contracts
 
 Ask (questions over the workspace; scope is --group <name>, --contract <ref> or --chain <id>, else everything):
   contract-dev find <query>               What a name points at: contracts (by name, address or kind: pools, vaults,
                                           tokens), groups, metrics, monitors, reports, destinations
   contract-dev describe <contract>        What a contract is: kinds, standards, owner, TVL, its events and write
-                                          functions, what it calls
-  contract-dev compare [scope] --by <measure>   Rank contracts by transactions, activeWallets, volumeInUsd, volumeOutUsd,
-                                          tvlUsd or revertedShare, against the window before
-  contract-dev activity query --measure transactions|wallets [scope] [--by contract,day]
-                                          Counts per contract per day (try: activity query help)
-  contract-dev who <address|ENS|name>     Who it is; --activity: what it did here; --holdings: what it holds
+                                          functions
+  contract-dev query <contracts|table|metric|monitors|alerts|reports> …
+                                          One dataset, asked in the table language: --where, --show, --sort, --by with
+                                          --sum or --count, --total (try: query help)
+  contract-dev who <address|ENS|name>     Who it is; --holdings: what it holds
   contract-dev read <contract> <function> [<arg>…]   Call a view function, now or --at a past time (try: read help)
 
 Explorer (any address on a supported chain):
-  contract-dev tx <hash>                  A transaction; --trace for the call tree, --state for what it changed
+  contract-dev tx <hash>                  A transaction: outcome, decoded call, fees, transfers, logs
   contract-dev address <0x…>              Balance, identity and recent transactions; a Chainlink feed's reading
   contract-dev block <number>             A block and its transactions
   contract-dev wallet <0x…>               Tokens; --approvals, --txs
@@ -110,20 +101,18 @@ Monitoring:
   contract-dev monitors                   List monitors
   contract-dev monitor add <value> --when "<formula>"   Alert when a tracked value crosses a line (try: monitor help)
   contract-dev monitor set <id|name> --when "<formula>"  Change its rule; --warn "<formula>" or --no-warn its warning
-  contract-dev monitor compile --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]
-                                          A monitor from a sentence: what it would say, how often it would have fired
-                                          in 7 days; --silence [--method <name>] [--for 24h] for a contract going quiet
-  contract-dev monitor add --on <contract> --event <Name> …   Save it (the same flags as compile)
+  contract-dev monitor add --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]
+                                          An event monitor from a sentence; --silence --event <Name> [--for 24h]
+                                          for a contract going quiet
   contract-dev monitor show <id|name>     Rule, inputs, episodes; a silence monitor's sightings and quiet stretches
   contract-dev monitor sightings <id|name> Every sighting a silence monitor counts, newest first
   contract-dev monitor exclude <default> <address>   Leave a contract out of a default monitor
-  contract-dev incidents                  What fired (try: incidents help)
+  contract-dev alerts                     What fired (try: alerts help)
   contract-dev channels                   Alert destinations (try: channels help)
 
 Reports:
   contract-dev report list                Scheduled reports: scope, cadence, destinations, next send, last run
   contract-dev report create …            A table of your metrics, sent on a schedule: --template daily|weekly --to <dest> (try: report help)
-  contract-dev report preview …           The table a draft would send, computed now, saved nowhere
   contract-dev report show <id|name>      Settings, the latest table, every run and where it went
   contract-dev report run <id|name>       Send it now · report pause / resume / delete <id|name>
 
@@ -150,7 +139,7 @@ Agents:
   contract-dev skills install             Teach Claude Code, Codex, Cursor and other agents this CLI (try: skills help)
   contract-dev skills status              Where the agent skill is installed, and its version
 
-Nouns work too: contracts list|add|rename|remove · metrics track|untrack · monitor list · incidents list · reports · stagenet list.
+Nouns work too: contracts list|add|rename|remove · wallets list|add|rename|remove · metrics track|untrack · monitor list · alerts list · reports · stagenet list.
 
 Global flags:
   --json                                  Print the command's result as JSON instead of text
@@ -207,6 +196,8 @@ export async function run(args: string[]): Promise<unknown> {
     case 'contracts':
     case 'contract':
       return await contractsCommand(rest);
+    case 'wallets':
+      return await walletsCommand(rest);
     case 'unwatch':
       return await unwatchCommand(rest);
     case 'rename':
@@ -222,6 +213,9 @@ export async function run(args: string[]): Promise<unknown> {
       return await monitorsCommand(rest);
     case 'monitor':
       return await monitorCommand(rest);
+    case 'alerts':
+    case 'alert':
+    // the old name, kept for scripts
     case 'incidents':
     case 'incident':
       return await incidentsCommand(rest);
@@ -231,29 +225,14 @@ export async function run(args: string[]): Promise<unknown> {
     case 'report':
     case 'reports':
       return await reportCommand(rest);
-    case 'activity':
-      return await activityCommand(rest);
-    case 'methods':
-    case 'method':
-      return await methodsCommand(rest);
     case 'events':
     case 'event':
       return await eventsCommand(rest);
-    case 'flows':
-    case 'flow':
-      return await flowsCommand(rest);
-    case 'counterparty':
-      return await counterpartyCommand(rest);
-    case 'users':
-      return await usersCommand(rest);
     case 'tvl':
     case 'value':
       return await tvlCommand(rest);
     case 'holders':
       return await holdersCommand(rest);
-    case 'dependencies':
-    case 'deps':
-      return await dependenciesCommand(rest);
     case 'tx':
       return await txCommand(rest);
     case 'address':
@@ -268,8 +247,6 @@ export async function run(args: string[]): Promise<unknown> {
       return await findCommand(rest);
     case 'describe':
       return await describeCommand(rest);
-    case 'compare':
-      return await compareCommand(rest);
     case 'group':
     case 'groups':
       return await groupCommand(rest);
@@ -285,6 +262,8 @@ export async function run(args: string[]): Promise<unknown> {
       return await toolCommand(rest);
     case 'who':
       return await whoCommand(rest);
+    case 'query':
+      return await queryCommand(rest);
     case 'read':
       return await readCommand(rest);
     case 'skills':

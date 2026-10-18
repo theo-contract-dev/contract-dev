@@ -20,15 +20,25 @@ describe('rename (watched account)', () => {
 
         await renameCommand(['0xAAA', 'Base', 'Treasury', '--chain', '8453']);
 
-        expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /api/mainnet/accounts?accountType=contract', 'PATCH /api/mainnet/accounts/c2']);
+        expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /api/mainnet/accounts', 'PATCH /api/mainnet/accounts/c2']);
         expect(calls[1].auth).toBe('Bearer env-key');
         expect(calls[1].body).toEqual({ name: 'Base Treasury' }); // positional words are joined
         expect(printed()[0]).toBe('Renamed 0xaaa to "Base Treasury".');
     });
 
-    it('a wallet entry is not renameable from the CLI', async () => {
+    it('a watched wallet renames like a contract (one table since 2026-10-18)', async () => {
+        const calls = mockApi({
+            'GET /api/mainnet/accounts': () => ({ payload: { accounts } }),
+            'PATCH /api/mainnet/accounts/w1': (call) => ({ payload: { account: { ...accounts[2], name: call.body.name } } }),
+        });
+        await renameCommand(['0xBBB', 'Deployer']);
+        expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /api/mainnet/accounts', 'PATCH /api/mainnet/accounts/w1']);
+        expect(printed()[0]).toBe('Renamed 0xbbb to "Deployer".');
+    });
+
+    it('an address nobody watches is refused', async () => {
         mockApi({ 'GET /api/mainnet/accounts': () => ({ payload: { accounts } }) });
-        await expect(renameCommand(['0xBBB', 'Deployer'])).rejects.toThrow(/No watched contract found/);
+        await expect(renameCommand(['0xCCC', 'Deployer'])).rejects.toThrow(/No watched contract or wallet found/);
     });
 
     it('an empty name clears it', async () => {

@@ -1,6 +1,6 @@
 // Event metrics, through the platform's tools (2026-10-14): a number added up from events, each
-// event a record with the views it needs read as of its own transaction. define (always tried on
-// the newest events first; --preview stops there), show (the total, the largest contracts, a
+// event a record with the views it needs read as of its own transaction. define (saved at once;
+// its history fills in behind), show (the total, the largest contracts, a
 // series, and the records behind it), update (rename, or replace parts of the definition: the
 // history is read again) and delete. They live under `contract-dev metric`, beside tracked values.
 // --json hands back the tool's own result.
@@ -15,27 +15,27 @@ export const EVENT_METRIC_HELP = `Event metrics — a number added up from event
                               [--read "<name>=<call>[.<output>] [on <target>] [with <arg>, …]"]… [--fixed <read>]…
                               [--field "<name>=<expr>"]… [--value "<expr>"] [--where "<rule>"]
                               [--aggregate sum|count|avg|min|max] [--split contract|none|<name>] [--unit usd|count|number]
-                              [--history <days>] [--preview]
+                              [--history <days>]
                                                       Saved at once; its history is read back in the background and
-                                                      kept up to date. --preview tries the newest 24 hours and saves nothing
+                                                      kept up to date
   contract-dev metric events                          The event metrics: scope, events, unit, status, records
   contract-dev metric show <name> [--days <n>] [--by hour|day] [--split <contract|key>] [--records <n>] [--newest]
                                                       Its total, the largest contracts, a series, and the records behind
                                                       it with their parameters, reads and fields
   contract-dev metric update <name> [--name "<new>"] [any define flag]   Replace those parts; the history is read again
   contract-dev metric delete <name>
-  contract-dev metric item "<name>" --table "<table>" [--column "<label>"] [--among active|done|all]
-                              [--aggregate sum|count|avg|min|max] [--split contract|none] [--unit usd|count|number] [--preview]
-                                                      A number over an item table's rows, recorded each minute from now
+  contract-dev metric table "<name>" --table "<table>" [--column "<label>"] [--among active|done|all]
+                              [--aggregate sum|count|avg|min|max] [--split contract|none] [--unit usd|count|number]
+                                                      A number over a table's rows, recorded each minute from now
                                                       (in dollars only when its column states a token)
   contract-dev metric group "<name>" --group "<group>" --column <key|label> [--aggregate sum|avg|min|max|count]
-                              [--split contract|none] [--unit usd|number] [--token <token>] [--preview]
+                              [--split contract|none] [--unit usd|number] [--token <token>]
                                                       A group's column rolled up into one number across its contracts,
                                                       recorded each minute from now: the plain sum, or in dollars when
                                                       the column states its token (or --token: an address, self, or a
                                                       view each contract answers, like asset()), each priced in its own
   contract-dev metric monitor <metric> --name "<name>" --when "<formula>" [--per total|each] [--level critical|warning]
-                              [--to <destination>…] [--preview]
+                              [--to <destination>…]
                                                       An alert on a metric, one formula:
                                                         value > 1000              each new record that meets it pages,
                                                                                   with its transaction (an event metric)
@@ -55,7 +55,7 @@ A read calls a view as of the start of the event's transaction: on the emitting 
 Expressions use the event's parameters by name, the reads, earlier fields, emitter(), sender(), time(), block(),
 tx(), amount(raw, token), usd(raw, token) at the event's day's price (native ETH is token 0x0000…0000, written out in
 full), price(token), if(), min(), max(), abs(),
-round(). Arithmetic is exact. Ethereum, Avalanche and Sepolia; up to 89 days of history.
+round(). Arithmetic is exact. Every chain the workspace watches; up to 89 days of history.
 
 Example (Uniswap v3 swap fees in dollars, per pool):
   contract-dev metric define "Swap fees" --group "Uniswap v3" --event Swap \\
@@ -169,7 +169,7 @@ export async function defineEventMetric(args: string[]): Promise<unknown> {
   const name = requirePositional(flags._ as string[], 0, 'name');
   const definition = definitionFrom(flags);
   if (!definition.events) throw new Error('--event names what is counted: --event Swap.');
-  return print('define_metric', { name, ...scopeInput(flags), ...definition, ...(flag(flags, 'preview') !== undefined ? { preview: true } : {}) });
+  return print('define_metric', { name, ...scopeInput(flags), ...definition });
 }
 
 /** `metric show <name>` for an event metric; null when no event metric has that name. */
@@ -216,7 +216,7 @@ export async function updateEventMetric(args: string[]): Promise<unknown> {
   const name = flag(flags, 'name');
   const definition = definitionFrom(flags);
   if (!name && Object.keys(definition).length === 0) throw new Error('Nothing to change: pass --name "<name>" or the parts of the definition to replace (--event, --read, --field, --value, --where, …).');
-  return print('update_metric', { metric, ...(name ? { name } : {}), ...definition, ...(flag(flags, 'preview') !== undefined ? { preview: true } : {}) });
+  return print('update_metric', { metric, ...(name ? { name } : {}), ...definition });
 }
 
 export async function deleteEventMetric(args: string[]): Promise<unknown> {
@@ -229,7 +229,7 @@ export async function deleteEventMetric(args: string[]): Promise<unknown> {
 export async function monitorEventMetric(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) return void console.log(EVENT_METRIC_HELP);
   const flags = parseFlags(args);
-  onlyFlags(flags, 'metric monitor', ['name', 'when', 'per', 'level', 'to', 'preview']);
+  onlyFlags(flags, 'metric monitor', ['name', 'when', 'per', 'level', 'to']);
   const metric = requirePositional(flags._ as string[], 0, 'metric');
   const name = flag(flags, 'name');
   if (!name) throw new Error('--name says what it watches for: --name "Large swap fee".');
@@ -242,7 +242,6 @@ export async function monitorEventMetric(args: string[]): Promise<unknown> {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }
-  if (flag(flags, 'preview') !== undefined) input.preview = true;
   return print('add_metric_monitor', input);
 }
 
@@ -266,7 +265,7 @@ export function parseFormulaCall(raw: string): Record<string, unknown> {
 /** `track formula <contract> --label … --call … --value …`: a value worked out from several views at one block. */
 export async function trackFormula(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) {
-    console.log(`contract-dev track formula <contract> --label "<name>" --call "<name>=<call> [on <target>] [with <args>] [decimals <n>]"… --value "<expression>" [--chain <id>] [--preview]
+    console.log(`contract-dev track formula <contract> --label "<name>" --call "<name>=<call> [on <target>] [with <args>] [decimals <n>]"… --value "<expression>" [--chain <id>]
 
 A value worked out from several reads at the same block, sampled every block, charted, reported and monitored
 like any tracked value. A call is a view (getBuffer(), getFee(address) with 0x…; on <contract> unless "on"
@@ -294,7 +293,7 @@ Examples:
   const value = flag(flags, 'value');
   if (!value) throw new Error('--value is the expression over the calls\' names: --value "pooled / shares".');
   const chainId = chainFlag(flags);
-  return print('track_formula', { contract, label, calls, value, ...(chainId != null ? { chainId } : {}), ...(flag(flags, 'preview') !== undefined ? { preview: true } : {}) });
+  return print('track_formula', { contract, label, calls, value, ...(chainId != null ? { chainId } : {}) });
 }
 
 /** `metric group "<name>" --group … --column …`: a group's column rolled up into one metric, recorded forward. */
@@ -311,11 +310,10 @@ export async function defineGroupMetric(args: string[]): Promise<unknown> {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }
-  if (flag(flags, 'preview') !== undefined) input.preview = true;
   return print('define_group_metric', input);
 }
 
-/** `metric item "<name>" --table …`: a number over a table's rows, recorded forward. */
+/** `metric table "<name>" --table …`: a number over a table's rows, recorded forward. */
 export async function defineItemMetric(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) return void console.log(EVENT_METRIC_HELP);
   const flags = parseFlags(args);
@@ -327,7 +325,6 @@ export async function defineItemMetric(args: string[]): Promise<unknown> {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }
-  if (flag(flags, 'preview') !== undefined) input.preview = true;
   return print('define_item_metric', input);
 }
 

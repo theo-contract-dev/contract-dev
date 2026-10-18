@@ -307,22 +307,6 @@ describe('report create --every / report update', () => {
 describe('report preview / run / pause / resume / delete', () => {
     useEnvAuth();
 
-    it('preview posts the draft without a schedule or destinations and prints the text', async () => {
-        const calls = mockApi({
-            ...listOf([]),
-            'GET /api/mainnet/accounts': () => ({ payload: { accounts } }),
-            'POST /api/mainnet/reports/preview': () => ({ payload: { table: {}, text: TEXT } }),
-        });
-        const result = await reportCommand(['preview', '--template', 'daily', '--scope', 'steth', '--tz', 'UTC', '--at', '7', '--to', 'ch1']);
-        const post = calls.find((c) => c.method === 'POST')!;
-        expect(post.body).toEqual({ name: 'Daily report', scope: { kind: 'contract', chainId: 1, address: STETH.toLowerCase() }, cadence: 'daily', timezone: 'UTC', rows: dailyRows });
-        expect(printed()).toEqual([TEXT]);
-        expect((result as any).text).toBe(TEXT);
-        // a preview needs no name: the server names it
-        await reportCommand(['preview', '--row', 'transactions', '--tz', 'UTC']);
-        expect(calls.filter((c) => c.method === 'POST').at(-1)!.body).toEqual({ scope: { kind: 'workspace' }, cadence: 'daily', timezone: 'UTC', rows: [{ kind: 'transactions' }] });
-    });
-
     it('run sends now and prints the status and the table; a run the server filed as failed is an error with its reason', async () => {
         const calls = mockApi({
             ...listOf([report()]),
@@ -402,13 +386,6 @@ describe('report create / preview --each', () => {
         expect(out.some((l) => l.includes('each time "Swap size (USD)" has a record where value >= 10000'))).toBe(true);
         expect(out.some((l) => l.includes('It sends on every new match from now'))).toBe(true);
         expect(calls.some((c) => c.path === '/api/mainnet/tools/preview_report')).toBe(false);
-    });
-
-    test('preview --each asks the tool and needs every part', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/preview_report': () => ({ payload: { ok: true, result: preview, ms: 5 } }) });
-        await run(['report', 'preview', '--each', '--metric', 'Swap size (USD)', '--when', 'value >= 10000', '--message', 'x {value}']);
-        expect(calls[0].body).toEqual({ input: { cadence: 'each', metric: 'Swap size (USD)', when: 'value >= 10000', message: 'x {value}' } });
-        await expect(run(['report', 'preview', '--each', '--metric', 'Swap size (USD)'])).rejects.toThrow(/--each needs --when, --message/);
     });
 });
 

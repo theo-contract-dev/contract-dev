@@ -1,5 +1,61 @@
 # Changelog
 
+## 2.0.0 — 2026-10-19
+
+### Added — `query`, one command over every dataset
+- `contract-dev query contracts|table|metric|monitors|alerts|reports|transactions|transfers|wallets` asks one dataset
+  a question in the table language: `--where`, `--show <name>="<expr>"`, `--sort`, `--by` with `--sum`, `--avg`,
+  `--min`, `--max` or `--count`, `--total`, `--limit`. `query contracts --read cov="coverageLiquidity() in asset()"`
+  reads a figure on every contract now. `transactions`, `transfers` and `wallets` take `--group` or `--contract`,
+  `--days`, `--signer`, and fold a `--by` over a stored column in the database, exact over the whole window.
+
+### Added — watched wallets
+- `contract-dev watch wallet <address> [--chain <id>] [--name <label>] [--group <name>]` watches an address with no
+  code beside your contracts; `wallets list|add|rename|remove` manages them. A wallet's activity answers to
+  `query transactions|transfers|wallets --contract <name>` like a contract's. A group holds contracts or wallets,
+  never both; `watch` refuses a wallet and `watch wallet` a contract, naming the other.
+
+### Added
+- `table delete <table>`: the table, its rows, their tracked values and its monitors.
+- `group monitor delete <group> <id|name>…`: a group monitor and the monitor it put on every member.
+- `unwatch` takes several contracts at once, by name or address.
+
+### Renamed
+- `incidents` is `alerts` (`alerts show|ack|unack`); `incidents` still works.
+- `metric item` is `metric table`; `metric item` still works.
+- `table show --item <id>` is `table show --row <id>`. `--item` is refused.
+
+### Removed — the dashboard commands, for `query`
+- `activity`, `activity query`: `contract-dev query transactions [--group <g> | --contract <c>] --by day --count`;
+  `query wallets` for wallets.
+- `methods`: `contract-dev query transactions --contract <c> --by method --count` (`--failed` for reverts).
+- `flows`, `counterparty`: `contract-dev query transfers --contract <c> [--in | --out] --by counterparty --sum
+  "{USD}"`, `--counterparty <0x>` for one counterparty, `--by token` for tokens.
+- `users`: `contract-dev query wallets --contract <c> --days 7` (new or returning, first and last seen, dollars in
+  and out).
+- `compare`: `contract-dev query transactions|transfers|wallets --group <g> --by contract` with `--count` or `--sum`.
+- `contracts stats`: `contract-dev query contracts`.
+- `dependencies`, with no replacement command; `contract-dev source <contract>` has the code it calls out from.
+- `who --activity`: `contract-dev query transactions --signer <address>`. `who --holdings` stays.
+- `tx --trace`, `tx --state`. `tx <hash>` keeps the outcome, decoded call, fees, transfers and logs.
+
+### Removed — previews
+- `monitor compile`: `monitor add --on <contract> --event <Name>` builds and saves the monitor in one step;
+  `--silence` stays.
+- `report preview` (and `report preview --each`): create the report and `report run` it.
+- `--preview` on `group rule add`, `group name-pattern`, `group column add`, `group monitor add`, `table create`,
+  `table update`, `metric define`, `metric table`, `metric group`, `metric monitor` and `track formula`.
+
+### Changed — group columns are snapshots, like a table's
+- A group column is a reading on each member, refreshed every minute, and becomes a tracked value (every block,
+  with history) only while a group monitor reads it; the plan's row cap on item tables now bounds only the rows a row
+  monitor tracks, so a snapshot column covers every open row. `table delete <table>` removes a table.
+
+### Changed — a table formula's calls in its token
+- A `--formula` that states `token <t>` scales its own calls by that token's decimals (a `balanceOf` in the market's
+  asset) unless a call states `decimals <n>`, and its column totals and dollars add up like a read's. `table update
+  --formula` takes calls the way `table create` does (a changed call is read again; one dropped goes).
+
 ## 1.9.0 — 2026-10-17
 
 ### Removed — built-ins
