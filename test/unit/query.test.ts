@@ -87,6 +87,57 @@ describe('query contracts --read', () => {
         });
         await expect(run(['query', 'contracts', '--read', 'x=held - cov in asset()'])).rejects.toThrow(/go with a view/);
     });
+
+    it('a read carries its at; --series and --every go to the tool, and the answer prints the series and each read\'s block', async () => {
+        const calls = mockApi({
+            'POST /api/mainnet/tools/query_contracts': () =>
+                ok({
+                    dataset: 'contracts',
+                    columns: [{ key: 'name', label: 'Name', kind: 'text' }, { key: 'sp', label: 'sp', kind: 'number' }, { key: 'sp7', label: 'sp7', kind: 'number' }, { key: 'apr', label: 'apr', kind: 'number' }],
+                    rows: [{ address: '0xa', name: 'USDC Vault', sp: 1.05, sp7: 1.04, apr: 0.5 }],
+                    matched: 1,
+                    returned: 1,
+                    more: 0,
+                    readAt: { sp7: { at: '2026-10-12T14:02:00Z', blocks: [{ chainId: 1, block: 23456789, time: '2026-10-12T14:01:47Z' }] } },
+                }),
+        });
+        await run(['query', 'contracts', '--group', 'Vaults', '--read', 'sp=convertToAssets(1000000000000000000)', '--read', 'sp7=convertToAssets(1000000000000000000) in asset() as amount at 7d', '--show', 'apr=(sp - sp7) / sp7 * 52', '--sort', 'apr']);
+        expect(calls[0].body.input).toEqual({
+            show: [{ name: 'apr', expr: '(sp - sp7) / sp7 * 52' }],
+            sort: 'apr',
+            group: 'Vaults',
+            reads: [
+                { name: 'sp', call: 'convertToAssets(1000000000000000000)' },
+                { name: 'sp7', call: 'convertToAssets(1000000000000000000)', token: 'asset()', show: 'amount', at: '7d' },
+            ],
+        });
+        expect(printed().join('\n')).toMatch(/sp7: as of 2026-10-12 14:02 \(block 23,456,789\)/);
+        await expect(run(['query', 'contracts', '--read', 'x=held - cov at 7d'])).rejects.toThrow(/go with a view/);
+    });
+
+    it('--series takes <from>[..<to>] with --every, and the rows print time first', async () => {
+        const calls = mockApi({
+            'POST /api/mainnet/tools/query_contracts': () =>
+                ok({
+                    dataset: 'contracts',
+                    series: { from: '2026-09-19T14:02:00Z', to: '2026-10-19T14:02:00Z', every: '1d', points: 31, chosen: 'asked' },
+                    columns: [{ key: 'time', label: 'Time', kind: 'number', unit: 'time' }, { key: 'day', label: 'Day', kind: 'text' }, { key: 'name', label: 'Name', kind: 'text' }, { key: 'sp', label: 'sp', kind: 'number' }],
+                    rows: [{ address: '0xa', time: 1_792_000_000, day: '2026-10-14', name: 'USDC Vault', sp: 1.05 }],
+                    matched: 31,
+                    returned: 1,
+                    more: 30,
+                }),
+        });
+        await run(['query', 'contracts', '--group', 'Vaults', '--read', 'sp=convertToAssets(1000000000000000000)', '--series', '30d', '--every', '1d']);
+        expect(calls[0].body.input).toEqual({ group: 'Vaults', reads: [{ name: 'sp', call: 'convertToAssets(1000000000000000000)' }], series: { from: '30d', every: '1d' } });
+        const out = printed().join('\n');
+        expect(out).toMatch(/Series: every 1d · 31 points · 2026-09-19 14:02 → 2026-10-19 14:02/);
+        expect(out).toMatch(/Time\s+Name/);
+        await run(['query', 'contracts', '--read', 'sp=convertToAssets(1)', '--series', '2026-09-01..2026-10-01']);
+        expect(calls[1].body.input.series).toEqual({ from: '2026-09-01', to: '2026-10-01' });
+        await expect(run(['query', 'contracts', '--series', '30d'])).rejects.toThrow(/say what to read/);
+        await expect(run(['query', 'contracts', '--read', 'sp=convertToAssets(1)', '--every', '1d'])).rejects.toThrow(/goes with --series/);
+    });
 });
 
 describe('query transactions / transfers / wallets', () => {

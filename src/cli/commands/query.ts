@@ -8,15 +8,20 @@ import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag, limitFlag } from '../data';
 import { columnsTable, cell } from './_print';
+import { SAVE_HELP, saveFromFlags, savedLine } from './_save';
 
 const HELP = `contract-dev query — ask one dataset a question, in the table language
 
 Usage:
   contract-dev query contracts [--group <g>] [--chain <id>] [--kind pool|vault|token|…]   The watched contracts, with a group's columns
-      [--read <name>=<view()> [in <token>] [as usd|amount]]…   A figure read on every contract now: --read cov="coverageLiquidity() in asset()"
+      [--read <name>=<view()> [in <token>] [as usd|amount] [at <time>]]…   A figure read on every contract now: --read cov="coverageLiquidity() in asset()"
+                                                               …or as it was then: --read bal7="balanceOf(0x…)(uint256) in asset() at 7d" (7d, 24h, 2w, or a UTC date)
       [--read <name>=<expression>]…                            …or an expression over earlier reads and the group's columns
+      [--series <from>[..<to>] [--every 1h|6h|1d|1w]]           Every read at each step over a window: one row per time per contract
   contract-dev query table "<name>" [--among active|done|all]                             One table's rows (active by default)
   contract-dev query metric "<name>" [--days <n>]                                         What is behind a metric: its records or readings
+  contract-dev query metrics --metric "<name>"… [--split contract|<param>] [--days <n>]     Metrics split the same way, side by side: one row per
+                                                               split value (an integrator, a sender, a contract), one column per metric's total
   contract-dev query monitors · query alerts [--days <n>] · query reports
   contract-dev query transactions [--group <g> | --contract <c>] [--days <n>] [--signer <0x>] [--failed] [--direct | --routed] [--method <name>]
                                                                                           The transactions that reached the contracts (or a watched wallet sent and received), newest first
@@ -37,14 +42,20 @@ Clauses (any dataset; columns by label in braces or by key):
   --by <a,b> --sum|--avg|--min|--max "<expr>" | --count     Fold the rows into groups, one value each
   --total <a,b>                 Add these columns up over every matching row
   --limit <n>                   Rows or groups to print (default 25; the answer says how many matched)
+${SAVE_HELP}
   --json                        The tool's own result
 
 Examples:
   contract-dev query contracts --group "Wildcat markets" --show headroom="{Held} - {Required}" --where "headroom < 0" --sort headroom --asc
   contract-dev query contracts --group "Wildcat markets" --by kind --sum "{Supplied}"
   contract-dev query contracts --group "Wildcat markets" --read cov="coverageLiquidity() in asset()" --read held="totalAssets() in asset()" --read gap="held - cov" --sort gap --asc
+  contract-dev query contracts --group Vaults --read sp="convertToAssets(1000000000000000000)" --read sp7="convertToAssets(1000000000000000000) at 7d" --show apr="(sp - sp7) / sp7 * 52" --sort apr
+  contract-dev query contracts --group Vaults --read sp="convertToAssets(1000000000000000000)" --series 30d --every 1d
+  contract-dev query contracts --group Vaults --read sp="convertToAssets(1000000000000000000)" --series 2026-09-01..2026-10-01 --by day --avg sp
   contract-dev query table "Withdrawal rounds" --where '{Stage} == "Paying" and age > 7d' --sort "{Outstanding}"
   contract-dev query metric Deposits --days 30 --by day --sum "{value}"
+  contract-dev query metrics --metric "DZap bridges" --metric "DZap swaps" --metric "DZap swap volume" --split integrator --save --title "Integrators"
+  contract-dev query metric "DZap swap volume" --where "{Value} > 10000" --sort "{Value}" --save --title "Swaps over 10K USD"
   contract-dev query monitors --where '{State} == "breached"'
   contract-dev query alerts --days 30 --by monitor --count
   contract-dev query transactions --group "Wildcat markets" --days 30 --by day --count
@@ -52,9 +63,10 @@ Examples:
   contract-dev query transfers --contract Treasury --out --days 30 --by counterparty --sum "{USD}"
   contract-dev query transfers --group "Wildcat markets" --out --by counterparty --sum "{USD}" --limit 10
   contract-dev query wallets --group "Wildcat markets" --days 7 --where '{Status} == "new"'
+  contract-dev query transfers --group DZap --days 30 --by day,token --sum "{USD}" --save stacked --title "Volume by token"
 `;
 
-const DATASETS = ['contracts', 'table', 'metric', 'monitors', 'alerts', 'reports', 'transactions', 'transfers', 'wallets'] as const;
+const DATASETS = ['contracts', 'table', 'metric', 'metrics', 'monitors', 'alerts', 'reports', 'transactions', 'transfers', 'wallets'] as const;
 const ACTIVITY: readonly string[] = ['transactions', 'transfers', 'wallets'];
 type Dataset = (typeof DATASETS)[number];
 const MEASURES = ['sum', 'avg', 'min', 'max'] as const;
@@ -64,8 +76,8 @@ const COLUMNS_SHOWN = 8;
 /** A unix time prints as a date and time; everything else as the server sent it. */
 const shown_ = (v: unknown, unit: string | undefined): unknown => (unit === 'time' && typeof v === 'number' ? new Date(v * 1000).toISOString().slice(0, 16).replace('T', ' ') : v);
 
-/** The rows as one table: the name first, then the columns the clauses name, then the rest, at most eight across. */
-function printRows(rows: Record<string, unknown>[], columns: { key: string; label: string; unit?: string }[], named: string[]): void {
+/** The rows as one table: the time first for a series, then the name, then the columns the clauses name, then the rest, at most eight across. */
+function printRows(rows: Record<string, unknown>[], columns: { key: string; label: string; unit?: string }[], named: string[], first: string[] = []): void {
   if (rows.length === 0) return;
   const keys = columns.map((c) => c.key);
   const wanted = (ref: string): string | null => {
@@ -76,6 +88,7 @@ function printRows(rows: Record<string, unknown>[], columns: { key: string; labe
   const push = (k: string | null) => {
     if (k && keys.includes(k) && !order.includes(k)) order.push(k);
   };
+  for (const k of first) push(k);
   push(columns.find((c) => c.key === 'name')?.key ?? null);
   for (const n of named) for (const m of n.match(/\{[^}]+\}|[A-Za-z_][A-Za-z0-9_]*/g) ?? []) push(wanted(m));
   for (const k of keys) push(k);
@@ -149,18 +162,33 @@ export async function queryCommand(args: string[]): Promise<unknown> {
     const kind = wordFlag(flags, 'kind');
     if (kind) input.kind = kind;
     const reads = flagAll(flags, 'read').map((raw) => {
-      const m = raw.match(/^([A-Za-z_]\w*)\s*=\s*(.+?)(?:\s+in\s+(\S+))?(?:\s+as\s+(usd|amount))?\s*$/);
-      if (!m) throw new Error(`--read takes name=<view()> [in <token>] [as usd|amount], or name=<expression>; got "${raw}"`);
-      const [, name, body, token, show] = m;
-      const isCall = /^[A-Za-z_]\w*\(.*\)$/.test(body) && !/^(usd|amount|price|min|max|abs|round|floor|ceil|if|len|sum|indexOf|contains|keccak|now)\s*\(/.test(body);
-      if (!isCall && (token || show)) throw new Error(`--read ${name}: "in <token>" and "as" go with a view, not an expression`);
-      return isCall ? { name, call: body, ...(token ? { token } : {}), ...(show ? { show } : {}) } : { name, expr: body };
+      const m = raw.match(/^([A-Za-z_]\w*)\s*=\s*(.+?)(?:\s+in\s+(\S+))?(?:\s+as\s+(usd|amount))?(?:\s+at\s+(\S+))?\s*$/);
+      if (!m) throw new Error(`--read takes name=<view()> [in <token>] [as usd|amount] [at <time>], or name=<expression>; got "${raw}"`);
+      const [, name, body, token, show, at] = m;
+      const isCall = /^[A-Za-z_]\w*\(.*\)$/.test(body) && !/^(usd|amount|price|min|max|abs|round|floor|ceil|sqrt|ln|exp|if|len|sum|indexOf|contains|keccak|now)\s*\(/.test(body);
+      if (!isCall && (token || show || at)) throw new Error(`--read ${name}: "in <token>", "as" and "at" go with a view, not an expression`);
+      return isCall ? { name, call: body, ...(token ? { token } : {}), ...(show ? { show } : {}), ...(at ? { at } : {}) } : { name, expr: body };
     });
     if (reads.length > 0) input.reads = reads;
+    const series = wordFlag(flags, 'series');
+    const every = wordFlag(flags, 'every');
+    if (series) {
+      if (reads.length === 0) throw new Error('--series reads the --read figures at each step: say what to read.');
+      const [from, to] = series.split('..').map((s) => s.trim());
+      if (!from) throw new Error('--series takes <from> or <from>..<to>: --series 30d, --series 2026-09-01..2026-10-01');
+      input.series = { from, ...(to ? { to } : {}), ...(every ? { every } : {}) };
+    } else if (every) throw new Error('--every goes with --series.');
   }
   if (noun === 'table') {
     const among = wordFlag(flags, 'among');
     if (among) input.among = among;
+  }
+  if (noun === 'metrics') {
+    const metrics = flagAll(flags, 'metric').map((m) => String(m).trim()).filter(Boolean);
+    if (metrics.length === 0) throw new Error('Name the metrics, one --metric each: contract-dev query metrics --metric "DZap bridges" --metric "DZap swaps" --split integrator.');
+    input.metrics = metrics;
+    const split = wordFlag(flags, 'split');
+    if (split) input.split = split;
   }
   if (ACTIVITY.includes(noun)) {
     const group = wordFlag(flags, 'group');
@@ -192,7 +220,7 @@ export async function queryCommand(args: string[]): Promise<unknown> {
       if (counterparty) input.counterparty = counterparty;
     }
   }
-  if (noun === 'metric' || noun === 'alerts' || ACTIVITY.includes(noun)) {
+  if (noun === 'metric' || noun === 'metrics' || noun === 'alerts' || ACTIVITY.includes(noun)) {
     const days = wordFlag(flags, 'days');
     if (days !== undefined) {
       const n = Number(days);
@@ -200,6 +228,8 @@ export async function queryCommand(args: string[]): Promise<unknown> {
       input.days = n;
     }
   }
+  const save = saveFromFlags(flags);
+  if (save) input.save = save;
   const r = (await runTool(requireAuth(), `query_${noun}`, input)) as Record<string, unknown>;
   const matched = Number(r.matched ?? 0);
   const returned = Number(r.returned ?? 0);
@@ -208,7 +238,11 @@ export async function queryCommand(args: string[]): Promise<unknown> {
   console.log(`${head}${returned < matched ? ` · showing ${returned}` : ''}`);
   const { rows, columns, totals, ...rest } = r as { rows?: Record<string, unknown>[]; columns?: { key: string; label: string; unit?: string }[]; totals?: Record<string, number | null> } & Record<string, unknown>;
   const named = [...((input.reads as { name: string }[] | undefined)?.map((r) => r.name) ?? []), input.sort, input.where, ...((input.show as { name: string; expr: string }[] | undefined)?.flatMap((x) => [x.name, x.expr]) ?? []), ...((input.by as string[] | undefined) ?? []), ...((input.total as string[] | undefined) ?? [])].filter((x): x is string => typeof x === 'string');
-  printRows(rows ?? [], columns ?? [], named);
+  const series = rest.series as { from: string; to: string; every: string; points: number; chosen: 'auto' | 'asked' } | undefined;
+  if (series) console.log(`Series: every ${series.every}${series.chosen === 'auto' ? ' (chosen to fit)' : ''} · ${series.points} point${series.points === 1 ? '' : 's'} · ${shown_(Date.parse(series.from) / 1000, 'time')} → ${shown_(Date.parse(series.to) / 1000, 'time')}`);
+  printRows(rows ?? [], columns ?? [], named, series ? ['time'] : []);
+  const readAt = rest.readAt as Record<string, { at: string; blocks: { chainId: number; block: number; time: string }[] }> | undefined;
+  for (const [name, r] of Object.entries(readAt ?? {})) console.log(`${name}: as of ${shown_(Date.parse(r.at) / 1000, 'time')} (${r.blocks.map((b) => `block ${b.block.toLocaleString('en-US')}${r.blocks.length > 1 ? ` on chain ${b.chainId}` : ''}`).join(', ')})`);
   if (totals) console.log(`Totals: ${Object.entries(totals).map(([k, v]) => `${k} ${v == null ? '—' : v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`).join(' · ')}`);
   const counts = rest.active as { now: number; before: number } | undefined;
   const fresh = rest.new as { now: number; before: number } | undefined;
@@ -218,6 +252,8 @@ export async function queryCommand(args: string[]): Promise<unknown> {
   for (const n of (rest.notes as string[] | undefined) ?? []) console.log(n);
   const next = rest.next as { before?: string } | undefined;
   if (next?.before) console.log(`More: --before ${next.before}`);
+  const saved = savedLine(r);
+  if (saved) console.log(saved);
   return r;
 }
 

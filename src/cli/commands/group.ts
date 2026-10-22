@@ -14,6 +14,11 @@ const HELP = `contract-dev group — a group of contracts: the rules that fill i
 
 Usage:
   contract-dev group show <group>                     Rules, table columns, monitors and members with each column's value
+  contract-dev group add <group> <address|name>… [--chain <id|name>]
+                                                      Put watched contracts in a group (made if new); a contract can be in
+                                                      several groups: the protocol's and one per chain
+  contract-dev group remove <group> <address|name>… [--chain <id|name>]
+                                                      Take them out of the group; they stay watched (unwatch removes them)
   contract-dev group rule add <group> --factory <address> --event <Name> --field <arg> [--chain <id|name>]
                               [--name-pattern "…"] [--recent]
                                                       Every contract the factory has ever deployed joins the group, in
@@ -56,6 +61,8 @@ beside --when "value > {Cap}".
 
 Examples:
   contract-dev group show pools
+  contract-dev group add "DZap Arbitrum" "DZap Router Arbitrum" "DZap Zap Arbitrum"
+  contract-dev group remove DZap 0xce2541ce645a1b232ff2fead53dcd9f369e86ba4 --chain 42161
   contract-dev group rule add pools --factory 0x1F98431c8aD98523631AE4a59f267346ea31F984 --event PoolCreated --field pool
   contract-dev group name-pattern pools "{token0().symbol()}/{token1().symbol()} pool"
   contract-dev group column add vaults --label "Assets" --read "totalAssets()" --token "asset()" --show usd
@@ -499,6 +506,11 @@ export async function groupCommand(args: string[]): Promise<unknown> {
   switch (sub) {
     case 'show':
       return await showGroup(rest);
+    case 'add':
+      return await addMembers(rest);
+    case 'remove':
+    case 'rm':
+      return await removeMembers(rest);
     case 'rule':
     case 'rules':
       return await ruleCommand(rest);
@@ -534,6 +546,66 @@ async function showGroup(args: string[]): Promise<GroupDescription | void> {
   const g = await runTool<GroupDescription>(requireAuth(), 'describe_group', { group });
   for (const line of groupLines(g)) console.log(line);
   return g;
+}
+
+// ── members ──
+
+interface MemberRow {
+  name: string;
+  chainId: number;
+  address: string;
+}
+interface MembersResult {
+  group: string;
+  added?: MemberRow[];
+  alreadyIn?: MemberRow[];
+  removed?: MemberRow[];
+  notIn?: MemberRow[];
+  members: number;
+  note?: string;
+}
+
+const memberLine = (m: MemberRow): string => `  ${m.name} · ${chainLabel(m.chainId)} · ${shortAddr(m.address)}`;
+
+/** `group add <group> <ref>…` and `group remove <group> <ref>…` share their shape: the group, then the contracts. */
+function memberArgs(args: string[], verb: 'add' | 'remove'): { group: string; contracts: string[]; chainId?: number } {
+  const flags = parseFlags(args);
+  const positional = flags._ as string[];
+  const group = requirePositional(positional, 0, 'group');
+  const contracts = positional.slice(1);
+  if (!contracts.length) throw new Error(`Name the contracts to ${verb}: contract-dev group ${verb} "${group}" <address|name>…`);
+  onlyFlags(flags, `group ${verb}`, ['chain']);
+  const chainId = chainFlag(flags);
+  return { group, contracts, ...(chainId !== undefined ? { chainId } : {}) };
+}
+
+/** `group add <group> <ref>…`: watched contracts into a group, made if new; every ref is matched before anything changes. */
+async function addMembers(args: string[]): Promise<MembersResult | void> {
+  if (!args.length || HELP_WORDS.includes(args[0])) {
+    console.log(HELP);
+    return;
+  }
+  const r = await runTool<MembersResult>(requireAuth(), 'add_to_group', memberArgs(args, 'add'));
+  const added = r.added ?? [];
+  const already = r.alreadyIn ?? [];
+  console.log(`Added ${fmtInt(added.length)} to ${r.group} · already in ${fmtInt(already.length)} · ${plural(r.members, 'member')}`);
+  for (const m of added) console.log(memberLine(m));
+  return r;
+}
+
+/** `group remove <group> <ref>…`: out of the group, still watched. */
+async function removeMembers(args: string[]): Promise<MembersResult | void> {
+  if (!args.length || HELP_WORDS.includes(args[0])) {
+    console.log(HELP);
+    return;
+  }
+  const r = await runTool<MembersResult>(requireAuth(), 'remove_from_group', memberArgs(args, 'remove'));
+  const removed = r.removed ?? [];
+  const notIn = r.notIn ?? [];
+  console.log(`Removed ${fmtInt(removed.length)} from ${r.group} · not in it ${fmtInt(notIn.length)} · ${plural(r.members, 'member')} left`);
+  for (const m of removed) console.log(memberLine(m));
+  if (r.note) console.log(r.note);
+  return r;
 }
 
 async function ruleCommand(args: string[]): Promise<unknown> {

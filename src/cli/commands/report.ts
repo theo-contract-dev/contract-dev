@@ -13,14 +13,14 @@ const HELP = `contract-dev report — a table of your metrics, sent on a schedul
 Usage:
   contract-dev report list                                List reports (scope, cadence, destinations, next send, last run)
   contract-dev report create [--template daily|weekly] [--name "…"] [--scope <scope>] [--row <kind>[:<param>]]…
-                             [--to <dest>…] [--at <hour>] [--on <weekday>] [--tz <zone>]
-  contract-dev report create --every 10m|1h|6h --name "…" --row <kind>[:<param>][ | <window>]… [--window 24h|7d|30d|90d]
+                             [--columns 24h,7d,30d] [--to <dest>…] [--at <hour>] [--on <weekday>] [--tz <zone>]
+  contract-dev report create --every 1m|10m|1h|6h --name "…" --row <kind>[:<param>][ | nocompare]… [--columns 1h,24h]
                              [--snapshot] [--only-when "<expr>"] [--scope <scope>] [--to <dest>…]
                                                           A table every N minutes on the UTC clock; --snapshot prints
                                                           the figures alone (no change column); --only-when sends only
                                                           when the condition over the rows holds ({Breached markets} > 0)
   contract-dev report update <id|name> [--name "…"] [--row …]… [--add-row …]… [--remove-row <kind|label>]…
-                             [--every …] [--window …] [--snapshot | --compare] [--only-when "<expr>" | --always]
+                             [--every …] [--columns …] [--snapshot | --compare] [--only-when "<expr>" | --always]
                              [--at <hour>] [--on <weekday>] [--tz <zone>] [--scope <scope>] [--to <dest>…]
   contract-dev report create --each --metric "<event metric>" --when "<condition>" --message "<text>" [--name "…"] [--to <dest>…]
                                                           A message on every new record of the metric that meets --when
@@ -47,6 +47,9 @@ Flags (create):
                             customMetric:<event or item metric name> ·
                             "formula:<Label>=<expr>[; call <name>=<call>]…[; token <t>][; show usd]" (the read grammar on
                             every contract in the scope, summed: calls as \`track formula\` takes them, dollars through a token)
+  --columns <w>,<w>…        The columns, as windows in order (1m, 15m, 1h, 24h, 7d, 2w, 1y; 1m at the least): every row
+                            prints each, and the change against the window before follows the first. Default: 24h,7d,30d
+                            daily · 7d,30d,90d weekly · 24h with --every. A column past the plan's history is refused.
   --to <dest>               Where it goes: channel ids, labels ("#alerts") or kinds (telegram) from
                             \`contract-dev channels\`; repeat or comma-separate. Optional: without one the
                             report still runs on schedule and its table shows in the app only, on the
@@ -74,7 +77,7 @@ Each time: news, not trouble, so it never opens an alert and never makes a monit
                             {group}. A monitor: {monitor}, {level}, {what}, {name(contract)}. A call: {name(caller)},
                             {method}, {name(contract)}, {ok}. Dollar figures print as dollars; a message with a
                             transaction links it.
-  --digest <every>          Hold the matches and send them as one message every 5m…12h or 1d (--no-digest on update)
+  --digest <every>          Hold the matches and send them as one message every 1m…7d (--no-digest on update)
 
 Examples:
   contract-dev report create --each --name "Large swaps" --metric "Swap size (USD)" --when "value >= 10000" \\
@@ -86,8 +89,10 @@ Examples:
   contract-dev report create --template weekly --scope tag:pools --on friday --at 17 --to telegram
   contract-dev report create --name "Swaps" --scope steth --row transactions --row eventCount:Swap --to "#alerts"
 
-A daily report prints the last 24h, its change against the day before, then 7d and 30d; a
-weekly one 7d, its change, then 30d and 90d. A report is named by its id or, when
+The columns are windows you choose, in order, written like a monitor's durations (15m, 1h, 24h,
+7d, 2w, 1y; 1m at the least): every row prints each, and the change column follows the first.
+Left out, a daily report prints 24h, 7d and 30d; a weekly one 7d, 30d and 90d; an interval one
+its 24h. A column past the plan's history is refused. A report is named by its id or, when
 unambiguous, its name.
 `;
 
@@ -101,8 +106,6 @@ export interface ReportRowSpec {
   params?: { name?: string; id?: string; [k: string]: unknown };
   /** What the row is called in the table; the catalogue's label when absent. */
   label?: string | null;
-  /** The window this row reads over, when not the report's. */
-  window?: string;
   /** false: this row prints no change column. */
   compare?: boolean;
 }
@@ -125,9 +128,9 @@ export interface ReportView {
   weekday: number | null;
   hour: number;
   timezone: string;
-  /** Interval reports: every N minutes (UTC clock), the window read, the change column, the sending condition. */
+  /** Interval reports: every N minutes (UTC clock). The columns (window words, in order; empty = the cadence's defaults), the change column, the sending condition. */
   everyMinutes?: number | null;
-  window?: string | null;
+  columns?: string[];
   compare?: boolean;
   onlyWhen?: string | null;
   rows: ReportRowSpec[];
@@ -215,34 +218,52 @@ export function parseTimeZone(raw: string | undefined): string {
   return tz;
 }
 
-/** daily 09:00 Australia/Sydney · weekly Monday 09:00 Europe/London */
-/** `10m` · `1h` · `6h` */
-export const everyWord = (minutes: number): string => (minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`);
+/** The columns a cadence prints when the report names none. */
+const defaultColumns = (cadence: ReportCadence): string[] => (cadence === 'weekly' ? ['7d', '30d', '90d'] : cadence === 'interval' ? ['24h'] : ['24h', '7d', '30d']);
 
-export function scheduleWords(r: Pick<ReportView, 'cadence' | 'weekday' | 'hour' | 'timezone' | 'each'> & { everyMinutes?: number | null; window?: string | null; compare?: boolean }): string {
+/** daily 09:00 Australia/Sydney · weekly Monday 09:00 Europe/London */
+/** `1m` · `10m` · `1h` · `6h` · `1d` */
+export const everyWord = (minutes: number): string => (minutes % 1440 === 0 ? `${minutes / 1440}d` : minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`);
+
+export function scheduleWords(r: Pick<ReportView, 'cadence' | 'weekday' | 'hour' | 'timezone' | 'each'> & { everyMinutes?: number | null; columns?: string[]; compare?: boolean }): string {
   if (r.each) return `each time: ${r.each.subject}${r.each.when && r.each.when !== 'true' ? ` where ${r.each.when}` : ''}${r.each.digestMinutes ? ` · digest every ${everyWord(r.each.digestMinutes)}` : ''}`;
-  if (r.cadence === 'interval') return `every ${everyWord(r.everyMinutes ?? 60)} · ${r.window ?? '24h'}${r.compare === false ? ' snapshot' : ''}`;
+  if (r.cadence === 'interval') return `every ${everyWord(r.everyMinutes ?? 60)}${r.compare === false ? ' · snapshot' : ''}`;
   const day = r.cadence === 'weekly' ? `${weekdayName(r.weekday)} ` : '';
   return `${r.cadence} ${day}${String(r.hour).padStart(2, '0')}:00 ${r.timezone}`;
 }
 
-const EVERY_MINUTES = [5, 10, 15, 30, 60, 120, 180, 360, 720];
+/** The longest interval a report runs on or a digest waits, in minutes: a week (the server's bound too; a minute is the shortest). */
+const INTERVAL_MAX_MINUTES = 10_080;
 
-/** `10m`, `15`, `1h`, `6h` → minutes, one of the intervals a report may run on. */
-export function parseEvery(raw: string): number {
-  const m = /^(\d+)\s*(m|min|minutes?|h|hours?)?$/i.exec(raw.trim());
-  if (!m) throw new Error(`--every takes minutes or hours, like 10m or 1h (got: ${raw})`);
-  const n = Number(m[1]) * (m[2] && /^h/i.test(m[2]) ? 60 : 1);
-  if (!EVERY_MINUTES.includes(n)) throw new Error(`--every must be one of ${EVERY_MINUTES.map(everyWord).join(', ')} (got: ${raw})`);
+/** `1m`, `15`, `90m`, `4h`, `1d` → whole minutes from 1 to a week, as an interval report or a digest takes them. */
+function parseInterval(raw: string, what: string): number {
+  const m = /^(\d+)\s*(m|min|minutes?|h|hr|hours?|d|days?|w|weeks?)?$/i.exec(raw.trim());
+  if (!m) throw new Error(`${what} takes minutes, hours or days, like 1m, 10m, 4h or 1d (got: ${raw})`);
+  const unit = (m[2] ?? 'm').toLowerCase();
+  const n = Number(m[1]) * (unit.startsWith('w') ? 10_080 : unit.startsWith('d') ? 1440 : unit.startsWith('h') ? 60 : 1);
+  if (n < 1 || n > INTERVAL_MAX_MINUTES) throw new Error(`${what} must be from 1m to 7d (got: ${raw})`);
   return n;
 }
 
-const WINDOWS = ['24h', '7d', '30d', '90d'];
+/** `1m`, `10m`, `15`, `1h`, `6h` → minutes: any whole number from 1 to a week. */
+export const parseEvery = (raw: string): number => parseInterval(raw, '--every');
 
-export function parseWindow(raw: string, what = '--window'): string {
-  const w = raw.trim().toLowerCase();
-  if (!WINDOWS.includes(w)) throw new Error(`${what} must be one of ${WINDOWS.join(', ')} (got: ${raw})`);
-  return w;
+const WINDOW_UNIT_SEC: Record<string, number> = { m: 60, h: 3_600, d: 86_400, w: 604_800, y: 31_536_000 };
+
+/** A column's window as a duration word: 1m, 15m, 1h, 24h, 7d, 2w, 1y (1m at the least), normalised. */
+export function parseWindow(raw: string, what = '--columns'): string {
+  const m = /^\s*(\d{1,5})\s*([mhdwy])\s*$/i.exec(raw);
+  const n = m ? Number(m[1]) : 0;
+  const unit = m ? m[2].toLowerCase() : '';
+  if (!m || n <= 0 || n * WINDOW_UNIT_SEC[unit] < 60) throw new Error(`${what} takes windows like 1m, 15m, 1h, 24h, 7d, 2w or 1y (got: ${raw})`);
+  return `${n}${unit}`;
+}
+
+/** `24h,7d,30d` → the column windows, in order. */
+export function parseColumns(raw: string): string[] {
+  const words = raw.split(',').map((w) => w.trim()).filter(Boolean);
+  if (words.length === 0) throw new Error('--columns needs windows, like --columns 24h,7d,30d');
+  return words.map((w) => parseWindow(w));
 }
 
 const at = (iso: string | null | undefined): number | null => (iso ? Date.parse(iso) : null);
@@ -275,15 +296,15 @@ export async function parseScope(auth: ResolvedAuth, raw: string | undefined, ch
 
 /** `transactions` · `eventCount:Swap` · `trackedMetric:<id or label>` → the row the API stores. */
 export async function parseRow(auth: ResolvedAuth, rawRow: string, catalogue: Record<string, CatalogueEntry>): Promise<ReportRowSpec> {
-  // a row may read its own window and stand without a change column: --row "customMetric:Swap fees | 7d nocompare"
+  // a row may stand without a change column: --row "customMetric:Swap fees | nocompare" (its windows are the report's --columns)
   let raw = rawRow;
-  const extra: { window?: string; compare?: boolean } = {};
+  const extra: { compare?: boolean } = {};
   const bar = rawRow.indexOf('|');
   if (bar >= 0) {
     raw = rawRow.slice(0, bar);
     for (const word of rawRow.slice(bar + 1).trim().split(/\s+/).filter(Boolean)) {
       if (/^nocompare$|^snapshot$/i.test(word)) extra.compare = false;
-      else extra.window = parseWindow(word, `--row ${rawRow}: after |`);
+      else throw new Error(`--row ${rawRow}: after | only nocompare is understood; the windows a row prints are the report's --columns.`);
     }
   }
   const i = raw.indexOf(':');
@@ -423,7 +444,8 @@ export function settingsLines(r: ReportView, catalogue: Record<string, Catalogue
     `  scope:      ${scopeLabel(r.scope, contracts)}`,
     `  schedule:   ${scheduleWords(r)}`,
     ...(r.onlyWhen ? [`  only when:  ${r.onlyWhen}`] : []),
-    `  rows:       ${r.rows.map((row) => `${rowLabel(row, catalogue, metricNames)}${row.window ? ` (${row.window})` : ''}`).join(' · ')}`,
+    `  columns:    ${(r.columns?.length ? r.columns : defaultColumns(r.cadence)).join(', ')}${r.compare === false ? '' : ' (with the change against the window before)'}`,
+    `  rows:       ${r.rows.map((row) => rowLabel(row, catalogue, metricNames)).join(' · ')}`,
     `  sends to:   ${r.channels.length ? r.channels.map(describeChannel).join(', ') : 'nobody'}`,
     `  next send:  ${r.enabled ? fmtLocalTime(at(r.nextRunAt)) : 'paused'}`,
   ];
@@ -559,24 +581,24 @@ interface Draft {
   hour: number;
   timezone: string;
   everyMinutes?: number;
-  window?: string;
+  columns?: string[];
   compare?: boolean;
   onlyWhen?: string;
   rows: ReportRowSpec[];
 }
 
-/** --every, --window, --snapshot/--compare and --only-when/--always, as a create or an update body takes them. */
-function shapeFlags(flags: ReturnType<typeof parseFlags>): { everyMinutes?: number; window?: string | null; compare?: boolean; onlyWhen?: string | null } {
-  const out: { everyMinutes?: number; window?: string | null; compare?: boolean; onlyWhen?: string | null } = {};
+/** --every, --columns, --snapshot/--compare and --only-when/--always, as a create or an update body takes them. */
+function shapeFlags(flags: ReturnType<typeof parseFlags>): { everyMinutes?: number; columns?: string[] | null; compare?: boolean; onlyWhen?: string | null } {
+  const out: { everyMinutes?: number; columns?: string[] | null; compare?: boolean; onlyWhen?: string | null } = {};
   const every = flag(flags, 'every');
   if (every !== undefined) {
     if (every === 'true') throw new Error('--every needs an interval, like 10m or 1h');
     out.everyMinutes = parseEvery(every);
   }
-  const window = flag(flags, 'window');
-  if (window !== undefined) {
-    if (window === 'true') throw new Error('--window needs one of 24h, 7d, 30d, 90d');
-    out.window = parseWindow(window);
+  const columns = flag(flags, 'columns') ?? flag(flags, 'window');
+  if (columns !== undefined) {
+    if (columns === 'true') throw new Error('--columns needs windows, like --columns 24h,7d,30d');
+    out.columns = parseColumns(columns);
   }
   if (flag(flags, 'snapshot') !== undefined && flag(flags, 'compare') !== undefined) throw new Error('Pass --snapshot (figures alone) or --compare (with the change column), not both.');
   if (flag(flags, 'snapshot') !== undefined) out.compare = false;
@@ -627,7 +649,7 @@ async function buildDraft(auth: ResolvedAuth, flags: ReturnType<typeof parseFlag
   for (const ref of flagAll(flags, 'add-row')) rows.push(await parseRow(auth, ref, payload.catalogue));
   if (!rows.length) throw new Error('Pick rows with --row <kind>[:<param>], or start from --template daily|weekly.');
 
-  const shaped = Object.fromEntries(Object.entries(shape).filter(([, v]) => v !== undefined && v !== null)) as Pick<Draft, 'everyMinutes' | 'window' | 'compare' | 'onlyWhen'>;
+  const shaped = Object.fromEntries(Object.entries(shape).filter(([, v]) => v !== undefined && v !== null)) as Pick<Draft, 'everyMinutes' | 'columns' | 'compare' | 'onlyWhen'>;
   return { ...(name ? { name } : {}), scope, cadence, ...(weekday !== undefined ? { weekday } : {}), hour, timezone, ...shaped, rows };
 }
 
@@ -639,18 +661,12 @@ const toRefs = (flags: ReturnType<typeof parseFlags>): string[] =>
     .filter(Boolean);
 
 const ON_FLAGS: Record<string, string> = { 'on-event': 'event', 'on-call': 'call', 'on-value': 'value', 'on-row': 'row', 'on-member': 'member', 'on-monitor': 'monitor' };
-const DIGEST_MINUTES = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
 
 /** `--each`, or one of the `--on-*` triggers, asks for an each-time report. */
 export const isEach = (flags: ReturnType<typeof parseFlags>): boolean => flag(flags, 'each') !== undefined || Object.keys(ON_FLAGS).some((k) => flag(flags, k) !== undefined);
 
-/** `--digest 30m|1h|1d` → minutes. */
-export function parseDigest(raw: string): number {
-  const m = /^(\d+)\s*(m|min|h|hr|d)?$/i.exec(raw.trim());
-  const n = m ? Number(m[1]) * (m[2]?.toLowerCase().startsWith('h') ? 60 : m[2]?.toLowerCase() === 'd' ? 1440 : 1) : NaN;
-  if (!DIGEST_MINUTES.includes(n)) throw new Error(`--digest must be one of 5m, 10m, 15m, 30m, 1h, 2h, 3h, 6h, 12h, 1d (got: ${raw})`);
-  return n;
-}
+/** `--digest 1m|30m|1h|1d` → minutes, from 1 to a week. */
+export const parseDigest = (raw: string): number => parseInterval(raw, '--digest');
 
 type EachParts = { metric?: string; trigger?: Record<string, string>; when?: string; message: string; digestMinutes?: number };
 
@@ -663,7 +679,8 @@ function eachParts(flags: ReturnType<typeof parseFlags>): EachParts {
   const ons = Object.keys(ON_FLAGS).filter((k) => flag(flags, k) !== undefined);
   if (ons.length > 1) throw new Error(`Pass one trigger, not ${ons.map((k) => `--${k}`).join(' and ')}.`);
   const message = get('message');
-  const when = get('when');
+  // `--when true` (and a bare `--when`) is the condition every record meets, which the server takes as the word true
+  const when = flag(flags, 'when') === 'true' ? 'true' : get('when');
   const digest = get('digest');
   const out: EachParts = { message, ...(when ? { when } : {}), ...(digest ? { digestMinutes: parseDigest(digest) } : {}) };
   if (ons.length === 1) {
@@ -796,7 +813,7 @@ async function updateReport(args: string[]): Promise<ReportView> {
   }
   const refs = toRefs(flags);
   if (refs.length) body.channelIds = resolveChannelIds(await listChannels(auth), refs);
-  if (Object.keys(body).length === 0) throw new Error('Nothing to change: pass --name, --row/--add-row/--remove-row, --every, --window, --snapshot/--compare, --only-when/--always, --at, --on, --tz, --scope or --to.');
+  if (Object.keys(body).length === 0) throw new Error('Nothing to change: pass --name, --row/--add-row/--remove-row, --every, --columns, --snapshot/--compare, --only-when/--always, --at, --on, --tz, --scope or --to.');
   const { report } = await apiRequest<{ report: ReportView }>(auth, 'PATCH', `/api/mainnet/reports/${existing.id}`, body);
   const metricNames = await metricNamesFor(auth, report.rows);
   const contracts = report.scope.kind === 'contract' ? await workspaceContracts(auth).catch(() => [] as WatchedAccount[]) : [];
@@ -812,7 +829,7 @@ async function updateEachReport(auth: ResolvedAuth, existing: ReportView, flags:
     const v = flag(flags, k);
     return v === undefined ? undefined : v === 'true' ? '' : v.trim();
   };
-  for (const k of ['row', 'add-row', 'remove-row', 'every', 'window', 'snapshot', 'compare', 'only-when', 'always', 'at', 'tz', 'scope'])
+  for (const k of ['row', 'add-row', 'remove-row', 'every', 'columns', 'window', 'snapshot', 'compare', 'only-when', 'always', 'at', 'tz', 'scope'])
     if (flag(flags, k) !== undefined) throw new Error(`"${existing.name}" sends each time something happens; --${k} is for a scheduled report. Change --when, --message, --digest, --on, --name or --to.`);
   const name = get('name');
   if (name !== undefined) {

@@ -6,7 +6,7 @@ import { flag, ParsedFlags } from './commands/_args';
 import { parseChainId, WatchedAccount } from './commands/watch';
 import { chainLabel } from './view';
 
-/** The windows the dashboard offers. Free workspaces keep 24 hours of history; the server clamps longer asks. */
+/** The windows the dashboard offers. A Free workspace reads 7 days of history, a Team one a year; the server clamps longer asks. */
 export const RANGES = ['24h', '7d', '30d', '90d'] as const;
 export type Range = (typeof RANGES)[number];
 

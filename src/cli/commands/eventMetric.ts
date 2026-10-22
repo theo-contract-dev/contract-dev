@@ -15,7 +15,9 @@ export const EVENT_METRIC_HELP = `Event metrics — a number added up from event
                               [--read "<name>=<call>[.<output>] [on <target>] [with <arg>, …]"]… [--fixed <read>]…
                               [--field "<name>=<expr>"]… [--value "<expr>"] [--where "<rule>"]
                               [--aggregate sum|count|avg|min|max] [--split contract|none|<name>] [--unit usd|count|number]
-                              [--history <days>]
+                              [--history <days>] [--keep <param>[,<param>…] | --keep all]
+                              [--pair "<Event> [on <field>]"]…   Another event of the same transaction, its fields read as Event.field
+                                                      (--event BridgeStarted --pair "DZapBridgeStarted on transactionId" --split DZapBridgeStarted.integrator)
                                                       Saved at once; its history is read back in the background and
                                                       kept up to date
   contract-dev metric events                          The event metrics: scope, events, unit, status, records
@@ -47,12 +49,14 @@ export const EVENT_METRIC_HELP = `Event metrics — a number added up from event
                                                                                   averaged over 7 days
                                                         value > 50000             an item or group metric's level now
                                                       A window is 5 minutes to 7 days, and alerts while it holds. --per
-                                                      is required on a split metric: total (as a whole) or each (every
-                                                      contract on its own)
+                                                      goes with a window or level rule on a split metric: total (as a
+                                                      whole) or each (every contract on its own); a record rule
+                                                      (value > …) takes none
 
 A read calls a view as of the start of the event's transaction: on the emitting contract unless "on" names another
 (a parameter, an earlier read, or 0x…); "with" passes arguments. A view that reads no storage is read once.
-Expressions use the event's parameters by name, the reads, earlier fields, emitter(), sender(), time(), block(),
+Expressions use the event's parameters by name (a struct's member as swapInfo.fromAmount; a string as text, swapInfo.dex;
+a struct array's member as a list: sum(usd(swapInfo.fromAmount, swapInfo.fromToken)), len(swapInfo.fromAmount)), the reads, earlier fields, emitter(), sender(), time(), block(),
 tx(), amount(raw, token), usd(raw, token) at the event's day's price (native ETH is token 0x0000…0000, written out in
 full), price(token), if(), min(), max(), abs(),
 round(). Arithmetic is exact. Every chain the workspace watches; up to 89 days of history.
@@ -147,6 +151,16 @@ export function definitionFrom(flags: ParsedFlags): Record<string, unknown> {
     if (!Number.isInteger(n) || n < 1 || n > 89) throw new Error('--history takes a number of days from 1 to 89.');
     input.history = n;
   }
+  // parameters kept on every record beyond what the formulas read: --keep recipient --keep swapInfo.dex, or --keep all
+  const keep = flagAll(flags, 'keep').flatMap((k) => String(k).split(',')).map((k) => k.trim()).filter(Boolean);
+  if (keep.length > 0) input.keep = keep;
+  // another event of the same transaction, its fields then read as Event.field: --pair "DZapBridgeStarted on transactionId"
+  const pair = flagAll(flags, 'pair').map((raw) => {
+    const m = /^\s*(\S+)(?:\s+on\s+(\S+))?\s*$/.exec(String(raw));
+    if (!m) throw new Error('--pair takes "<Event> [on <field>]": --pair "DZapBridgeStarted on transactionId".');
+    return { event: m[1], ...(m[2] ? { on: m[2] } : {}) };
+  });
+  if (pair.length > 0) input.pair = pair;
   return input;
 }
 

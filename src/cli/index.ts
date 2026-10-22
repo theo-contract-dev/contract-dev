@@ -22,6 +22,7 @@ import { txCommand, addressCommand, blockCommand, walletCommand, sourceCommand }
 import { findCommand, describeCommand } from './commands/ask';
 import { whoCommand, readCommand } from './commands/questions';
 import { queryCommand } from './commands/query';
+import { queriesCommand } from './commands/queries';
 import { groupCommand, factoryCommand } from './commands/group';
 import { walletsCommand } from './commands/wallets';
 import { tableCommand } from './commands/table';
@@ -51,6 +52,7 @@ Watch contracts:
 
 Groups:
   contract-dev group show <group>         A group's rules, table columns, monitors and members (try: group help)
+  contract-dev group add <group> <address|name>…   Put watched contracts in a group; group remove takes them out, still watched
   contract-dev group rule add <group> --factory <addr> | --registry <addr> --function "…"
                                           Keep the group filled: every contract the factory deploys or the registry lists
   contract-dev group name-pattern <group> "<pattern>"   Name every member from its own reads: "{token0().symbol()} pool"
@@ -86,7 +88,8 @@ Ask (questions over the workspace; scope is --group <name>, --contract <ref> or 
                                           functions
   contract-dev query <contracts|table|metric|monitors|alerts|reports> …
                                           One dataset, asked in the table language: --where, --show, --sort, --by with
-                                          --sum or --count, --total (try: query help)
+                                          --sum or --count, --total; --save keeps the answer at a page (try: query help)
+  contract-dev queries [show|csv|refresh|rename|as|delete <id|title>]   The answers kept at a page: charts and tables
   contract-dev who <address|ENS|name>     Who it is; --holdings: what it holds
   contract-dev read <contract> <function> [<arg>…]   Call a view function, now or --at a past time (try: read help)
 
@@ -264,6 +267,8 @@ export async function run(args: string[]): Promise<unknown> {
       return await whoCommand(rest);
     case 'query':
       return await queryCommand(rest);
+    case 'queries':
+      return await queriesCommand(rest);
     case 'read':
       return await readCommand(rest);
     case 'skills':

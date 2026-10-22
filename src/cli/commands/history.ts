@@ -3,6 +3,7 @@
 // wallets), the weekday and hour shape, and examples. A read too long for one answer comes back
 // with `resume`; the command asks again (up to two more times) so the terminal gets the whole story.
 import { parseFlags, flag, flagAll, type ParsedFlags } from './_args';
+import { saveFromFlags, savedLine } from './_save';
 import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag, limitFlag } from '../data';
@@ -12,7 +13,7 @@ import { parseRead } from './eventMetric';
 const HELP = `contract-dev history — every firing of some events since launch: when, how big, who
 
 Usage:
-  contract-dev history [<contract>] --event <Name> [--event <Name>]… [--group <group>] [--chain <id|name>]
+  contract-dev history [<contract> | --address 0x… --chain <id>] --event <Name> [--event <Name>]… [--group <group>] [--chain <id|name>]
                               [--window all|24h|7d|30d|90d|1y | --since <date>] [--until <date>]
                               [--by auto|day|week|month] [--tz <zone>] [--who <field>|signer]
                               [--read "<name>=<call>"]… [--value "<formula>"]
@@ -25,12 +26,17 @@ changes, like asset() or token0()), the token named in it (\`contract-dev descri
 token as checked against the contract's transactions). Then the spread of those values (total, quartiles, dollar
 buckets when the formula prices them, each firing at its own day's price), and each contract's and wallet's total.
 --who counts by an address field of the event (account, owner); by default the transaction's signer. A long history is read over up to three calls (--once stops after one).
-Free workspaces read the last 24 hours.
+--save [bars|table] keeps the timeline at a page in the app (a chart) and prints its link; --of contracts or --of wallets keeps that table instead; --title names the page.
+--address reads a contract nobody watches (a position manager, a factory) straight from the chain's log history,
+narrowed: --wallet with --who naming an indexed address field (--who to --wallet 0x…) is applied by the log index
+itself, or --window is 30d at most. With no verified ABI, write the event as its full signature.
+A Free workspace reads the last 7 days, a Team one the last year; a longer window is served from where the history starts.
 
 Examples:
   contract-dev history --group "Wildcat markets" --event WithdrawalQueued --read "a=asset()" --value "usd(normalizedAmount, a)" --who account --by week
   contract-dev history 0x5ab22e9c360807f16dfa34ad5c589055d2871a5b --event WithdrawalQueued --event WithdrawalExecuted --tz Australia/Sydney
   contract-dev history --group pools --event Swap --window 30d --who signer
+  contract-dev history --address 0xC36442b4a4522E871399CD717aBDD847Ab11FE88 --chain 1 --event Transfer --who to --wallet 0xMYWALLET
 `;
 
 const HELP_WORDS = ['help', '-h', '--help'];
@@ -41,9 +47,12 @@ export function historyInput(flags: ParsedFlags): Record<string, unknown> {
   if (events.length === 0) throw new Error('Name the events: --event WithdrawalQueued (contract-dev events <contract> lists them).');
   const contract = (flags._ as string[]).join(' ').trim();
   const group = flag(flags, 'group');
+  const address = flag(flags, 'address');
   const chainId = chainFlag(flags);
-  const scope = contract ? { kind: 'contract', contract, ...(chainId != null ? { chainId } : {}) } : group ? { kind: 'group', group, ...(chainId != null ? { chainId } : {}) } : chainId != null ? { kind: 'workspace', chainId } : null;
-  const input: Record<string, unknown> = { events, ...(scope ? { scope } : {}) };
+  if (address === 'true') throw new Error('--address needs a 0x address (and --chain).');
+  if (address && (contract || group)) throw new Error('Give --address, or a contract or --group, not both.');
+  const scope = address ? null : contract ? { kind: 'contract', contract, ...(chainId != null ? { chainId } : {}) } : group ? { kind: 'group', group, ...(chainId != null ? { chainId } : {}) } : chainId != null ? { kind: 'workspace', chainId } : null;
+  const input: Record<string, unknown> = { events, ...(scope ? { scope } : {}), ...(address ? { address, ...(chainId != null ? { chainId } : {}) } : {}) };
   for (const [from, to] of [
     ['window', 'window'],
     ['since', 'since'],
@@ -72,6 +81,12 @@ export async function historyCommand(args: string[]): Promise<unknown> {
   if (!args.length || HELP_WORDS.includes(args[0])) return void console.log(HELP);
   const flags = parseFlags(args);
   const input = historyInput(flags);
+  const save = saveFromFlags(flags);
+  if (save) {
+    const of = flag(flags, 'of');
+    if (of !== undefined && !['timeline', 'contracts', 'wallets'].includes(of)) throw new Error('--of takes timeline, contracts or wallets');
+    input.save = of ? { ...save, of } : save;
+  }
   const auth = requireAuth();
   let result = await runTool<Record<string, unknown>>(auth, 'event_history', input);
   // a read that stopped short and can go further: ask again, it continues where it stopped
@@ -79,6 +94,8 @@ export async function historyCommand(args: string[]): Promise<unknown> {
     console.error(`Read back to ${String(result.from)}; reading further…`);
     result = await runTool<Record<string, unknown>>(auth, 'event_history', input);
   }
-  for (const line of printResult(result, { omit: ['definition'] })) console.log(line);
+  for (const line of printResult(result, { omit: ['definition', 'saved'] })) console.log(line);
+  const saved = savedLine(result);
+  if (saved) console.log(saved);
   return result;
 }

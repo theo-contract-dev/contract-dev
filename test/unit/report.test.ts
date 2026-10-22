@@ -284,7 +284,8 @@ describe('report create --every / report update', () => {
         });
         expect(printed()[2]).toBe('  schedule:   every 10m · 24h snapshot');
         expect(printed()[3]).toBe('  only when:  {Breached markets} > 0');
-        await expect(reportCommand(['create', '--every', '7m', '--name', 'x', '--row', 'transactions'])).rejects.toThrow(/--every must be one of 5m, 10m, 15m, 30m, 1h, 2h, 3h, 6h, 12h/);
+        await expect(reportCommand(['create', '--every', '30s', '--name', 'x', '--row', 'transactions'])).rejects.toThrow(/--every takes minutes, hours or days/);
+        await expect(reportCommand(['create', '--every', '8d', '--name', 'x', '--row', 'transactions'])).rejects.toThrow(/--every must be from 1m to 7d/);
         await expect(reportCommand(['create', '--every', '1h', '--template', 'daily'])).rejects.toThrow(/--every makes an interval report/);
     });
 
@@ -423,7 +424,7 @@ describe('report create --on-* / update on an each-time report', () => {
         expect(posts[3].scope).toEqual({ kind: 'tag', tag: 'pools' });
         await expect(run(['report', 'create', '--on-row', 'Loans', '--on-member', 'pools', '--message', 'x'])).rejects.toThrow(/Pass one trigger/);
         await expect(run(['report', 'create', '--on-row', 'Loans'])).rejects.toThrow(/needs --message/);
-        await expect(run(['report', 'create', '--on-row', 'Loans', '--message', 'x', '--digest', '7m'])).rejects.toThrow(/--digest must be one of/);
+        await expect(run(['report', 'create', '--on-row', 'Loans', '--message', 'x', '--digest', '0m'])).rejects.toThrow(/--digest must be from 1m to 7d/);
     });
 
     test('update on an each-time report patches when, message, digest and on; a schedule flag is refused', async () => {
@@ -439,5 +440,20 @@ describe('report create --on-* / update on an each-time report', () => {
         await run(['report', 'update', 'Repaid loans', '--no-digest']);
         expect(calls.filter((c) => c.method === 'PATCH')[1].body).toEqual({ digestMinutes: null });
         await expect(run(['report', 'update', 'Repaid loans', '--every', '1h'])).rejects.toThrow(/--every is for a scheduled report/);
+    });
+});
+
+describe('report intervals', () => {
+    it('--every and --digest take any whole minutes from 1m to 7d', async () => {
+        const { parseEvery, parseDigest, parseWindow, everyWord } = await import('../../src/cli/commands/report');
+        expect(parseEvery('1m')).toBe(1);
+        expect(parseEvery('7')).toBe(7);
+        expect(parseEvery('90m')).toBe(90);
+        expect(parseEvery('4h')).toBe(240);
+        expect(parseEvery('1d')).toBe(1440);
+        expect(parseDigest('7d')).toBe(10_080);
+        expect(parseWindow('1m')).toBe('1m');
+        expect(everyWord(1)).toBe('1m');
+        expect(everyWord(1440)).toBe('1d');
     });
 });

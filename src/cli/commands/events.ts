@@ -1,4 +1,5 @@
 import { parseFlags, flag, flagAll, type ParsedFlags } from './_args';
+import { saveFromFlags, savedLine } from './_save';
 import { parseRead } from './eventMetric';
 import { runTool } from '../tools';
 import { printResult } from './_print';
@@ -22,7 +23,7 @@ Flags:
 first, use \`contract-dev activity <contract> --events\`. Add --json for everything.
 
 Query (with --event): the events themselves, worked through formulas, in the language of metric define
-  contract-dev events [<contract> | --group <group>] --event <Name> [--event …] [--chain <id|name>]
+  contract-dev events [<contract> | --group <group> | --address 0x… --chain <id>] --event <Name> [--event …] [--chain <id|name>]
                       [--read "<name>=<call> [on <target>] [with <arg>, …]"]… [--fixed <read>]…
                       [--show "<name>=<expr>"]… [--where "<expr>"] [--sort "<expr>" [--asc]]
                       [--by contract|day|week|sender|<name>]… [--sum|--avg|--min|--max "<expr>" | --count]
@@ -34,6 +35,11 @@ Query (with --event): the events themselves, worked through formulas, in the lan
   event says who made it: the wallet (a smart account when there is one), the signer it came via, a searcher bot.
   A --sort on a field, abs(), usd()/amount() of one or max() of those (no --where) ranks the whole window; any
   other reads the newest 10,000 events (1,000 with a read per transaction) and says where it started.
+  --address reads a contract nobody watches (a position manager, a factory, a pool) straight from the chain's
+  log history, narrowed: a --where equality on an indexed field (to == 0x…) is applied by the log index itself,
+  or --window is 7d at most. With no verified ABI, write the event as its full signature.
+
+  --save [bars|stacked|diverging|line|table]  Keep the answer at a page in the app (a chart or a table) and print its link; --title names the page
 
 Examples:
   contract-dev events 0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640 --event Swap --read "t0=token0()" --fixed t0 \\
@@ -42,6 +48,8 @@ Examples:
     --where "usd(assetAmount, a) > 100000" --show "usd=usd(assetAmount, a)"
   contract-dev events --group "Uniswap v3" --event Swap --read "t0=token0()" --fixed t0 \\
     --by contract --by day --sum "usd(abs(amount0), t0)" --window 7d
+  contract-dev events --address 0xC36442b4a4522E871399CD717aBDD847Ab11FE88 --chain 1 --event Transfer \\
+    --where "to == 0xMYWALLET" --window 90d
 `;
 
 const AGGS = ['sum', 'avg', 'min', 'max'] as const;
@@ -133,8 +141,12 @@ export function queryInput(flags: ParsedFlags): Record<string, unknown> {
   const input: Record<string, unknown> = { events };
   const ref = (flags._ as string[]).join(' ').trim();
   const group = flag(flags, 'group');
+  const address = flag(flags, 'address');
   const chain = chainFlag(flags);
-  if (ref) input.contract = ref;
+  if (address === 'true') throw new Error('--address needs a 0x address (and --chain).');
+  if (address && (ref || (group && group !== 'true'))) throw new Error('Give --address, or a contract or --group, not both.');
+  if (address) input.address = address;
+  else if (ref) input.contract = ref;
   else if (group && group !== 'true') input.group = group;
   if (chain !== undefined) input.chainId = chain;
   const fixed = new Set(flagAll(flags, 'fixed').map((f) => f.trim()));
@@ -197,8 +209,11 @@ export async function eventsCommand(args: string[]): Promise<EventsPayload | voi
   const flags = parseFlags(args);
   // with --event: the events themselves, through formulas (query_events)
   if (flagAll(flags, 'event').some((e) => e !== 'true')) {
-    const r = await runTool<QueryResult>(requireAuth(), 'query_events', queryInput(flags));
+    const save = saveFromFlags(flags);
+    const r = await runTool<QueryResult>(requireAuth(), 'query_events', { ...queryInput(flags), ...(save ? { save } : {}) });
     for (const line of queryLines(r)) console.log(line);
+    const saved = savedLine(r as unknown as Record<string, unknown>);
+    if (saved) console.log(saved);
     return r as unknown as EventsPayload;
   }
   const range = parseRange(flags, RANGES, '24h');
