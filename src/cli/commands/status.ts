@@ -4,13 +4,11 @@ import { shortHex } from './metrics';
 import type { WatchedAccount } from './watch';
 import { monitorState, type Invariant } from './monitor';
 import type { WhoamiPayload } from './login';
-import type { StagenetsPayload } from '../target';
-import { activeStagenetFor } from '../target';
 
 const HELP = `contract-dev status — the workspace at a glance
 
 Usage:
-  contract-dev status          Contracts, TVL, 24h transactions, metrics, monitors, open alerts, stagenets
+  contract-dev status          Contracts, TVL, 24h transactions, metrics, monitors, open alerts
 
 Add --json for the same figures as JSON.
 `;
@@ -42,7 +40,6 @@ export interface StatusReport {
   metrics: number;
   monitors: { total: number; healthy: number; warning: number; alerting: number; warming: number; disabled: number };
   openAlerts: Array<{ id: string; name: string; level: string; since: string; what: string; chainId: number | null; address: string | null }>;
-  stagenets: Array<{ id: string; name: string; forkChainId: number | null; active: boolean; online: boolean }>;
 }
 
 const settle = async <T>(p: Promise<T>): Promise<T | null> => p.catch(() => null);
@@ -55,14 +52,13 @@ export async function statusCommand(args: string[] = []): Promise<StatusReport |
   const auth = requireAuth();
   // The figures that can be unknown (a slow store, a chain that did not answer) degrade to a
   // dash; the ones read from the workspace's own rows always come back.
-  const [who, accountsRes, vitals, invariantsRes, incidentsRes, metricsRes, stagenetsRes] = await Promise.all([
+  const [who, accountsRes, vitals, invariantsRes, incidentsRes, metricsRes] = await Promise.all([
     apiRequest<WhoamiPayload>(auth, 'GET', '/api/cli/whoami'),
     apiRequest<{ accounts: WatchedAccount[] }>(auth, 'GET', '/api/mainnet/accounts?accountType=contract'),
     settle(apiRequest<Vitals>(auth, 'GET', '/api/mainnet/vitals?range=24h')),
     apiRequest<{ invariants: Invariant[] }>(auth, 'GET', '/api/mainnet/invariants'),
     apiRequest<{ incidents: IncidentRow[] }>(auth, 'GET', '/api/mainnet/incidents?days=1'),
     apiRequest<{ trackedMetrics: unknown[] }>(auth, 'GET', '/api/mainnet/tracked-metrics'),
-    settle(apiRequest<StagenetsPayload>(auth, 'GET', '/api/cli/stagenets')),
   ]);
 
   const contracts = (accountsRes.accounts ?? []).filter((a) => a.accountType === 'contract');
@@ -75,7 +71,6 @@ export async function statusCommand(args: string[] = []): Promise<StatusReport |
   for (const inv of invariants) monitors[monitorState(inv)] += 1;
 
   const open = (incidentsRes.incidents ?? []).filter((i) => !i.resolvedAt);
-  const activeId = stagenetsRes ? activeStagenetFor(stagenetsRes.workspace?.id)?.id : undefined;
 
   const report: StatusReport = {
     workspace: who.org ?? null,
@@ -95,13 +90,6 @@ export async function statusCommand(args: string[] = []): Promise<StatusReport |
       chainId: i.chainId,
       address: i.address,
     })),
-    stagenets: (stagenetsRes?.stagenets ?? []).map((s) => ({
-      id: s.id,
-      name: s.name,
-      forkChainId: s.forkChainId,
-      active: s.id === activeId,
-      online: !!s.rpcUrl,
-    })),
   };
 
   console.log(`Workspace:     ${report.workspace ? `${report.workspace.name}${report.workspace.slug ? ` (${report.workspace.slug})` : ''}` : 'unknown'}`);
@@ -117,11 +105,5 @@ export async function statusCommand(args: string[] = []): Promise<StatusReport |
     console.log(`  ${a.level.padEnd(7)} ${a.name} — ${a.what}${where}  since ${a.since}`);
   }
   if (report.openAlerts.length > 10) console.log(`  … ${report.openAlerts.length - 10} more (contract-dev alerts)`);
-  if (stagenetsRes) {
-    const names = report.stagenets.map((s) => `${s.name}${s.active ? '*' : ''}${s.online ? '' : ' (offline)'}`);
-    console.log(`Stagenets:     ${formatInt(report.stagenets.length)}${names.length ? ` · ${names.join(', ')}` : ''}`);
-  } else {
-    console.log('Stagenets:     —');
-  }
   return report;
 }

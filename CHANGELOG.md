@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Removed — the stagenet commands
+- `stagenets`, `stagenet use|create|reset|delete`, `push-contracts` (and its old `import-contracts` spelling),
+  `generate-wallet`, `balance`, `erc20-balance`, `state`, `impersonate`, `follow`, `unfollow` and
+  `function-override` are gone with the stagenet product, as are the `--stagenet` and `--rpc-url` flags and the
+  `CONTRACT_DEV_STAGENET` / `CONTRACT_DEV_RPC_URL` variables. `--workspace` works as before, and so does
+  `track <address> erc20-balance`.
+- `status` no longer prints a Stagenets line or returns `stagenets` in its `--json`.
+
 ## 2.0.0 — 2026-10-19
 
 ### Added — `query`, one command over every dataset

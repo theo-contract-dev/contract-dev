@@ -1,8 +1,8 @@
 # @contract-dev/cli
 
 Command-line tool for [contract.dev](https://contract.dev): watch your mainnet
-contracts, track their metrics, ask questions about them, alert when a value
-crosses a line or an event fires — and work with a Stagenet from your terminal.
+contracts, track their metrics, ask questions about them, and alert when a value
+crosses a line or an event fires.
 Every command speaks `--json`, so agents and scripts read what you read.
 
 ## Install
@@ -338,33 +338,6 @@ It goes to `~/.claude/skills/contract-dev` (Claude Code; Cursor and Copilot read
 next command refreshes both to the new version. Run `contract-dev skills uninstall` before
 `npm uninstall -g @contract-dev/cli`: npm runs no script on uninstall.
 
-## Stagenets
-
-```bash
-contract-dev stagenets                                    # list the active workspace's stagenets
-contract-dev stagenet create eth-staging --chain ethereum # fork a chain at latest; becomes the active stagenet
-contract-dev stagenet use avax-fork                       # pick the one to target (stored per workspace)
-contract-dev stagenet reset [--every 12h|off] [--show]    # return its state to the live chain, keeping your wallets
-contract-dev stagenet delete eth-staging --yes
-```
-
-One-off overrides on any stagenet command: `--stagenet <name>`, or `--rpc-url <url>`
-for a direct URL that needs no login at all.
-
-### Push contracts
-
-From your Foundry/Hardhat project root, after `forge build` or `npx hardhat compile`:
-
-```bash
-contract-dev push-contracts
-```
-
-Pushed contracts are matched to deployments by bytecode, so each deployment gets
-a dashboard with its name and ABI attached. Re-run after each rebuild — a push
-that changes nothing is a no-op. Source/artifact dirs are auto-detected; pass
-`--contracts <dir>` / `--artifacts <dir>` when your hardhat.config computes paths
-dynamically.
-
 ## Commands
 
 ```
@@ -388,6 +361,7 @@ contract-dev untrack              Stop tracking
 contract-dev table                list / show / create / update / delete tables of things inside contracts (rounds, loans, proposals)
 
 contract-dev query                One dataset as a table: contracts / table / metric / monitors / alerts / reports / transactions / transfers / wallets
+contract-dev queries              show / csv / refresh / rename / delete the answers kept at a page (charts and tables)
 contract-dev events               Events emitted, event by event; any question over recent events, in the formula language
 contract-dev history              Every firing of an event since launch: counts by period, wallets, the largest
 contract-dev tvl                  Value held, its change, what it is made of
@@ -411,18 +385,7 @@ contract-dev channels             List / test / enable / disable / remove alert 
 contract-dev report               List / create / show / run / update / pause / resume / delete a scheduled report
 
 contract-dev tool                 list / show / run the platform's tools by name, for agents and scripts
-
-contract-dev stagenets            List the workspace's stagenets
-contract-dev stagenet             use / create / delete / reset a stagenet
-contract-dev push-contracts       Push compiled artifacts
-contract-dev generate-wallet      Generate + fund a wallet
-contract-dev balance              Change native balances
-contract-dev erc20-balance        Change ERC20 balances
-contract-dev state                Override code / nonce / storage; resync a contract to mainnet
-contract-dev impersonate          Impersonate an address
-contract-dev follow               Pin contract state to live mainnet
-contract-dev unfollow             Stop following
-contract-dev function-override    Override contract function results
+contract-dev skills               install / status / uninstall the agent skill
 ```
 
 Run `contract-dev <command> help` for per-command flags. `--json` on any command prints its

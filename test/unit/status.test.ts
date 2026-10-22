@@ -32,7 +32,6 @@ describe('status', () => {
                 payload: { days: 1, incidents: [{ id: 'inc1', name: 'B', exprText: 'b >= 1', level: 'alert', openedAt: '2026-09-27T09:00:00Z', resolvedAt: null, chainId: 1, address: '0xaaa' }] },
             }),
             'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [{}, {}, {}] } }),
-            'GET /api/cli/stagenets': () => ({ payload: { workspace: { id: 'o1', name: 'Acme' }, stagenets: [{ id: 's1', name: 'avax-fork', chainId: 1, forkChainId: 43114, rpcUrl: 'https://rpc.local/s1' }] } }),
         });
         const report = (await statusCommand([]))!;
         expect(report).toMatchObject({ contracts: 2, chains: 2, tvlUsd: 2_500_000, tx24h: 1234, failed24h: 12, metrics: 3 });
@@ -42,7 +41,8 @@ describe('status', () => {
         expect(out[0]).toBe('Workspace:     Acme (acme)');
         expect(out[1]).toBe('Contracts:     2 on 2 chains · TVL $2.50M');
         expect(out[2]).toBe('Transactions:  1,234 in 24h · 12 failed');
-        expect(out.at(-1)).toBe('Stagenets:     1 · avax-fork');
+        expect(out).toContain('Open alerts:   1');
+        expect(out.some((line) => line.startsWith('Stagenets'))).toBe(false);
     });
 
     it('falls back to the rows\' TVL and a dash for transactions when the vitals route fails', async () => {
@@ -53,12 +53,11 @@ describe('status', () => {
             'GET /api/mainnet/invariants': () => ({ payload: { invariants: [] } }),
             'GET /api/mainnet/incidents': () => ({ payload: { days: 1, incidents: [] } }),
             'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [] } }),
-            'GET /api/cli/stagenets': () => ({ status: 500, payload: { error: 'nope' } }),
         });
         const report = (await statusCommand([]))!;
         expect(report.tvlUsd).toBe(100);
         expect(report.tx24h).toBeNull();
         expect(printed()[2]).toBe('Transactions:  — in 24h · — failed');
-        expect(printed().at(-1)).toBe('Stagenets:     —');
+        expect(printed().at(-1)).toBe('Open alerts:   0');
     });
 });

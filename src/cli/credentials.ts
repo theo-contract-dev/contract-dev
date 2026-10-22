@@ -6,17 +6,14 @@ export const DEFAULT_API_URL = 'https://app.contract.dev';
 
 // Saved by `contract-dev login`, per-user per-machine (never in the repo). The key is
 // ORG-SCOPED: it acts as exactly the workspace that was active in the app when the login
-// was approved. workspaceId/Name record that workspace for display and for keying the
-// per-workspace active stagenet; switching workspaces means a new login (`workspace use`).
+// was approved. workspaceId/Name record that workspace for display; switching workspaces
+// means a new login (`workspace use`).
 export interface StoredCredentials {
   apiKey: string;
   apiUrl: string;
   email?: string;
   workspaceId?: string;
   workspaceName?: string;
-  // Active stagenet per workspace id (set via `contract-dev stagenet use`), so a login into
-  // another workspace can never silently target the previous one's fork.
-  activeStagenets?: Record<string, { id: string; name: string }>;
 }
 
 // $HOME first (the conventional CLI override; also what tests point at a tmp dir —
@@ -40,8 +37,6 @@ export function loadCredentials(): StoredCredentials | null {
       email: typeof parsed.email === 'string' ? parsed.email : undefined,
       workspaceId: typeof parsed.workspaceId === 'string' ? parsed.workspaceId : undefined,
       workspaceName: typeof parsed.workspaceName === 'string' ? parsed.workspaceName : undefined,
-      activeStagenets:
-        parsed.activeStagenets && typeof parsed.activeStagenets === 'object' ? parsed.activeStagenets : undefined,
     };
   } catch {
     // missing or corrupt file = logged out
@@ -111,7 +106,7 @@ const RETRY_DELAY_MS = 500;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export interface RequestOptions {
-  /** Deadline for this call, when the default is too short (creating a stagenet provisions infrastructure). */
+  /** Deadline for this call, when the default is too short (a slow read, a history walk). */
   timeoutMs?: number;
 }
 

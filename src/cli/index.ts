@@ -1,15 +1,7 @@
 #!/usr/bin/env node
 import { cliVersion } from './version';
-import { pushContractsCommand } from './commands/push-contracts';
-import { generateWalletCommand } from './commands/generate-wallet';
-import { functionOverrideCommand } from './commands/function-override';
-import { balanceCommand, erc20BalanceCommand } from './commands/balance';
-import { stateCommand } from './commands/state';
-import { impersonateCommand } from './commands/impersonate';
-import { followCommand, unfollowCommand } from './commands/follow';
 import { loginCommand, logoutCommand, whoamiCommand } from './commands/login';
 import { workspaceCommand } from './commands/workspace';
-import { stagenetCommand, stagenetsCommand } from './commands/stagenet';
 import { watchCommand, unwatchCommand, renameCommand, contractsCommand } from './commands/watch';
 import { metricsCommand, trackCommand, untrackCommand } from './commands/metrics';
 import { monitorCommand, monitorsCommand, channelsCommand } from './commands/monitor';
@@ -119,22 +111,6 @@ Reports:
   contract-dev report show <id|name>      Settings, the latest table, every run and where it went
   contract-dev report run <id|name>       Send it now · report pause / resume / delete <id|name>
 
-Stagenets:
-  contract-dev stagenets                  List the active workspace's stagenets
-  contract-dev stagenet use <name>        Set the active stagenet (stored per workspace)
-  contract-dev stagenet create <name> --chain <id|name>   Create a stagenet (try: stagenet help)
-  contract-dev stagenet reset             Return the stagenet's state to the live chain, keeping your wallets
-  --stagenet <name> / --rpc-url <url>     One-off target override on any stagenet command
-  contract-dev push-contracts             Push this directory's compiled contracts so deployments get dashboards
-  contract-dev generate-wallet            Generate a fresh wallet and fund it with 1,000,000 native tokens
-  contract-dev balance <sub>              Change native balances (try: balance help)
-  contract-dev erc20-balance <sub>        Change ERC20 balances (try: erc20-balance help)
-  contract-dev state <sub>                Override code / nonce / storage, resync to mainnet (try: state help)
-  contract-dev impersonate <sub>          Impersonate an address (try: impersonate help)
-  contract-dev follow <sub>               Pin contract state to live mainnet (try: follow help)
-  contract-dev unfollow <address>         Stop following (mirrors follow's flags)
-  contract-dev function-override <sub>    Override contract function results (try: function-override help)
-
 Agents:
   contract-dev tool list                  The platform's tools, the ones an agent calls: name, scope, title
   contract-dev tool show <name>           A tool's description and its input schema
@@ -142,7 +118,7 @@ Agents:
   contract-dev skills install             Teach Claude Code, Codex, Cursor and other agents this CLI (try: skills help)
   contract-dev skills status              Where the agent skill is installed, and its version
 
-Nouns work too: contracts list|add|rename|remove · wallets list|add|rename|remove · metrics track|untrack · monitor list · alerts list · reports · stagenet list.
+Nouns work too: contracts list|add|rename|remove · wallets list|add|rename|remove · metrics track|untrack · monitor list · alerts list · reports.
 
 Global flags:
   --json                                  Print the command's result as JSON instead of text
@@ -158,27 +134,6 @@ export async function run(args: string[]): Promise<unknown> {
   const [cmd, ...rest] = args;
 
   switch (cmd) {
-    case 'push-contracts':
-      return await pushContractsCommand(rest);
-    case 'import-contracts': // pre-rename spelling, kept as a quiet alias
-      console.error('Note: `import-contracts` is now `push-contracts`.');
-      return await pushContractsCommand(rest);
-    case 'generate-wallet':
-      return await generateWalletCommand(rest);
-    case 'function-override':
-      return await functionOverrideCommand(rest);
-    case 'balance':
-      return await balanceCommand(rest);
-    case 'erc20-balance':
-      return await erc20BalanceCommand(rest);
-    case 'state':
-      return await stateCommand(rest);
-    case 'impersonate':
-      return await impersonateCommand(rest);
-    case 'follow':
-      return await followCommand(rest);
-    case 'unfollow':
-      return await unfollowCommand(rest);
     case 'login':
       return await loginCommand(rest);
     case 'logout':
@@ -190,10 +145,6 @@ export async function run(args: string[]): Promise<unknown> {
       return await workspaceCommand(rest);
     case 'status':
       return await statusCommand(rest);
-    case 'stagenets':
-      return await stagenetsCommand(rest);
-    case 'stagenet':
-      return await stagenetCommand(rest);
     case 'watch':
       return await watchCommand(rest);
     case 'contracts':
