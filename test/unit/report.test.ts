@@ -22,13 +22,12 @@ const catalogue = {
     revertedShare: entry('Reverted'),
     volumeInUsd: entry('Volume in'),
     volumeOutUsd: entry('Volume out'),
-    tvlUsd: entry('TVL'),
     eventCount: entry('Event', 'name'),
     trackedMetric: entry('Tracked metric', 'id'),
     customMetric: entry('Event or item metric', 'id'),
     alertsOpened: entry('Alerts opened'),
 };
-const dailyRows = [{ kind: 'activeWallets' }, { kind: 'transactions' }, { kind: 'revertedShare' }, { kind: 'volumeInUsd' }, { kind: 'volumeOutUsd' }, { kind: 'tvlUsd' }];
+const dailyRows = [{ kind: 'activeWallets' }, { kind: 'transactions' }, { kind: 'revertedShare' }, { kind: 'volumeInUsd' }, { kind: 'volumeOutUsd' }];
 const templates = { daily: { name: 'Daily report', rows: dailyRows }, weekly: { name: 'Weekly report', rows: [...dailyRows, { kind: 'alertsOpened' }] } };
 const quota = { plan: 'team', used: 1, limit: 10, columns: 'full' };
 
@@ -102,10 +101,11 @@ describe('report show', () => {
         expect(out[0]).toBe('Daily report  (rep1)');
         expect(out[1]).toBe('  scope:      Workspace');
         expect(out[2]).toBe('  schedule:   daily 09:00 Australia/Sydney');
-        expect(out[3]).toBe('  rows:       Active wallets · Transactions · Reverted · Volume in · Volume out · TVL');
-        expect(out[4]).toBe('  sends to:   discord_bot #alerts, telegram -100123');
-        expect(out[5]).toBe(`  next send:  ${fmtLocalTime(Date.parse('2026-10-13T22:00:00.000Z'))}`);
-        expect(out[6]).toBe(`  last run:   ${fmtLocalTime(Date.parse('2026-10-12T22:00:00.000Z'))} · sent`);
+        expect(out[3]).toBe('  columns:    24h, 7d, 30d (with the change against the window before)');
+        expect(out[4]).toBe('  rows:       Active wallets · Transactions · Reverted · Volume in · Volume out');
+        expect(out[5]).toBe('  sends to:   discord_bot #alerts, telegram -100123');
+        expect(out[6]).toBe(`  next send:  ${fmtLocalTime(Date.parse('2026-10-13T22:00:00.000Z'))}`);
+        expect(out[7]).toBe(`  last run:   ${fmtLocalTime(Date.parse('2026-10-12T22:00:00.000Z'))} · sent`);
         expect(out).toContain(TEXT);
         const joined = out.join('\n');
         expect(joined).toMatch(
@@ -133,8 +133,8 @@ describe('report show', () => {
         const out = printed();
         expect(out[0]).toBe('Daily report  (rep1)  (paused)');
         expect(out[1]).toBe('  scope:      Lido: stETH');
-        expect(out[3]).toBe('  rows:       Vault reserves · Swap');
-        expect(out[5]).toBe('  next send:  paused');
+        expect(out[4]).toBe('  rows:       Vault reserves · Swap');
+        expect(out[6]).toBe('  next send:  paused');
         expect(out).toContain('No runs');
         expect(out.at(-1)).toBe('  runs: 0');
     });
@@ -179,7 +179,7 @@ describe('report create', () => {
         expect(out[0]).toBe('Created report "Daily report" (rep9).');
         expect(out[1]).toBe('  scope:      Workspace');
         expect(out[2]).toBe(`  schedule:   daily 09:00 ${machineTimeZone()}`);
-        expect(out[4]).toBe('  sends to:   discord_bot #alerts');
+        expect(out[5]).toBe('  sends to:   discord_bot #alerts');
     });
 
     it('--row replaces the template rows (event by name, tracked metric by label); tag scope; --on, --at, --tz; repeated and comma --to', async () => {
@@ -197,14 +197,15 @@ describe('report create', () => {
             runNow: true,
         });
         expect(printed()[2]).toBe('  schedule:   weekly Friday 17:00 Europe/London');
-        expect(printed()[3]).toBe('  rows:       Transactions · Swap · Vault reserves');
+        expect(printed()[3]).toBe('  columns:    7d, 30d, 90d (with the change against the window before)');
+        expect(printed()[4]).toBe('  rows:       Transactions · Swap · Vault reserves');
     });
 
     it('--scope names a watched contract (by name or address, lower-cased); --on alone makes a report weekly on that day', async () => {
         const calls = mockApi(base);
-        await reportCommand(['create', '--name', 'stETH', '--scope', 'steth', '--row', 'tvlUsd', '--on', '7', '--to', 'ch1']);
-        expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ name: 'stETH', scope: { kind: 'contract', chainId: 1, address: STETH.toLowerCase() }, cadence: 'weekly', weekday: 7, rows: [{ kind: 'tvlUsd' }] });
-        await reportCommand(['create', '--name', 'stETH', '--scope', `contract:${STETH.toUpperCase().replace('0X', '0x')}`, '--row', 'tvlUsd', '--to', 'ch1']);
+        await reportCommand(['create', '--name', 'stETH', '--scope', 'steth', '--row', 'transactions', '--on', '7', '--to', 'ch1']);
+        expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ name: 'stETH', scope: { kind: 'contract', chainId: 1, address: STETH.toLowerCase() }, cadence: 'weekly', weekday: 7, rows: [{ kind: 'transactions' }] });
+        await reportCommand(['create', '--name', 'stETH', '--scope', `contract:${STETH.toUpperCase().replace('0X', '0x')}`, '--row', 'transactions', '--to', 'ch1']);
         expect(calls.filter((c) => c.method === 'POST').at(-1)!.body).toMatchObject({ scope: { kind: 'contract', chainId: 1, address: STETH.toLowerCase() }, cadence: 'daily' });
     });
 
@@ -232,7 +233,7 @@ describe('report create', () => {
         expect((created as any).channels).toEqual([]);
         const out = printed();
         expect(out[0]).toBe('Created report "Daily report" (rep9).');
-        expect(out[4]).toBe('  sends to:   nobody');
+        expect(out[5]).toBe('  sends to:   nobody');
         expect(out.slice(-2)).toEqual(["First table queued: it shows on the report's page within a minute, then the report runs on schedule.", "No destination yet: the table shows on the report's page in the app until one is linked."]);
     });
 
@@ -265,9 +266,9 @@ describe('report create --every / report update', () => {
         'POST /api/mainnet/reports': (c: any) => ({ status: 201, payload: { report: report({ ...c.body, id: 'rep10', channels: [], lastRunAt: null, lastRun: null }) } }),
     };
 
-    it('--every makes an interval report on the UTC clock; --snapshot, --only-when and a row window land in the body', async () => {
+    it('--every makes an interval report on the UTC clock; --snapshot, --only-when and a row nocompare land in the body', async () => {
         const calls = mockApi(base);
-        await reportCommand(['create', '--every', '10m', '--name', 'Wildcat pulse', '--scope', 'tag:Wildcat markets', '--row', 'customMetric:Breached markets', '--row', 'transactions | 7d nocompare', '--snapshot', '--only-when', '{Breached markets} > 0']);
+        await reportCommand(['create', '--every', '10m', '--name', 'Wildcat pulse', '--scope', 'tag:Wildcat markets', '--row', 'customMetric:Breached markets', '--row', 'transactions | nocompare', '--snapshot', '--only-when', '{Breached markets} > 0']);
         const post = calls.find((c) => c.method === 'POST')!;
         expect(post.body).toEqual({
             name: 'Wildcat pulse',
@@ -278,12 +279,13 @@ describe('report create --every / report update', () => {
             everyMinutes: 10,
             compare: false,
             onlyWhen: '{Breached markets} > 0',
-            rows: [{ kind: 'customMetric', params: { id: 'cm1' } }, { kind: 'transactions', window: '7d', compare: false }],
+            rows: [{ kind: 'customMetric', params: { id: 'cm1' } }, { kind: 'transactions', compare: false }],
             channelIds: [],
             runNow: true,
         });
-        expect(printed()[2]).toBe('  schedule:   every 10m · 24h snapshot');
+        expect(printed()[2]).toBe('  schedule:   every 10m · snapshot');
         expect(printed()[3]).toBe('  only when:  {Breached markets} > 0');
+        expect(printed()[4]).toBe('  columns:    24h');
         await expect(reportCommand(['create', '--every', '30s', '--name', 'x', '--row', 'transactions'])).rejects.toThrow(/--every takes minutes, hours or days/);
         await expect(reportCommand(['create', '--every', '8d', '--name', 'x', '--row', 'transactions'])).rejects.toThrow(/--every must be from 1m to 7d/);
         await expect(reportCommand(['create', '--every', '1h', '--template', 'daily'])).rejects.toThrow(/--every makes an interval report/);

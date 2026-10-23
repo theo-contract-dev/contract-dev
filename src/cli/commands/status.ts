@@ -1,5 +1,5 @@
 import { apiRequest, requireAuth } from '../credentials';
-import { formatInt, formatUsd } from '../format';
+import { formatInt } from '../format';
 import { shortHex } from './metrics';
 import type { WatchedAccount } from './watch';
 import { monitorState, type Invariant } from './monitor';
@@ -8,13 +8,13 @@ import type { WhoamiPayload } from './login';
 const HELP = `contract-dev status — the workspace at a glance
 
 Usage:
-  contract-dev status          Contracts, TVL, 24h transactions, metrics, monitors, open alerts
+  contract-dev status          Contracts, 24h transactions, metrics, monitors, open alerts
 
 Add --json for the same figures as JSON.
 `;
 
 interface Vitals {
-  org: { contracts: number; chains: number; tvlUsd: number | null; txTotal: number; txFailed: number };
+  org: { contracts: number; chains: number; txTotal: number; txFailed: number };
   updating?: boolean;
 }
 
@@ -34,7 +34,6 @@ export interface StatusReport {
   workspace: { id: string; name: string; slug?: string } | null;
   contracts: number;
   chains: number;
-  tvlUsd: number | null;
   tx24h: number | null;
   failed24h: number | null;
   metrics: number;
@@ -63,8 +62,6 @@ export async function statusCommand(args: string[] = []): Promise<StatusReport |
 
   const contracts = (accountsRes.accounts ?? []).filter((a) => a.accountType === 'contract');
   const chains = new Set(contracts.map((c) => c.chainId));
-  // TVL from the rows themselves when the vitals bundle did not answer: the sum of what is priced.
-  const rowTvl = contracts.some((c) => c.valueUsd != null) ? contracts.reduce((sum, c) => sum + (c.valueUsd ?? 0), 0) : null;
 
   const invariants = invariantsRes.invariants ?? [];
   const monitors = { total: invariants.length, healthy: 0, warning: 0, alerting: 0, warming: 0, disabled: 0 };
@@ -76,7 +73,6 @@ export async function statusCommand(args: string[] = []): Promise<StatusReport |
     workspace: who.org ?? null,
     contracts: contracts.length,
     chains: chains.size,
-    tvlUsd: vitals?.org.tvlUsd ?? rowTvl,
     tx24h: vitals ? vitals.org.txTotal : null,
     failed24h: vitals ? vitals.org.txFailed : null,
     metrics: (metricsRes.trackedMetrics ?? []).length,
@@ -93,7 +89,7 @@ export async function statusCommand(args: string[] = []): Promise<StatusReport |
   };
 
   console.log(`Workspace:     ${report.workspace ? `${report.workspace.name}${report.workspace.slug ? ` (${report.workspace.slug})` : ''}` : 'unknown'}`);
-  console.log(`Contracts:     ${formatInt(report.contracts)} on ${formatInt(report.chains)} chain${report.chains === 1 ? '' : 's'} · TVL ${formatUsd(report.tvlUsd)}`);
+  console.log(`Contracts:     ${formatInt(report.contracts)} on ${formatInt(report.chains)} chain${report.chains === 1 ? '' : 's'}`);
   console.log(`Transactions:  ${formatInt(report.tx24h)} in 24h · ${formatInt(report.failed24h)} failed${vitals?.updating ? '  (updating)' : ''}`);
   console.log(`Metrics:       ${formatInt(report.metrics)} tracked`);
   console.log(

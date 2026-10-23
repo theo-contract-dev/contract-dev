@@ -2,7 +2,35 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { loginCommand, logoutCommand } from '../../src/cli/commands/login';
+import { loginCommand, logoutCommand, planLine, whoamiCommand } from '../../src/cli/commands/login';
+import { mockApi, printed, useEnvAuth } from './_mockApi';
+
+describe('whoami', () => {
+    useEnvAuth();
+
+    it('says the plan and what it has used, up front; an older server without a plan prints as before', async () => {
+        const plan = {
+            plan: 'free',
+            label: 'Free',
+            historyDays: 7,
+            trialEndsAt: null,
+            watchedAccounts: { used: 11, limit: 25 },
+            monitors: { used: 29, limit: 50 },
+            reports: { used: 3, limit: 3 },
+            tables: { used: 0, limit: 2 },
+            trackedValues: { used: 4, limit: -1 },
+        };
+        mockApi({ 'GET /api/cli/whoami': () => ({ payload: { email: 'theo@contract.dev', org: { id: 'o1', name: 'Personal' }, plan } }) });
+        await whoamiCommand();
+        expect(printed()[1]).toBe('Plan: Free · 7 days of history · contracts and wallets 11/25 · monitors 29/50 · reports 3/3 · tables 0/2 · tracked values 4');
+        expect(planLine({ ...plan, label: 'Team', historyDays: 365, trialEndsAt: '2026-11-03T00:00:00.000Z' })).toMatch(/^Team \(trial until 2026-11-03\) · 365 days of history/);
+        (console.log as jest.Mock).mockClear();
+        mockApi({ 'GET /api/cli/whoami': () => ({ payload: { email: 'theo@contract.dev', org: { id: 'o1', name: 'Personal' } } }) });
+        await whoamiCommand();
+        expect(printed()[0]).toBe('theo@contract.dev (workspace: Personal)');
+        expect(printed()[1]).toMatch(/^Auth: /);
+    });
+});
 
 const API_URL = 'https://test.contract.dev';
 

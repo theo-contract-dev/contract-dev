@@ -7,7 +7,6 @@
 import { parseFlags, flag, requirePositional } from './_args';
 import { apiRequest, requireAuth } from '../credentials';
 import { runTool } from '../tools';
-import { formatUsd } from '../format';
 import { describeAccount, findWatchedAccount, parseChainId, renameCommand, unwatchCommand, type WatchedAccount } from './watch';
 
 const HELP = `contract-dev wallets — watch wallets (addresses with no code) beside your contracts
@@ -78,8 +77,7 @@ async function listWallets(args: string[]): Promise<WatchedAccount[]> {
     return [];
   }
   for (const w of wallets) {
-    const held = w.valueUsd == null && w.valueLoading ? '…' : formatUsd(w.valueUsd);
-    console.log(`${String(w.chainId).padEnd(8)} ${w.address}  ${(w.name ?? '').padEnd(28)} ${held}`);
+    console.log(`${String(w.chainId).padEnd(8)} ${w.address}  ${w.name ?? ''}`.trimEnd());
   }
   return wallets;
 }

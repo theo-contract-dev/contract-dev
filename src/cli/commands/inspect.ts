@@ -1,19 +1,17 @@
 import { parseFlags } from './_args';
 import { requireAuth, apiRequest } from '../credentials';
 import { chainFlag, limitFlag, lookupNames, nameKey, parseRange, RANGES, resolveContract, servedRangeNote, workspaceContracts } from '../data';
-import { DASH, chainLabel, fmtAge, fmtChange, fmtCompact, fmtInt, fmtUsd, fmtUsdSigned, nameOr, plural, shortAddr, sparkline, table } from '../view';
+import { DASH, chainLabel, fmtAge, fmtChange, fmtCompact, fmtInt, fmtUsd, nameOr, plural, shortAddr, sparkline, table } from '../view';
 import { isBuiltinMonitor, monitorState, type Invariant } from './monitor';
 import { formatValue, type TrackedMetric } from './metrics';
-import { totalSeries } from './tvl';
 import { oracleLines, type ConsoleOracles } from './oracles';
 
 const SHOW_HELP = `contract-dev contracts show — one watched contract at a glance (the Overview tab)
 
 Usage:
-  contract-dev contracts show <contract>       What it is (proxy, token, owner, deployer, ABI), what it holds and
-                                               how that moved, its last 24 hours (transactions, wallets, value
-                                               moved, a token's own volume), its monitors and tracked metrics
-  contract-dev contracts stats [--range]       Every watched contract side by side: value, change, transactions, volume
+  contract-dev contracts show <contract>       What it is (proxy, token, owner, deployer, ABI), its last 24 hours
+                                               (transactions, wallets, value moved, a token's own volume), its
+                                               monitors and tracked metrics
 
 <contract> is an address or a watched contract's name. Add --json for the full answers.
 `;
@@ -97,13 +95,12 @@ export async function showContract(args: string[]): Promise<unknown> {
   const addr = c.address.toLowerCase();
   const at = `chainId=${c.chainId}&address=${addr}`;
   const opts = { timeoutMs: 60_000 };
-  const [facts, identity, feed, flows, users, tvl, settings, metricsRes, invariantsRes] = await Promise.all([
+  const [facts, identity, feed, flows, users, settings, metricsRes, invariantsRes] = await Promise.all([
     settle(apiRequest<ChainFacts>(auth, 'GET', `/api/mainnet/contract/facts?${at}&part=chain`, undefined, opts)),
     settle(apiRequest<Identity>(auth, 'GET', `/api/mainnet/contracts/${addr}/identity?chainId=${c.chainId}`, undefined, opts)),
     settle(apiRequest<FeedCounts>(auth, 'GET', `/api/mainnet/activity/feed?range=24h&chain=${c.chainId}&contract=${addr}`, undefined, opts)),
     settle(apiRequest<{ totals: { inUsd: number; outUsd: number; transfers: number; counterparties: number } }>(auth, 'GET', `/api/mainnet/console/flows?range=24h&${at}`, undefined, opts)),
     settle(apiRequest<{ totals: { active: number; txs: number; prevActive: number | null } }>(auth, 'GET', `/api/mainnet/console/users?range=24h&${at}`, undefined, opts)),
-    settle(apiRequest<{ chains: Array<{ values: Array<number | null>; liveUsd: number | null }>; totalUsd: number | null }>(auth, 'GET', `/api/mainnet/console/tvl?range=24h&${at}`, undefined, opts)),
     settle(apiRequest<{ manualAbi: string | null; hasPublicAbi: boolean }>(auth, 'GET', `/api/mainnet/accounts/${c.id}`, undefined, opts)),
     settle(apiRequest<{ trackedMetrics: TrackedMetric[] }>(auth, 'GET', `/api/mainnet/tracked-metrics?${at}`, undefined, opts)),
     settle(apiRequest<{ invariants: Invariant[] }>(auth, 'GET', '/api/mainnet/invariants', undefined, opts)),
@@ -138,16 +135,6 @@ export async function showContract(args: string[]): Promise<unknown> {
   }
   if (settings) rows.push(['ABI', settings.hasPublicAbi ? 'verified on the explorer' : settings.manualAbi ? 'added by hand' : `none (add one with contract-dev watch ${c.address} --abi <file>)`]);
 
-  // Value held, and how it moved over the day.
-  const series = tvl ? totalSeries(tvl.chains as Parameters<typeof totalSeries>[0]) : [];
-  const first = series.find((v) => v != null) ?? null;
-  const valueNow = tvl?.totalUsd ?? c.valueUsd ?? null;
-  // A level that never moved is a number, not a line.
-  const known = series.filter((v): v is number => v != null);
-  const moved = known.length > 1 && Math.max(...known) !== Math.min(...known);
-  rows.push(['Value held', `${fmtUsd(valueNow)}${moved && valueNow != null && first != null ? ` · ${fmtUsdSigned(valueNow - first)} (${fmtChange(valueNow, first)}) over 24h` : known.length ? ' · unchanged over 24h' : ''}`]);
-  if (moved) rows.push(['', sparkline(series, { floor: 'min' })]);
-
   if (feed && !feed.unavailable) {
     const n = feed.counts;
     rows.push(['Last 24h', `${plural(n.transactions, 'transaction')} (${fmtInt(n.transactionsFailed)} failed) · ${plural(n.calls, 'call')} · ${plural(n.events, 'event')}`]);
@@ -178,19 +165,18 @@ export async function showContract(args: string[]): Promise<unknown> {
   console.log(c.name ?? c.address);
   const width = Math.max(...rows.map(([k]) => k.length));
   for (const [k, v] of rows) console.log(`  ${k.padEnd(width)}  ${v}`);
-  console.log(`\nMore: contract-dev events|tvl ${c.address} · contract-dev query transactions|transfers|wallets --contract ${c.address}`);
-  return { contract: c, facts, identity, activity: feed, flows, users, tvl, tokenVolume: volume, abi: settings, health, metrics };
+  console.log(`\nMore: contract-dev events ${c.address} · contract-dev query transactions|transfers|wallets --contract ${c.address}`);
+  return { contract: c, facts, identity, activity: feed, flows, users, tokenVolume: volume, abi: settings, health, metrics };
 }
 
 interface ConsoleBundle {
   range: string;
-  contracts: Array<{ id: string; label: string | null; tvlUsd: number | null; address: string; chainId: number; contractType: string | null }>;
+  contracts: Array<{ id: string; label: string | null; address: string; chainId: number; contractType: string | null }>;
   byAccount: Record<
     string,
     {
       tx?: Array<{ n: number; failed: number }>;
       vol?: Array<{ usd: number }>;
-      tvlPrev?: { nowUsd: number | null; thenUsd: number | null } | null;
     }
   >;
 }

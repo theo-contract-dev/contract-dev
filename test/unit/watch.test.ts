@@ -66,14 +66,13 @@ describe('watch / unwatch (mainnet contracts)', () => {
         await expect(watchCommand(['0xAbC', '--chain', '999999'])).rejects.toThrow('Unsupported chainId');
     });
 
-    it('list asks for contracts only and prints chain, address, name, TVL (dash = unknown, … = not read yet)', async () => {
+    it('list asks for contracts only and prints chain, address, name', async () => {
         const calls = mockApi({
             'GET /api/mainnet/accounts': () => ({
                 payload: {
                     accounts: [
-                        { id: 'a1', chainId: 1, chainIds: [1], address: '0xaaa', accountType: 'contract', name: 'USDC', valueUsd: 1234567 },
-                        { id: 'a2', chainId: 42161, chainIds: [42161], address: '0xbbb', accountType: 'contract', name: null, valueUsd: null },
-                        { id: 'a3', chainId: 42161, chainIds: [42161], address: '0xccc', accountType: 'contract', name: 'New', valueUsd: null, valueLoading: true },
+                        { id: 'a1', chainId: 1, chainIds: [1], address: '0xaaa', accountType: 'contract', name: 'USDC' },
+                        { id: 'a2', chainId: 42161, chainIds: [42161], address: '0xbbb', accountType: 'contract', name: null },
                     ],
                 },
             }),
@@ -81,9 +80,8 @@ describe('watch / unwatch (mainnet contracts)', () => {
         await watchCommand(['list', '--chain', 'arbitrum']);
         expect(calls[0].path).toBe('/api/mainnet/accounts?accountType=contract&chainId=42161');
         expect(printed()).toEqual([
-            `1        0xaaa  ${'USDC'.padEnd(28)} $1.23M`,
-            `42161    0xbbb  ${''.padEnd(28)} —`,
-            `42161    0xccc  ${'New'.padEnd(28)} …`,
+            '1        0xaaa  USDC',
+            '42161    0xbbb',
         ]);
     });
 

@@ -35,7 +35,7 @@ Usage:
                               [--decimals-from "decimals()"] [--token <token> [--show usd]] [--unit int|pct|duration|rate|raw] [--attribute]
                               [--type address|uint|bool|string] [--key <key>]
                                                       A column on the group's table: one read on every member, refreshed
-                                                      every minute (tracked per block once a group monitor reads it)
+                                                      every minute (tracked with history once a group monitor reads it)
   contract-dev group column add <group> --label "…" [--call "<name>=<call> [on <target>] [with <args>] [decimals <n>]"]…
                               --formula "<expr>" [--type bool] [--token <token> [--show usd]] [--unit …] [--key <key>]
                                                       A FORMULA column: calls resolved on every member (a view, balance(self),

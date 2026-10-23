@@ -71,16 +71,14 @@ describe('the server guide in the skill', () => {
 describe('question shortcuts', () => {
     useEnvAuth();
 
-    it('who: an address, ENS or name; --holdings picks the holdings tool', async () => {
+    it('who: an address, ENS or name; --holdings is refused, with the way to read one balance', async () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/describe_address': () => ok({ who: 'Wintermute' }),
-            'POST /api/mainnet/tools/address_holdings': () => ok({ who: 'Wintermute' }),
         });
         await run(['who', 'Wintermute', '--chain', '1']);
-        await run(['who', '0xabc', '--holdings']);
+        await expect(run(['who', '0xabc', '--holdings'])).rejects.toThrow(/--holdings is no longer offered.*balanceOf/);
         expect(calls.map((c) => [c.path, c.body.input])).toEqual([
             ['/api/mainnet/tools/describe_address', { who: 'Wintermute', chainId: 1 }],
-            ['/api/mainnet/tools/address_holdings', { who: '0xabc' }],
         ]);
     });
 

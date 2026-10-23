@@ -3,7 +3,6 @@ import { showContract } from './inspect';
 import { parseFlags, flag, requirePositional, type ParsedFlags } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { runTool } from '../tools';
-import { formatUsd } from '../format';
 import { fmtInt, plural } from '../view';
 import { watchWalletCommand } from './wallets';
 
@@ -15,7 +14,7 @@ Usage:
                                                        Watch a wallet — an address with no code (try: wallets help)
   contract-dev watch <address>[=<name>]… [--chain <id>] [--group <name>]
                                                        Watch several at once, each named, tagged into a group when one is named
-  contract-dev watch list [--chain <id>]               List watched contracts
+  contract-dev watch list [--chain <id>]               List watched contracts: chain, address, name
   contract-dev rename <address> <name> [--chain <id>]  Rename a watched contract (clears with "")
   contract-dev contracts set-abi <address> --abi <file> Set the ABI on a contract already watched (--clear removes it)
   contract-dev unwatch <address> [<address>…] [--chain <id>]   Stop watching one or several contracts (name or address)
@@ -65,9 +64,6 @@ export interface WatchedAccount {
   contractType?: string | null;
   /** What the app detected it to be: erc20, erc4626, erc721, a proxy standard… */
   standards?: string[] | null;
-  valueUsd?: number | null;
-  /** the first value read has not landed yet (a just-watched contract) */
-  valueLoading?: boolean;
 }
 
 interface Detection {
@@ -343,8 +339,7 @@ async function listSubcommand(args: string[]): Promise<WatchedAccount[]> {
     return [];
   }
   for (const account of contracts) {
-    const tvl = account.valueUsd == null && account.valueLoading ? '…' : formatUsd(account.valueUsd);
-    console.log(`${String(account.chainId).padEnd(8)} ${account.address}  ${(account.name ?? '').padEnd(28)} ${tvl}`);
+    console.log(`${String(account.chainId).padEnd(8)} ${account.address}  ${account.name ?? ''}`.trimEnd());
   }
   return contracts;
 }

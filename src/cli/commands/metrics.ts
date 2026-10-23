@@ -3,6 +3,7 @@ import { parseFlags, flag, requirePositional, requireFlag } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { parseChainId, WatchedAccount } from './watch';
 import { resolveContract } from '../data';
+import { runTool } from '../tools';
 import { EVENT_METRIC_HELP, defineEventMetric, defineGroupMetric, defineItemMetric, deleteEventMetric, isEventMetric, listEventMetrics, monitorEventMetric, showEventMetric, trackFormula, updateEventMetric } from './eventMetric';
 
 const TRACK_HELP = `contract-dev track — track an on-chain value as a metric (charted on /metrics, usable by monitors)
@@ -18,24 +19,20 @@ Kinds:
                   [--word <n>] [--signed]          --function "convertToAssets(uint256) returns (uint256)" --args 1e18
                   [--decimals <n>]                 (--calldata 0x… instead of --function/--args; --word picks
                                                     one return value; --decimals sets the display scale)
-  tvl                                            The contract's TVL in USD (provider-backed)
   (formula)                                      contract-dev track formula <contract> --label … --call … --value …:
                                                  several views at one block and an expression (try: track formula help)
-  calls | reverts | revert-rate | callers
-                  [--method <selector|"sig">]    Method telemetry from the trace store, over a window
-                  [--window 5m|15m|1h|6h|24h]      (default: any method, 1h). --only / --except <addrs>
-                  [--only a,b | --except a,b]      filter by caller.
 
 Examples:
   contract-dev track 0xA0b8… function --function "totalSupply() returns (uint256)" --label "USDC supply"
   contract-dev track 0xVault… function --function "totalAssets() returns (uint256)" --decimals 18
-  contract-dev track 0xPool… calls --method "swap(address,bool,int256,uint160,bytes)" --window 15m
 `;
 
 const METRICS_HELP = `contract-dev metrics — the workspace's tracked metrics
 
 Usage:
-  contract-dev metrics [--address <addr>] [--chain <id>]    List metrics (id, kind, chain, address, label, value)
+  contract-dev metrics [--address <addr>] [--chain <id>]    List metrics: tracked values (id, kind, chain, address, label,
+                                                            value), then event, table and group metrics (id, kind, scope,
+                                                            name, status); --address or --chain lists tracked values only
   contract-dev metrics show <id|label> [--range 24h|7d|30d|90d|all] [--limit <n>]
                                                             The metric and its recent history
   contract-dev metrics rename <id|label> "<label>"
@@ -80,7 +77,6 @@ const KINDS: Record<string, { api: string; label: string }> = {
   // total-supply and balance-of left with the app's picker 2026-10-14: both are `function`
   // on the token (totalSupply(); balanceOf(address) --args <holder>). Existing rows keep sampling.
   function: { api: 'functionResult', label: 'Function call' },
-  tvl: { api: 'tvlUsd', label: 'TVL' },
   calls: { api: 'callCount', label: 'Method calls' },
   reverts: { api: 'revertCount', label: 'Method reverts' },
   'revert-rate': { api: 'revertRate', label: 'Method revert rate' },
@@ -88,6 +84,9 @@ const KINDS: Record<string, { api: string; label: string }> = {
   // gas-p95 (gasP95) left the picker 2026-10-14; the API refuses new rows of it, existing ones keep sampling.
 };
 const TRACE_KINDS = new Set(['calls', 'reverts', 'revert-rate', 'callers']);
+// The kinds help and errors name: call-level data is not collected for now (2026-10-22), so the method kinds go
+// unlisted; they are still accepted and the server answers for them.
+const LISTED_KINDS = Object.keys(KINDS).filter((k) => !TRACE_KINDS.has(k));
 // The windows the app's picker offers (TRACE_WINDOW_OPTIONS_SEC in @mockchain/config).
 const TRACE_WINDOWS: Record<string, number> = { '5m': 300, '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400 };
 
@@ -267,9 +266,9 @@ export async function trackCommand(args: string[]): Promise<TrackedMetric | void
   }
   const flags = parseFlags(args);
   const positional = flags._ as string[];
-  const kindName = requirePositional(positional, 1, `kind (one of: ${Object.keys(KINDS).join(', ')})`);
+  const kindName = requirePositional(positional, 1, `kind (one of: ${LISTED_KINDS.join(', ')})`);
   const kind = KINDS[kindName];
-  if (!kind) throw new Error(`Unknown kind "${kindName}". One of: ${Object.keys(KINDS).join(', ')}`);
+  if (!kind) throw new Error(`Unknown kind "${kindName}". One of: ${LISTED_KINDS.join(', ')}`);
   const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
   // a watched contract's name works as well as its address (track stETH totalSupply)
   const address = await addressOrName(requirePositional(positional, 0, 'address'), 'address', chainId);
@@ -292,10 +291,10 @@ export async function trackCommand(args: string[]): Promise<TrackedMetric | void
   }
 
   const auth = requireAuth();
-  // The provider / trace kinds name themselves server-side from the watched label; the
-  // on-chain kinds don't, so generate the app's "<account> · <kind>" form for them.
+  // The trace kinds name themselves server-side from the watched label; the on-chain kinds
+  // don't, so generate the app's "<account> · <kind>" form for them.
   let label = flag(flags, 'label');
-  if (!label && kindName !== 'tvl' && !TRACE_KINDS.has(kindName)) {
+  if (!label && !TRACE_KINDS.has(kindName)) {
     const subject = await subjectName(auth, chainId, address);
     label = kindName === 'function' && typeof params?.signature === 'string' ? `${subject}.${labelSuffix}` : `${subject} · ${labelSuffix}`;
   }
@@ -401,7 +400,7 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
   }
 }
 
-async function listMetrics(args: string[]): Promise<TrackedMetric[]> {
+async function listMetrics(args: string[]): Promise<Array<TrackedMetric | ListedMetric>> {
   const flags = parseFlags(args);
   const query: string[] = [];
   const address = flag(flags, 'address');
@@ -415,18 +414,52 @@ async function listMetrics(args: string[]): Promise<TrackedMetric[]> {
     'GET',
     `/api/mainnet/tracked-metrics${query.length ? `?${query.join('&')}` : ''}`,
   );
-  if (!trackedMetrics?.length) {
-    console.log('No tracked metrics. Start one with `contract-dev track <address> <kind>`.');
+  const tracked = trackedMetrics ?? [];
+  // event, table and group metrics have no one address or chain: listed when nothing narrows the list
+  let others: ListedMetric[] = [];
+  let othersFailed = false;
+  if (query.length === 0) {
+    try {
+      others = (await runTool<{ metrics?: ListedMetric[] }>(auth, 'describe_metric', {})).metrics ?? [];
+    } catch {
+      othersFailed = true;
+    }
+  }
+  if (!tracked.length && !others.length) {
+    console.log(othersFailed ? 'No tracked metrics. Event metrics could not be listed just now: contract-dev metric events.' : 'No metrics. Track a value with `contract-dev track <address> <kind>`, or add one up from events with `contract-dev metric define`.');
     return [];
   }
-  for (const m of trackedMetrics) {
+  for (const m of tracked) {
     const state = m.enabled ? '' : '  (paused)';
     console.log(
       `${m.id}  ${m.kind.padEnd(14)} ${String(m.chainId).padEnd(6)} ${shortHex(m.address)}  ${(m.label ?? '').padEnd(36)} ${formatValue(currentValue(m))}${state}`,
     );
   }
-  return trackedMetrics;
+  if (others.length) {
+    if (tracked.length) console.log('');
+    console.log('Event, table and group metrics');
+    for (const m of others) console.log(`${m.id}  ${(METRIC_KIND_WORDS[m.kind] ?? m.kind).padEnd(14)} ${m.name.padEnd(36)} ${(m.scope ?? '').padEnd(28)} ${listedStatus(m)}`);
+  } else if (othersFailed) console.log('\nEvent metrics could not be listed just now: contract-dev metric events.');
+  return [...tracked, ...others];
 }
+
+/** An event, table or group metric as describe_metric lists it. */
+interface ListedMetric {
+  id: string;
+  name: string;
+  kind: string;
+  scope?: string;
+  status?: string;
+  records?: number;
+  error?: string;
+}
+
+/** The CLI's word for each kind: an item metric is made with `metric table`. */
+const METRIC_KIND_WORDS: Record<string, string> = { event: 'event', item: 'table', group: 'group' };
+
+/** Where a listed metric stands: its records once it reads new events, or what it is still doing. */
+const listedStatus = (m: ListedMetric): string =>
+  m.error ? `error: ${m.error}` : m.status === 'ready' && m.kind === 'event' && m.records != null ? `${m.records.toLocaleString('en-US')} records` : (m.status ?? '—');
 
 interface SeriesPayload {
   trackedMetric: TrackedMetric;

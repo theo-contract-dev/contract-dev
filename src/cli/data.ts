@@ -1,4 +1,4 @@
-// Shared by the data commands (activity, methods, flows, users, tvl, …): the window flag,
+// Shared by the data commands (activity, methods, flows, users, …): the window flag,
 // naming a watched contract by address or by name, and the app's address book. Each command
 // reads the same routes the dashboard pages do, so the CLI and the app always agree.
 import { apiRequest, ResolvedAuth } from './credentials';

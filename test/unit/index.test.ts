@@ -14,11 +14,12 @@ describe('entrypoint', () => {
         const calls = mockApi({
             'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
             'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [] } }),
+            'POST /api/mainnet/tools/describe_metric': () => ({ payload: { ok: true, result: { metrics: [] }, ms: 1 } }),
             'GET /api/mainnet/incidents': () => ({ payload: { incidents: [], days: 7 } }),
         });
         await run(['contracts', 'list']);
         await run(['metric', 'list']);
         await run(['incident']);
-        expect(calls.map((c) => c.path.split('?')[0])).toEqual(['/api/mainnet/accounts', '/api/mainnet/tracked-metrics', '/api/mainnet/incidents']);
+        expect(calls.map((c) => c.path.split('?')[0])).toEqual(['/api/mainnet/accounts', '/api/mainnet/tracked-metrics', '/api/mainnet/tools/describe_metric', '/api/mainnet/incidents']);
     });
 });

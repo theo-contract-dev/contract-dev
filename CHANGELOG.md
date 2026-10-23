@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.0.0 — 2026-10-23
 
 ### Removed — the stagenet commands
 - `stagenets`, `stagenet use|create|reset|delete`, `push-contracts` (and its old `import-contracts` spelling),
@@ -9,6 +9,14 @@
   `CONTRACT_DEV_STAGENET` / `CONTRACT_DEV_RPC_URL` variables. `--workspace` works as before, and so does
   `track <address> erc20-balance`.
 - `status` no longer prints a Stagenets line or returns `stagenets` in its `--json`.
+
+### Removed — TVL and holdings
+- `contract-dev tvl` (and its `value` spelling) is gone with the platform's TVL and holdings, as are
+  `who --holdings` (now refused with the way to read one balance: `read <token> balanceOf <address>`), the
+  `tvl` kind of `track`, and the `tvlUsd` report row.
+- `status`, `describe`, `find` and `contracts show` no longer print a TVL or a value held, and `contracts list` and
+  `wallets list` print chain, address and name. `status --json` no longer returns `tvlUsd`.
+- `holders <contract>` stays, as its own command (`holders help`).
 
 ## 2.0.0 — 2026-10-19
 

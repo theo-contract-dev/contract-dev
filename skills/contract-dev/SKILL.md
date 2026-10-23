@@ -1,6 +1,6 @@
 ---
 name: contract-dev
-description: "Set up a contract.dev workspace to analyse, monitor and query on-chain smart contracts with the contract-dev CLI. Use when someone wants to set up or watch a protocol, its contracts or everything a factory deployed; add groups, tables, tracked metrics, alerts or daily reports; or asks about activity, swaps, volume, users, TVL, events or alerts on their contracts."
+description: "Set up a contract.dev workspace to analyse, monitor and query on-chain smart contracts with the contract-dev CLI. Use when someone wants to set up or watch a protocol, its contracts or everything a factory deployed; add groups, tables, tracked metrics, alerts or daily reports; or asks about activity, swaps, volume, users, events or alerts on their contracts."
 ---
 
 # contract.dev from the CLI
@@ -54,15 +54,18 @@ stderr (`{"error": …, "code": …}` on stdout with `--json`); the codes includ
      would have fired is a question for `contract-dev events` with the same condition, never a replay.
    - Reports: `contract-dev report create …` saves the report and queues its first table at once; no preview.
    - `contract-dev channels` lists the destinations `--to` can name. A monitor or report made with no
-     destination is kept and shown in the app; the person links a channel later.
+     destination is kept and shown in the app; the person links a channel later. Connecting one needs
+     the person: `contract-dev channels add telegram` prints a link they open in Telegram, and
+     `contract-dev channels add slack --channel <name>` has them approve once in a browser; run either
+     only when they ask, and wait for it to finish. Discord is connected in the app.
 
 ## Commands by question
 
 **What is in this workspace?**
-- `contract-dev status` — contracts, TVL, transactions, alerts at a glance
+- `contract-dev status` — contracts, transactions, alerts at a glance
 - `contract-dev find <query>` — contracts, groups, metrics, monitors, reports, destinations by name
 - `contract-dev contracts list [--chain <id>]` — the watched contracts
-- `contract-dev describe <contract>` — kinds, standards, groups, TVL, owner, implementation, token;
+- `contract-dev describe <contract>` — kinds, standards, groups, owner, implementation, token;
   its events with their fields and units, its write functions. Fast: it reads the ABI, not activity.
 
 **Anything the platform keeps, as a table (the first thing to reach for when a question is a filter, a ranking, a total or a count)**
@@ -97,7 +100,7 @@ stderr (`{"error": …, "code": …}` on stdout with `--json`); the codes includ
   reads one figure as it was then, so `--show apr="(bal - bal7) / bal7 * 52"` is a week's APR with no metric kept.
 
 **What happened?**
-- `contract-dev events <contract>` · `tvl [<contract>]` · `holders <contract>`
+- `contract-dev events <contract>` · `holders <contract>`
 - `contract-dev tx <hash>` · `address <0x…>` · `block <n>` · `wallet <0x…>` · `source <contract>`
 - Anything from events (swaps, swap volume or fees per pool, deposits per market) is `contract-dev events`: volume
   per pool is `events --group <g> --event Swap --read "t0=token0()" --fixed t0 --by contract --sum "usd(abs(amount0), t0)"`
@@ -107,7 +110,7 @@ stderr (`{"error": …, "code": …}` on stdout with `--json`); the codes includ
   biggest swaps, deposits or liquidations), a filter, a breakdown per contract, day or sender. Tokens are named in
   the formula, `usd(abs(amount0), t0)`: a token is a 0x address or a view the contract answers with one (`token0()`,
   `asset()`), read from its source, never guessed from a field's name. Each listed event says who made it.
-- `contract-dev who <address|ENS|name> [--holdings]` — who it is; what it holds
+- `contract-dev who <address|ENS|name>` — who it is
 - `contract-dev read <contract> <function> [<arg>…] [--decimals 18] [--at <date>]` — call a view function, now or in the past.
   A lending market's or vault's rates, utilisation, what is supplied or borrowed: `contract-dev source <contract>` shows
   which functions compute them and in what unit, then `read` calls them
@@ -136,7 +139,7 @@ stderr (`{"error": …, "code": …}` on stdout with `--json`); the codes includ
 **Numbers over time**
 - `contract-dev metrics` · `metrics show <id|label> --range 30d` · `metrics export <id|label>` — tracked metrics and their history
 - `contract-dev track <address> <kind> …` — start tracking a value (`track help` lists the kinds)
-- `contract-dev tool run get_metrics --input '{"scope":{"kind":"group","group":"pools"},"rows":[{"kind":"transactions"},{"kind":"tvlUsd"}]}'`
+- `contract-dev tool run get_metrics --input '{"scope":{"kind":"group","group":"pools"},"rows":[{"kind":"transactions"},{"kind":"volumeInUsd"}]}'`
   — a report-shaped table, computed now
 - `contract-dev metric define "<name>" --group <g> --event <Event> [--read "<name>=<call>[.<output>] [on <target>] [with <args>]"]…
   [--field "<name>=<expr>"]… [--value "<expr>"] [--where "<rule>"] [--split contract|none|<name>] [--history <days>]
@@ -159,15 +162,20 @@ stderr (`{"error": …, "code": …}` on stdout with `--json`); the codes includ
   `metric events` lists them; `metric update <name> …` replaces parts of the definition (the history is read again);
   `metric delete <name>`.
 - `contract-dev metric monitor <metric> --name "<name>" --when "<formula>" [--per total|each] [--to <dest>]` — an alert
-  on an event metric, one formula: `value > 1000` on each new record (pages with its transaction), or the metric over a
+  on an event metric, one formula: `value > 1000` on each new record (pages with its transaction; `value` is always the
+  record's own number, and an event parameter itself called value is `Transfer.value`), or the metric over a
   window of 5 minutes to 7 days: `total(1h) > 50000` against a line, `total(1h) > before(1h) * 1.1` up more than 10% on
   the hour before (`total(24h) < before(24h) * 0.5`: down by half on the day before), `total(1h) > 3 * usual(1h, 7d)`
-  over three times its usual hour across a week. On a window rule of a split metric, `--per each` judges every contract
-  on its own and `--per total` the metric as a whole (one is required); a record rule (`value > 1000`) takes no `--per`.
+  over three times its usual hour across a week. `--per` goes only on a window rule (`total(…)`) of a split metric (event
+  metrics split by contract unless defined with `--split none`), or on a table or group metric's level: `--per each` judges
+  every contract on its own and `--per total` the metric as a whole, and one of them is required there. A record rule on
+  an event metric (`value > 1000`) never takes `--per`: each record already pages on its own, and `--per` is refused.
   Every part comes from the person; a missing one is refused.
 - `contract-dev metric table "<name>" --table "<table>" --column "<label>" [--among active]` — a number over a table's rows (an item
   table's rows (the total outstanding across open withdrawal rounds), recorded each minute from now, in dollars when the
-  column counts in a token; monitored with `metric monitor <name> --when "value > <n>" --per total --to <dest>`.
+  column counts in a token; monitored with `metric monitor <name> --when "value > <n>" --per total --to <dest>` (on a
+  table or group metric `value` is its level now, so `--per` applies when it is split; on an event metric `value` is each
+  record, with no `--per`).
 - ONE READ GRAMMAR everywhere (`track formula`, a group's formula column, a table's `--formula … ; call …`, a metric's
   `--read`): CALLS, each named, each a view (`totalAssets()`, `getFee(address) with 0x…`), a coin balance
   (`balance(self)`, `balance(0x…)`), or one storage word (`slot(self, 7)`; `slot(self, keccak(<key>, 3))` for a mapping
@@ -186,10 +194,14 @@ stderr (`{"error": …, "code": …}` on stdout with `--json`); the codes includ
   leveraged position's net yield needs beside its lending rates. Tables and event metrics have no earlier block to read.
 
 **Alerts** (every rule is one `--when` formula, in the language of metrics and tables)
-- `contract-dev monitors` · `monitor show <id|name>` · `alerts [--days 30]` · `alerts show <id>` (what fired: one row per alert, its evidence with `show`)
+- `contract-dev monitors` (each one's state, rule and where it sends) · `monitor show <id|name>` · `alerts [--days 30]` · `alerts show <id>` (what fired: one row per alert, its evidence with `show`)
 - `contract-dev monitor add --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]… [--name "…"]` — comparisons
   of the event's fields joined by and (`amount(value, emitter()) >= 1000 and to != 0x…`, `usd(abs(amount0), token0()) >
-  1000000`), one field's values joined by or (`to == 0xA or to == 0xB`); without `--when` every emission alerts
+  1000000`), one field's values joined by or (`to == 0xA or to == 0xB`); without `--when` every emission alerts. A
+  dollar line's token may be one of the event's own address fields when each event names its token (an Aave
+  Withdraw: `usd(amount, reserve) > 25000000`): the monitor is then judged on an event metric that prices every event
+  in its own token on the event's day, which `monitor add` makes (or reuses, when the workspace has the same one) and
+  names in its answer; with `--group` it is one monitor over the whole group, not one per contract
 - `contract-dev monitor add --group <group> --event <Name> [--when "<formula>"] [--name "…"]` — one monitor on each
   contract of the group that has the event, in one call (every upgrade, every pause, every large swap); contracts
   without the event are left out and listed.
@@ -203,6 +215,8 @@ stderr (`{"error": …, "code": …}` on stdout with `--json`); the codes includ
   — a group column on every member; `value > {Other column}` against another column
 - `contract-dev monitor delete <id|name>` — remove one that turned out noisy or wrong
 - `contract-dev channels` — where alerts can go: ids, labels (`#alerts`), kinds (`telegram`)
+- `contract-dev channels add telegram` / `channels add slack [--channel <name>]` — connect one (the person
+  opens a Telegram link or approves Slack once in a browser; the command waits for it)
 
 **Reports**
 - `contract-dev report list` · `report show <id|name>` · `report create … [--to <dest>]` · `report run <id|name>` ·
@@ -253,7 +267,7 @@ stderr (`{"error": …, "code": …}` on stdout with `--json`); the codes includ
   one calculated value per member; `--formula "{Held} < {Required}"` is a yes/no column, which a count roll-up counts.
 - `contract-dev group column add <group> --label "Total assets" --read "totalAssets()" --token "asset()" [--show usd]`
   — a column read on every contract of the group, refreshed every minute (a group monitor on it makes it a
-  tracked value per contract, read every block with history). `--token` states which token the
+  tracked value per contract, kept with history). `--token` states which token the
   reading is an amount of (an address, self, or a view each contract answers, like asset()); nothing is assumed, and
   without it the reading is the plain number.
 - `contract-dev group monitor add <group> --name "High utilisation" --column utilisation --when "value > 95"` — one
@@ -356,14 +370,15 @@ or single-quote the argument.
   out role grants and ossification: they fire on every governance vote, or never.
 - **Two to four protocol alerts**, set to fire rarely:
   - on a signature metric: `contract-dev metric monitor "<metric>" --name "<name>" --when "value > <n>"` (a single
-    record well above a routine one), or `--when "total(1h) > <n>" --per total` (the hour's total);
+    record well above a routine one; no `--per`), or `--when "total(1h) > <n>" --per total` (the hour's total);
   - on an open total (a table metric): `contract-dev metric monitor "<table metric>" --name "<name>" --when "value > <n>"
     --per total` (a level now: no window; `--per` only when it is split by contract);
   - a lending market turning delinquent or taking bad debt: a column on the amount, then a monitor on every member:
     `contract-dev group column add "<Group>" --label "<Name>" --read "<view>()"` and
     `contract-dev group monitor add "<Group>" --name "<name>" --column "<Name>" --when "value > 0"`;
   - on an event: `contract-dev monitor add --on "<contract>" --event <Event> --when "usd(abs(<field>), <token>) > <n>"`
-    or `--when "amount(<field>, <token>) >= <n>"`, the token the one `describe` shows the field counts in; several
+    or `--when "amount(<field>, <token>) >= <n>"`, the token the one `describe` shows the field counts in (on a
+    multi-asset protocol, the event's own token field: `usd(amount, reserve) > <n>`, priced event by event); several
     events with no condition in one command (`--event <A> --event <B>`);
   - a silence alert only on a contract that must never go quiet:
     `contract-dev monitor add --on "<contract>" --silence --event <Name> --for 36h`.
@@ -376,7 +391,7 @@ calculated reading, liquidations and large borrows; a vault, its share price and
 withdrawal queues, the requests as an table with what is outstanding, and the oracle report going quiet;
 governance, proposals as an table (Scheduled → Ready → Executed | Cancelled) and emergency actions.
 
-<!-- contract-dev:guide:start version=2026-10-22.1 -->
+<!-- contract-dev:guide:start version=2026-10-22.2 -->
 <!-- Written by `contract-dev skills install` from the server: the same guide the Slack and Telegram assistant reads. Edit it in the server's lib/agent/guide.ts, not here. -->
 
 ## How to answer
@@ -398,14 +413,15 @@ governance, proposals as an table (Scheduled → Ready → Executed | Cancelled)
 ## Which command answers which question
 
 - Something to look at or take away — "show me", "chart", "graph", "plot", "a table of", "open", "export", "download" — is the same query with save: pass save: {as, title} (the CLI's --save) on the query tool that answers it (`contract-dev query contracts`, `contract-dev query transfers`, `contract-dev query transactions`, `contract-dev query wallets`, `contract-dev query metric "<name>"`, `contract-dev query table "<name>"`, `contract-dev events <contract> --event <Name>`, `contract-dev history <contract> --event <Name>`, any of them); the answer is kept whole at a page in the app, drawn as a chart or a table, and the result's saved.url is the link to give, worded by saved.as ("Open chart", "Open table"). Three lifetimes, chosen by the person's words: asked ONCE ("show me", "give me", "what were") is a query, a snapshot under Queries; a NUMBER they want kept over time ("track", "keep an eye on", a chart that keeps growing, something to alert on) is a metric (`contract-dev metric define`); ROWS they want kept ("keep this", "a table of X I can come back to", "all our integrators", "every swap over $10k") is the same query saved with save.keep: true, a table under Tables that re-runs every time it is opened (saved.url then opens it there, worded "Open table"). A query the person later asks to keep is asked again with save.keep: true. A time series (a fold by day or week, readings over time) is always saved and linked: a column of numbers is not for chat. `as` left out, the rows pick the form: a fold by day is bars, by day and another column stacked bars, readings over time a line, else a table; as names one of bars, stacked, diverging (in and out), line, table. Never save a question that only wants a figure.
-- Anything the platform already keeps, asked as a table, is a query: `contract-dev query contracts` (the watched contracts, with a group's own columns when a group is given: "which markets hold less than they must", "rank our vaults by TVL", "total supplied across the markets"; with reads, a view read on every member now and priced in a stated token — {name: "cov", call: "coverageLiquidity()", token: "asset()"} — so a group ranks by a figure nobody saved as a column), `contract-dev query table "<name>"` (a table's rows: the biggest open rounds, how many are overdue, outstanding per market), `contract-dev query metric "<name>"` (what is behind a metric: its records or readings, per day or per contract, the largest; exact over every record of the window, however many: a fold by day or by the metric's split is read from its hourly totals, anything else streams every record), `contract-dev tool run query_metrics` (several event metrics split the same way laid side by side, one row per split value and one column per metric: the table of all our integrators with bridges, swaps, zaps and swap volume is four metrics split by integrator and this query; the top wallets by several measures is metrics split by sender; a metric split another way is refused by name, so define the columns first with `contract-dev metric define` split by the field), `contract-dev query transactions` (the transactions that reached the contracts: who, through what, which method, failed or not; a by over day, contract, wallet, method, status or via with count or a sum of {Value} is folded in the database over the whole window, exact at any size; listings return the newest 5,000 and `next.before` pages further back), `contract-dev query transfers` (what moved in and out of them, each leg priced on its own day; by day, contract, counterparty, wallet, token or direction with count or a sum of {USD} is exact over the whole window), `contract-dev query wallets` (the wallets behind a scope: new or returning, first and last seen, dollars in and out, with active and new counts for the window and the one before), `contract-dev query monitors`, `contract-dev query alerts`, `contract-dev query reports`. One grammar for all of them: where keeps rows, show works out a column usable below it, sort ranks (asc for smallest first), by with a measure folds rows into groups, total adds columns up over every matching row; columns are named by label in braces ({Held}) or by key, a status column holds its option name, durations read 24h and 7d. Prefer a query to describe_group, describe_table or describe_metric whenever the question is a filter, a ranking, a total or a count; the describes are for what a thing is and how it is set up.
+- Anything the platform already keeps, asked as a table, is a query: `contract-dev query contracts` (the watched contracts, with a group's own columns when a group is given: "which markets hold less than they must", "rank our vaults by total assets", "total supplied across the markets"; with reads, a view read on every member now and priced in a stated token — {name: "cov", call: "coverageLiquidity()", token: "asset()"} — so a group ranks by a figure nobody saved as a column), `contract-dev query table "<name>"` (a table's rows: the biggest open rounds, how many are overdue, outstanding per market), `contract-dev query metric "<name>"` (what is behind a metric: its records or readings, per day or per contract, the largest; exact over every record of the window, however many: a fold by day or by the metric's split is read from its hourly totals, anything else streams every record), `contract-dev tool run query_metrics` (several event metrics split the same way laid side by side, one row per split value and one column per metric: the table of all our integrators with bridges, swaps, zaps and swap volume is four metrics split by integrator and this query; the top wallets by several measures is metrics split by sender; a metric split another way is refused by name, so define the columns first with `contract-dev metric define` split by the field), `contract-dev query transactions` (the transactions that reached the contracts: who, through what, which method, failed or not; a by over day, contract, wallet, method, status or via with count or a sum of {Value} is folded in the database over the whole window, exact at any size; listings return the newest 5,000 and `next.before` pages further back), `contract-dev query transfers` (what moved in and out of them, each leg priced on its own day; by day, contract, counterparty, wallet, token or direction with count or a sum of {USD} is exact over the whole window), `contract-dev query wallets` (the wallets behind a scope: new or returning, first and last seen, dollars in and out, with active and new counts for the window and the one before), `contract-dev query monitors`, `contract-dev query alerts`, `contract-dev query reports`. One grammar for all of them: where keeps rows, show works out a column usable below it, sort ranks (asc for smallest first), by with a measure folds rows into groups, total adds columns up over every matching row; columns are named by label in braces ({Held}) or by key, a status column holds its option name, durations read 24h and 7d. Prefer a query to describe_group, describe_table or describe_metric whenever the question is a filter, a ranking, a total or a count; the describes are for what a thing is and how it is set up.
 - Rankings and comparisons of activity, "which market had the most action": `contract-dev query transactions` by contract with measure count (failed ones: with failed true), and the money that moved, `contract-dev query transfers` by contract with the sum of USD; last week against this week is the same query twice with days 7 and 14 read apart. Anything an event says is `contract-dev events <contract> --event <Name>`: a pool's swaps, volume or fees per pool is by contract with a measure over the swap's own fields (volume: sum of max(usd(abs(amount0), t0), usd(abs(amount1), t1)); fees: that times the fee the pool states, read with fee()), and a count of one event per contract per day is by [contract, day] with measure count.
-- Growth: `contract-dev query wallets` carries active and new wallets for the window and the one before (new: first seen since the ledger's history starts, which its history field states; while a contract's history is still being read, say so). TVL change in USD is a `contract-dev tool run get_metrics --input '{…}'` row (tvlChangeUsd).
+- Growth: `contract-dev query wallets` carries active and new wallets for the window and the one before (new: first seen since the ledger's history starts, which its history field states; while a contract's history is still being read, say so).
 - A question over recent events, of any shape: `contract-dev events <contract> --event <Name>` with formulas in the language of `contract-dev metric define`: sort ranks them ("the 10 biggest swaps by dollars": sort usd(abs(amount0), t0) with the read t0 = token0()), where filters, show adds columns, by groups them by contract, day, week, sender or a parameter and measure adds each group up ("swap volume per pool per day"). Tokens are named in the formula, each a 0x address or a view the contract's source answers it with (token0(), asset()), never read from a field's name; each event is priced on its own day.
 - The biggest single deposits, trades, withdrawals or liquidations and who made them: `contract-dev events <contract> --event <Name>` sorted by the event's dollar size, each amount priced in the token the contract's source names for it (`contract-dev source` on the event's emitter: asset(), token0()) (a pool Swap: sort max(usd(abs(amount0), t0), usd(abs(amount1), t1)) with the reads t0 = token0() and t1 = token1(), so it ranks on the side worth more; an Aave Supply: usd(amount, reserve), the token its log names). Each row says who made it: the wallet (the smart account when there is one), the signer when it differs, their names, and whether a searcher bot sent it.
-- One address, an ENS name or a name such as "Wintermute": who it is (`contract-dev who`), what it holds (`contract-dev tool run address_holdings --input '{"who":"…"}'`); what it did in these contracts is `contract-dev query transactions` with signer (every transaction it signed or acted through: the contract, the method, the outcome) and `contract-dev query transfers` with signer (what it moved, in dollars); a wallet of the workspace's own (a treasury, a deployer) is watched with `contract-dev watch wallet` on its chain and then read like a contract: contract = the wallet in every query, its transactions sent and received, its transfers in and out, a balance monitor on it; its events, `contract-dev events <contract> --event <Name>` with where on the event's address field or the sender. Its position inside a protocol (what it lends or borrows, its health) is read from that protocol's contract: `contract-dev source` finds the view that answers it and `contract-dev read <contract> <function>` reads it with the address.
+- One address, an ENS name or a name such as "Wintermute": who it is (`contract-dev who`); what it did in these contracts is `contract-dev query transactions` with signer (every transaction it signed or acted through: the contract, the method, the outcome) and `contract-dev query transfers` with signer (what it moved, in dollars); a wallet of the workspace's own (a treasury, a deployer) is watched with `contract-dev watch wallet` on its chain and then read like a contract: contract = the wallet in every query, its transactions sent and received, its transfers in and out, a balance monitor on it; its events, `contract-dev events <contract> --event <Name>` with where on the event's address field or the sender. Its position inside a protocol (what it lends or borrows, its health) is read from that protocol's contract: `contract-dev source` finds the view that answers it and `contract-dev read <contract> <function>` reads it with the address.
+- Burns and buybacks ("how much was burned", "the buyback"), when the docs or the person name no address: a token is burned to one of the standard burn addresses, the same on every EVM chain (Ethereum, Base, Arbitrum, Robinhood Chain…): 0x000000000000000000000000000000000000dEaD, which keeps what it is sent, so the burned total is the token's balanceOf there (`contract-dev track`) and each burn a Transfer to it (`contract-dev events <contract> --event <Name>` with where to == 0x000000000000000000000000000000000000dEaD); or 0x0000000000000000000000000000000000000000, where a burn usually lowers totalSupply instead (a Transfer to it, the supply tracked). Read both before asking; ask only when neither holds or receives any of the token.
 - The wallets behind a scope: `contract-dev query wallets` lists them (first and last seen, transactions, dollars in and out, new or returning); the biggest depositors are `contract-dev query transfers` by wallet with the sum of USD in; who traded or added liquidity the most by an event's own figures is `contract-dev events <contract> --event <Name>` by sender (or the event's own address field) with a measure over its fields, the token named in it.
-- Lending markets and vaults: their rates, utilisation, what is supplied and borrowed come from the contract's own views, never a built-in reader: `contract-dev source` shows which views compute them and in what unit, and `contract-dev read <contract> <function>` reads them now or at a past block, working the figure out with a formula; liquidations are `contract-dev events <contract> --event <Name>` over the liquidation event. Their deposits are lent out, so what a market holds (TVL) is not what lenders have in it: for deposits gained or lost over time, compare deposit and withdrawal events with `contract-dev history <contract> --event <Name>`.
+- Lending markets and vaults: their rates, utilisation, what is supplied and borrowed come from the contract's own views, never a built-in reader: `contract-dev source` shows which views compute them and in what unit, and `contract-dev read <contract> <function>` reads them now or at a past block, working the figure out with a formula; liquidations are `contract-dev events <contract> --event <Name>` over the liquidation event. Their deposits are lent out, so what a market holds is not what lenders have in it: for deposits gained or lost over time, compare deposit and withdrawal events with `contract-dev history <contract> --event <Name>`.
 - A figure no other tool covers ("what does totalBorrowed() return?", a rate a contract computes): `contract-dev source` shows how the contract computes it and `contract-dev read <contract> <function>` reads it, now or at a past block; give the formula with the result.
 - Further back than the last few weeks ("since launch", "all time", "this year"): `contract-dev history <contract> --event <Name>`, which reads as far back as the workspace's plan keeps history (its `window` says how many days, and `clamped` that the question asked for more: say so in one clause, never as a failure). `complete: false` means the read ran out of budget; say so. It sizes the firings with value, a formula over each firing's fields as `contract-dev events <contract> --event <Name>` takes one (usd(assets, a) with the read a = asset(), the token the contract's source names for the field), and counts each firing by the transaction's sender unless who names an address field of the event (a Wildcat lender is its account field; whoBy lists them).
 - Tables (withdrawal rounds, loans, requests: things that open and close inside contracts): `contract-dev table list` lists them, `contract-dev query table "<name>"` reads their rows, `contract-dev table show` summarises one over its whole history; `contract-dev table create` makes one, hidden from the Tables page when it is only to answer a question. Tables also lists the queries kept as tables (save.keep: true on a query tool): rows of any dataset, re-run on open; a table of rows keyed by a field across contracts (integrators, wallets, destinations) is one of those, never `contract-dev table create`, whose rows belong to one contract.
@@ -415,7 +431,7 @@ governance, proposals as an table (Scheduled → Ready → Executed | Cancelled)
 ## Setting things up
 
 - Every monitor's rule is one formula, when, in the language of metrics and tables; there is no other way to write one. An event monitor (`contract-dev monitor add`): comparisons of the event's fields joined by and, one field's values joined by or (to == 0xA or to == 0xB), a token amount as amount(field, token) >= 50 and a dollar line as usd(abs(field), token) > 1000000, the token a 0x address, emitter() for the contract itself or a view like token0() that the source names for the field; a field compared without amount() or usd() is in base units. A tracked value (`contract-dev monitor add <value> --when "<formula>"`): value < 25000, value > {Other value} * 1.05, value < previous * 0.99 (never falls 1% in a step), value < ago(24h) * 0.8 (down more than 20% on a day ago; ago() up to 90 days). A group column (`contract-dev group monitor add`): value < 1000000, value > {Other column}. A metric (`contract-dev metric monitor`): value > 1000 on each record of an event metric; a window, total(1h) > 5000000 (a line), total(1h) > before(1h) * 1.1 (up more than 10% on the hour before; total(24h) < before(24h) * 0.5 is down by half), total(1h) > 3 * usual(1h, 7d) (three times a normal hour over the last week); value > 50000 on an item or group metric. warn is the same comparison nearer the healthy side. Nothing is read from a field's name.
-- A monitor's threshold is in a token only when the formula names the field's token, never guessed from its name: "a deposit over 50,000 USDC" is amount(assets, asset()) > 50000 in when, the token the one the contract's source names for the field. An alert when one event is "worth more than $X" (a swap, a deposit, a withdrawal) is an event metric of that event's dollar size and an alert on it: `contract-dev metric define` with the size as its value, in the token the source names for each field (a swap: usd(abs(amount0), t0) with t0 = token0(), on a side the platform prices; a vault deposit: usd(assets, asset())), history 7 days unless the person wants more, reusing one the workspace already has (`contract-dev metric show` lists them); then `contract-dev metric monitor` with when value > X. Each event is priced at its own day's price in any token, and the same sizes chart and report. For a plain token amount, `contract-dev monitor add` with when usd(abs(field), token) > X, which turns the dollars into the token at today's price once. `contract-dev monitor add` saves at once and replays no history; how often a rule would have fired is a question for the events query with the same condition, never a replay. A monitor that turns out noisy or wrong is removed.
+- A monitor's threshold is in a token only when the formula names the field's token, never guessed from its name: "a deposit over 50,000 USDC" is amount(assets, asset()) > 50000 in when, the token the one the contract's source names for the field. An alert when one event is "worth more than $X" (a swap, a deposit, a withdrawal) is an event metric of that event's dollar size and an alert on it: `contract-dev metric define` with the size as its value, in the token the source names for each field (a swap: usd(abs(amount0), t0) with t0 = token0(), on a side the platform prices; a vault deposit: usd(assets, asset())), history 7 days unless the person wants more, reusing one the workspace already has (`contract-dev metric show` lists them); then `contract-dev metric monitor` with when value > X. When the token is one of the event's own fields (a lending pool's Withdraw names its reserve), `contract-dev monitor add` with when usd(amount, reserve) > X does both at once, reusing a metric that already prices it. Each event is priced at its own day's price in any token, and the same sizes chart and report. For a plain token amount, `contract-dev monitor add` with when usd(abs(field), token) > X, which turns the dollars into the token at today's price once. `contract-dev monitor add` saves at once and replays no history; how often a rule would have fired is a question for the events query with the same condition, never a replay. A monitor that turns out noisy or wrong is removed.
 - "Let me know whenever", "every time", "tell me when" something happens is news, not trouble: an each-time report (`contract-dev report create` with cadence each), never a monitor. What it listens for is its trigger: an event on the scope's contracts (trigger {kind: event, event: "Swap", value: usd(amount0, token0())}: the report keeps an event metric of its own, off the lists), a method called (kind call, method: "transfer(address,uint256)", with a scope), a tracked value moving (kind value, with {value} and {prev}), a row of a table opening or finishing (kind row, table, on), a contract joining or leaving a group (kind member, group, on), or a monitor firing or recovering (kind monitor: information about monitoring, never a monitor made for the report). An event metric the workspace already has can be followed directly (metric + when). Give when only when the person says which ones ("over $10K": value >= 10000), a message in the person's words over what happened, and digestMinutes when they want them bundled ("every hour, the swaps"). It saves at once and sends on every new match from then on, never for the history; how many it would have sent is only for when the person asks, and only an event metric can say. Call it a report, not an alert: a monitor is for "alert me if", something wrong, with a level.
 - "Every 10 minutes, the current buffer", "each hour, the open total": a scheduled report with cadence interval (`contract-dev report create`: everyMinutes, rows; compare false for the figures alone, onlyWhen to send only when a condition over the rows holds, like {Breached markets} > 0); everyMinutes is any whole number of minutes from 1 ("every minute") to a week. The columns are windows the person chooses, in order (columns: ["24h", "7d", "30d"] is the daily default, ["7d", "30d", "90d"] weekly, ["24h"] interval; any duration from 1m: "1m", "15m", "6h", "2w", "1y"); every row prints each, the change against the window before follows the first, and a column past the plan's history is refused. A row of kind formula carries the read grammar (calls as `contract-dev track formula` takes them and an expression; a token for dollars) on every contract in the scope, summed, so a value need not be tracked to be reported. A webhook destination gets every report as JSON.
 - An each-time message names who acted as the protocol does. A swap's trader is the signer, {name(sender())}: the pool's own sender and recipient are routers. A supply, deposit, borrow, repay, withdrawal or liquidation usually names its account in the event: which parameter it is, you read from the contract's source (where the event is emitted), never from its name alone, and say which you used; the signer only when the person asks who sent it, or when the source does not settle it. A figure the person asks about ("how much", "which asset") is the amount in its token, its symbol and its dollars: {amount(assets, t)} {symbol(t)} ({usd(assets, t)}), t a read like asset() or the token the event names; a usd() figure prints as dollars by itself.
@@ -453,7 +469,7 @@ governance, proposals as an table (Scheduled → Ready → Executed | Cancelled)
 ## Vocabulary
 
 - Report row kinds (`report --row`, `get_metrics` rows): `activeWallets`, `transactions`, `revertedShare`,
-  `volumeInUsd`, `volumeOutUsd`, `tvlUsd`, `alertsOpened`, `eventCount:<event>`, `trackedMetric:<id|label>`,
+  `volumeInUsd`, `volumeOutUsd`, `alertsOpened`, `eventCount:<event>`, `trackedMetric:<id|label>`,
   `customMetric:<name>`, and `"formula:<Label>=<expr>; call <name>=<call>…; token <t>; show usd"` (the read
   grammar on every contract in the scope, summed, with its change against the start of the window).
 - Activity (`query transactions|transfers|wallets`, the activity ledger): `--by` takes `day`, `contract`, `wallet`,
@@ -467,18 +483,19 @@ governance, proposals as an table (Scheduled → Ready → Executed | Cancelled)
   reports take `--scope workspace|tag:<group>|<contract>`.
 - An alert's `--when` is one formula: `==`, `!=`, `>`, `>=`, `<`, `<=` joined by `and`, one field's values joined
   by `or` (`to == 0xA or to == 0xB`); a field is in base units unless the formula names its token
-  (`amount(assets, asset()) >= 12500`, `usd(abs(amount0), token0()) > 1000000`).
+  (`amount(assets, asset()) >= 12500`, `usd(abs(amount0), token0()) > 1000000`, or a token field of the event:
+  `usd(amount, reserve) > 25000000`).
 
 ## Limits
 
 - A Free workspace reads 7 days of history and a Team workspace a year, on every command (`events`, `history`,
-  `tvl`, `get_metrics`, `query transactions|transfers|wallets`); a longer window is served from where the history
+  `get_metrics`, `query transactions|transfers|wallets`); a longer window is served from where the history
   starts and the output says so.
 - `history` on a contract that fires thousands of times a day covers its newest stretch and says from when.
 - Event metrics, event monitors, each-time reports and tables run on every watchable chain. Call-level data is
   not collected for now: a silence of calls (`--silence` without `--event`, or with `--method`) and the `--on-call`
   report trigger answer "Calls not collected"; follow the event a method emits instead.
-- An event alert's dollar line (`usd(field, token)` in `--when`) is turned into the token at today's price, once; an event metric's `usd()` prices every event at its own day's price.
+- An event alert's dollar line (`usd(field, token)` in `--when`) with a fixed token (a 0x address, `emitter()`, a view) is turned into the token at today's price, once; with the token one of the event's own fields (`usd(amount, reserve)`) every event is priced in its own token at its own day's price, on an event metric `monitor add` makes or reuses, as an event metric's `usd()` always is.
 - A contract must be watched before anything can read it: `contract-dev watch <address> --chain <id>`; a wallet (an address with no code) with `contract-dev watch wallet <address> --chain <id> [--group <g>]` — a group holds contracts or wallets, never both.
 - A factory with no verified source cannot be expanded (its events cannot be read); set an ABI on it first
   (`contracts set-abi`), or list its children by hand.

@@ -42,7 +42,7 @@ Flags (create):
                             (--chain <id> picks between the same address on two chains)
   --add-row <kind>[:<param>]  A row added after the template's (or --row's): --template daily --add-row customMetric:"Swap fees"
   --row <kind>[:<param>]    A row, in order; repeat for more. Given, they replace the template's rows. Kinds:
-                            activeWallets · transactions · revertedShare · volumeInUsd · volumeOutUsd · tvlUsd ·
+                            activeWallets · transactions · revertedShare · volumeInUsd · volumeOutUsd ·
                             alertsOpened · eventCount:<event name> · trackedMetric:<id or label> ·
                             customMetric:<event or item metric name> ·
                             "formula:<Label>=<expr>[; call <name>=<call>]…[; token <t>][; show usd]" (the read grammar on

@@ -16,7 +16,7 @@ Usage:
   contract-dev find <query>                         What a name points at: contracts (by name, address or a kind word:
                                                     pools, vaults, tokens, nfts, proxies), groups, metrics, monitors,
                                                     reports, destinations
-  contract-dev describe <contract> [--chain <id>]   What a watched contract is: kinds, standards, groups, TVL, owner,
+  contract-dev describe <contract> [--chain <id>]   What a watched contract is: kinds, standards, groups, owner,
                                                     implementation, token; its events and write functions
 
 Examples:
@@ -59,7 +59,7 @@ export function windowFlag(flags: ParsedFlags, fallback: Range = '7d'): Range {
 // ── find ──
 
 export interface FindResult {
-  contracts: Array<{ chainId: number; address: string; name: string; groups: string[]; kinds: string[]; standards: string[]; tvlUsd: number | null }>;
+  contracts: Array<{ chainId: number; address: string; name: string; groups: string[]; kinds: string[]; standards: string[] }>;
   groups: Array<{ group: string; contracts: number }>;
   metrics: Array<{ id: string; label: string | null; kind: string; chainId: number; address: string }>;
   monitors: Array<{ id: string; name: string; kind: string | null; status: string }>;
@@ -80,7 +80,6 @@ export function findSections(r: FindResult): string[][] {
     { header: 'Address', value: (c) => c.address },
     { header: 'Kinds', value: (c) => (c.kinds ?? []).join(', ') },
     { header: 'Groups', value: (c) => (c.groups ?? []).join(', '), max: 32 },
-    { header: 'TVL', value: (c) => fmtUsd(c.tvlUsd), align: 'right' },
   ]);
   section('Groups', r.groups, [
     { header: 'Group', value: (g) => g.group },
@@ -155,7 +154,6 @@ export interface Described {
   kinds: string[];
   standards: string[];
   groups: string[];
-  tvlUsd: number | null;
   owner: string | null;
   implementation: string | null;
   token: { symbol: string; decimals: number | null } | null;
@@ -175,7 +173,6 @@ export function describeLines(d: Described, calleeNames = new Map<string, string
     ['Kinds', (d.kinds ?? []).join(', ') || DASH],
     ['Standards', (d.standards ?? []).map((s) => STANDARD_LABEL[s] ?? s).join(', ') || 'none detected'],
     ['Groups', (d.groups ?? []).join(', ') || 'none'],
-    ['TVL', fmtUsd(d.tvlUsd)],
     ['Owner', d.owner ?? DASH],
   ];
   if (d.implementation) facts.push(['Implementation', d.implementation]);
@@ -243,7 +240,7 @@ export async function describeCommand(args: string[]): Promise<Described | void>
 
 // ── compare ──
 
-const MEASURES = ['transactions', 'activeWallets', 'volumeInUsd', 'volumeOutUsd', 'tvlUsd', 'revertedShare'] as const;
+const MEASURES = ['transactions', 'activeWallets', 'volumeInUsd', 'volumeOutUsd', 'revertedShare'] as const;
 type Measure = (typeof MEASURES)[number];
 
 export interface CompareResult {

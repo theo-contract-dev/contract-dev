@@ -40,7 +40,8 @@ describe('monitor add', () => {
         await monitorCommand(['add', 'Treasury · Native balance', '--when', 'value < 25000', '--warn', 'value < 30000', '--to', 'telegram,#alerts', '--name', 'Floor', '--max-age', '900']);
         expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tools/add_value_monitor']);
         expect(calls[0].body.input).toEqual({ value: 'Treasury · Native balance', when: 'value < 25000', warn: 'value < 30000', to: ['telegram', '#alerts'], name: 'Floor', maxAgeSec: 900 });
-        expect(printed()[0]).toBe('Created monitor "Treasury · Native balance" (inv1): treasury_native_balance >= 25000, warn at treasury_native_balance >= 30000');
+        // the rule as written, the way it alerts: the stored rule is the healthy side, which reads backwards
+        expect(printed()[0]).toBe('Created monitor "Treasury · Native balance" (inv1): alerts when value < 25000, warns when value < 30000');
     });
 
     it('another value, the previous reading and a reading a while ago are formulas too', async () => {
@@ -100,6 +101,69 @@ describe('channels / --to resolution', () => {
     });
 });
 
+describe('channels add', () => {
+    useEnvAuth();
+    beforeEach(() => {
+        process.env.CONTRACT_DEV_POLL_MS = '1';
+    });
+    afterEach(() => {
+        delete process.env.CONTRACT_DEV_POLL_MS;
+    });
+
+    it('telegram prints the two links, then waits for the new chat to appear', async () => {
+        let looks = 0;
+        const joined = { id: 'ch9', kind: 'telegram', enabled: true, label: 'Ops chat', target: '-100999' };
+        const calls = mockApi({
+            'GET /api/cli/alert-channels': () => ({ payload: { channels: looks++ < 2 ? channels : [...channels, joined] } }),
+            'POST /api/cli/alert-channels/telegram': () => ({ payload: { expiresAt: new Date(Date.now() + 60_000).toISOString(), directUrl: 'https://t.me/bot?start=tok', groupUrl: 'https://t.me/bot?startgroup=tok' } }),
+        });
+        const r = (await channelsCommand(['add', 'telegram'])) as { id: string };
+        expect(r.id).toBe('ch9');
+        expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+        const out = printed().join('\n');
+        expect(out).toMatch(/a chat with the bot {3}https:\/\/t\.me\/bot\?start=tok/);
+        expect(out).toMatch(/a group {15}https:\/\/t\.me\/bot\?startgroup=tok/);
+        expect(out).toMatch(/Connected telegram Ops chat \(ch9\)/);
+    });
+
+    it('slack with no workspace connects one in the browser, then adds the channel by name', async () => {
+        let looks = 0;
+        const ws = { id: 'ins1', teamName: 'Acme', connectedAt: '2026-10-22T00:00:00Z' };
+        const calls = mockApi({
+            'GET /api/cli/slack': () => ({ payload: { available: true, workspaces: looks++ < 2 ? [] : [ws] } }),
+            'POST /api/cli/slack': () => ({ payload: { url: 'https://slack.com/oauth/v2/authorize?state=s' } }),
+            'GET /api/cli/slack/ins1/channels': () => ({ payload: { teamName: 'Acme', channels: [{ id: 'C1', name: 'alerts', isPrivate: false, isMember: false }] } }),
+            'POST /api/cli/alert-channels': () => ({ status: 201, payload: { channel: { id: 'ch7', kind: 'slack', enabled: true, label: '#alerts', target: 'Acme' }, created: true } }),
+        });
+        await channelsCommand(['add', 'slack', '--channel', '#Alerts', '--no-browser']);
+        expect(calls.find((c) => c.method === 'POST' && c.path === '/api/cli/alert-channels')?.body).toEqual({ kind: 'slack', installId: 'ins1', channelId: 'C1' });
+        const out = printed().join('\n');
+        expect(out).toMatch(/https:\/\/slack\.com\/oauth\/v2\/authorize\?state=s/);
+        expect(out).toMatch(/Connected the Slack workspace Acme\./);
+        expect(out).toMatch(/Added #alerts in Acme \(ch7\)/);
+    });
+
+    it('slack with a workspace and no channel lists the channels it can add', async () => {
+        const calls = mockApi({
+            'GET /api/cli/slack': () => ({ payload: { available: true, workspaces: [{ id: 'ins1', teamName: 'Acme', connectedAt: '2026-10-22T00:00:00Z' }] } }),
+            'GET /api/cli/slack/ins1/channels': () => ({ payload: { teamName: 'Acme', channels: [{ id: 'C1', name: 'alerts', isPrivate: false, isMember: true }, { id: 'C2', name: 'treasury', isPrivate: true, isMember: true }] } }),
+        });
+        await channelsCommand(['add', 'slack']);
+        expect(calls.some((c) => c.method === 'POST')).toBe(false);
+        expect(printed()).toEqual(['Channels in Acme that can be added:', '  #alerts', '  #treasury  (private)', 'Add one with: contract-dev channels add slack --channel <name>']);
+    });
+
+    it('several connected Slack workspaces need --workspace, and an unknown channel says how to find it', async () => {
+        mockApi({
+            'GET /api/cli/slack': () => ({ payload: { available: true, workspaces: [{ id: 'a', teamName: 'Acme', connectedAt: '' }, { id: 'b', teamName: 'Beta', connectedAt: '' }] } }),
+            'GET /api/cli/slack/b/channels': () => ({ payload: { teamName: 'Beta', channels: [] } }),
+        });
+        await expect(channelsCommand(['add', 'slack', '--channel', 'alerts'])).rejects.toThrow(/Several Slack workspaces are connected \(Acme, Beta\): name one with --workspace/);
+        await expect(channelsCommand(['add', 'slack', '--workspace', 'beta', '--channel', 'alerts'])).rejects.toThrow(/No channel #alerts in Beta can be added.*\/invite @contract\.dev/);
+        await expect(channelsCommand(['add', 'discord'])).rejects.toThrow(/Discord is connected in the app/);
+    });
+});
+
 describe('monitors / monitor show / set / lifecycle', () => {
     useEnvAuth();
 
@@ -114,10 +178,30 @@ describe('monitors / monitor show / set / lifecycle', () => {
     );
     const list = { 'GET /api/mainnet/invariants': () => ({ payload: { invariants: [{ ...existing, openIncident: { id: 'inc1', openedAt: '2026-09-16T10:00:00Z', level: 'alert', peakLevel: 'alert' }, incidents30d: 1 }] } }) };
 
-    it('monitors prints status, rule and the open episode', async () => {
+    it('monitors prints status, rule, the open episode and where each one sends', async () => {
+        mockApi({ ...list, 'GET /api/cli/alert-channels': () => ({ payload: { channels } }) });
+        await monitorsCommand();
+        expect(printed()[0]).toMatch(/^warming {3}inv1 {2}Treasury · Native balance {2}— {2}treasury_native_balance >= 25000 {2}OPEN alert since 2026-09-16T10:00:00Z {2}sends to: telegram -100123$/);
+        // destinations that cannot be listed just now are counted, never dropped
         mockApi(list);
         await monitorsCommand();
-        expect(printed()[0]).toMatch(/^warming {3}inv1 {2}Treasury · Native balance {2}— {2}treasury_native_balance >= 25000 {2}OPEN alert since 2026-09-16T10:00:00Z$/);
+        expect(printed().pop()).toMatch(/ {2}sends to: 1 destination$/);
+    });
+
+    it('monitors and show say the rule the way it alerts when the server words it, not the healthy side it checks', async () => {
+        const worded = { ...existing, exprText: 'tvl >= tvl 1h ago × 0.95', alertsWhen: { critical: 'TVL < TVL 1h ago × 0.95', warning: 'Below 30,000' } };
+        mockApi({
+            'GET /api/mainnet/invariants': () => ({ payload: { invariants: [worded, { ...worded, id: 'inv2', alertsWhen: { critical: 'Emitted', warning: null }, channelIds: [] }] } }),
+            'GET /api/mainnet/invariants/inv1': () => ({ payload: { invariant: worded } }),
+            'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
+        });
+        await monitorsCommand();
+        expect(printed()[0]).toMatch(/— {2}alerts when TVL < TVL 1h ago × 0\.95; warns when below 30,000 {2}sends to: telegram -100123$/);
+        expect(printed()[1]).toMatch(/— {2}alerts when emitted {2}sends to: nobody$/);
+        (console.log as jest.Mock).mockClear();
+        await monitorCommand(['show', 'inv1']);
+        expect(printed()).toEqual(expect.arrayContaining(['  alerts when: TVL < TVL 1h ago × 0.95', '  warns when:  Below 30,000']));
+        expect(printed().join('\n')).not.toMatch(/tvl >= tvl/);
     });
 
     it('show resolves by name and prints inputs with live values, destinations, episodes', async () => {
@@ -149,7 +233,7 @@ describe('monitors / monitor show / set / lifecycle', () => {
             ['/api/mainnet/tools/set_value_monitor', { input: { monitor: 'inv1', when: 'value < 20000' } }],
             ['/api/mainnet/invariants/inv1', { channelIds: ['ch3'] }],
         ]);
-        expect(printed().at(-1)).toBe('Updated "Treasury · Native balance": treasury_native_balance >= 20000');
+        expect(printed().at(-1)).toBe('Updated "Treasury · Native balance": alerts when value < 20000');
     });
 
     it('set --warn alone sets the warning tier; --no-warn drops it; nothing to change, a bare number or another flag is refused', async () => {
@@ -159,8 +243,9 @@ describe('monitors / monitor show / set / lifecycle', () => {
             'PATCH /api/mainnet/invariants/inv1': (c) => ({ payload: { invariant: { ...existing, ...c.body } } }),
         });
         await monitorCommand(['set', 'inv1', '--warn', 'value < 30000']);
-        expect(printed().at(-1)).toBe('Updated "Treasury · Native balance": treasury_native_balance >= 25000, warn at treasury_native_balance >= 30000');
+        expect(printed().at(-1)).toBe('Updated "Treasury · Native balance": warns when value < 30000');
         await monitorCommand(['set', 'inv1', '--no-warn', '--no-max-age']);
+        expect(printed().at(-1)).toBe('Updated "Treasury · Native balance": no warning');
         expect(calls.filter((c) => c.method !== 'GET').map((c) => [c.method, c.body])).toEqual([
             ['POST', { input: { monitor: 'inv1', warn: 'value < 30000' } }],
             ['POST', { input: { monitor: 'inv1', noWarn: true } }],

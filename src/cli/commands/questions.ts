@@ -12,7 +12,6 @@ const HELP = `contract-dev who / read — answers the dashboard has no page for
 Usage:
   contract-dev who <address|ENS|name> [--chain <id>] [--limit <n>]
                                        Who it is: its name, kind, the contracts it touches here
-  contract-dev who <address|ENS|name> --holdings      What it holds
   contract-dev read <contract> <function> [<arg>…] [--chain <id>] [--decimals <n>] [--at <date|time> | --block <n>]
                                        Call a view function, now or at a past block: getUtilization, balanceOf 0x…
 
@@ -22,7 +21,7 @@ The biggest single events (deposits, swaps, liquidations) and who made them: \`c
 A contract's whole history (every firing since launch) is \`contract-dev history\`.
 
 Examples:
-  contract-dev who Wintermute --holdings
+  contract-dev who Wintermute
   contract-dev read "Withdrawal Queue" unfinalizedStETH --decimals 18
 `;
 
@@ -43,13 +42,15 @@ export async function whoCommand(args: string[]): Promise<unknown> {
   const flags = parseFlags(args);
   const who = (flags._ as string[]).join(' ').trim();
   if (!who) throw new Error('Say who: an address, an ENS name or a name, like contract-dev who Wintermute.');
-  const holdings = flag(flags, 'holdings') === 'true';
-  const tool = holdings ? 'address_holdings' : 'describe_address';
+  // what an address holds left with holdings and TVL (2026-10-22): say so rather than ignore the flag
+  if (flag(flags, 'holdings') !== undefined) {
+    throw new Error('--holdings is no longer offered. To read one balance: contract-dev read <token> balanceOf <address>.');
+  }
   const input: Record<string, unknown> = { who };
   const chainId = chainFlag(flags);
-  if (chainId !== undefined && tool === 'describe_address') input.chainId = chainId;
+  if (chainId !== undefined) input.chainId = chainId;
   if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 10, 25);
-  const r = await runTool(requireAuth(), tool, input);
+  const r = await runTool(requireAuth(), 'describe_address', input);
   print(r);
   return r;
 }

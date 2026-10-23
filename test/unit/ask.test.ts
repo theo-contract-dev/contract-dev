@@ -16,8 +16,8 @@ describe('find', () => {
 
     const found = {
         contracts: [
-            { chainId: 1, address: STETH, name: 'Lido: stETH', groups: ['lido'], kinds: ['token', 'proxy'], standards: ['erc20'], tvlUsd: 12_400_000_000 },
-            { chainId: 42161, address: POOL, name: 'ETH/USDC pool', groups: [], kinds: ['pool'], standards: [], tvlUsd: null },
+            { chainId: 1, address: STETH, name: 'Lido: stETH', groups: ['lido'], kinds: ['token', 'proxy'], standards: ['erc20'] },
+            { chainId: 42161, address: POOL, name: 'ETH/USDC pool', groups: [], kinds: ['pool'], standards: [] },
         ],
         groups: [{ group: 'lido', contracts: 2 }],
         metrics: [{ id: 'm1', label: 'stETH supply', kind: 'totalSupply', chainId: 1, address: STETH }],
@@ -35,9 +35,9 @@ describe('find', () => {
         expect(calls[0].body).toEqual({ input: { query: 'lido', limit: 20 } });
         const out = printed();
         expect(out[0]).toBe('Contracts (2)');
-        expect(out[1]).toMatch(/^ {2}Chain {2,}Name {2,}Address {2,}Kinds {2,}Groups {2,}TVL$/);
-        expect(out[2]).toMatch(new RegExp(`^ {2}Ethereum {2,}Lido: stETH {2,}${STETH} {2,}token, proxy {2,}lido {2,}\\$12\\.40B$`));
-        expect(out[3]).toMatch(new RegExp(`^ {2}Arbitrum {2,}ETH/USDC pool {2,}${POOL} {2,}pool {2,}—$`));
+        expect(out[1]).toMatch(/^ {2}Chain {2,}Name {2,}Address {2,}Kinds {2,}Groups$/);
+        expect(out[2]).toMatch(new RegExp(`^ {2}Ethereum {2,}Lido: stETH {2,}${STETH} {2,}token, proxy {2,}lido$`));
+        expect(out[3]).toMatch(new RegExp(`^ {2}Arbitrum {2,}ETH/USDC pool {2,}${POOL} {2,}pool\\s*$`));
         expect(out[4]).toBe('');
         expect(out[5]).toBe('Groups (1)');
         expect(out[7]).toMatch(/^ {2}lido {2,}2$/);
@@ -71,7 +71,6 @@ describe('describe', () => {
         kinds: ['token', 'proxy'],
         standards: ['erc20', 'eip1967'],
         groups: ['lido', 'core'],
-        tvlUsd: 12_400_000_000,
         owner: '0x2e59a20f205bb85a89c53f1936454680651e618e',
         implementation: '0x17144556fd3424edc8fc8a4c940b2d04936d17eb',
         token: { symbol: 'stETH', decimals: 18 },
@@ -95,35 +94,34 @@ describe('describe', () => {
         const result = await run(['describe', 'steth', '--chain', 'ethereum']);
         expect(calls[0].body).toEqual({ input: { contract: 'steth', chainId: 1 } });
         const out = printed();
-        expect(out.slice(0, 11)).toEqual([
+        expect(out.slice(0, 10)).toEqual([
             'Lido: stETH',
             '  Chain           Ethereum',
             `  Address         ${STETH}`,
             '  Kinds           token, proxy',
             '  Standards       ERC-20, EIP-1967 proxy',
             '  Groups          lido, core',
-            '  TVL             $12.40B',
             '  Owner           0x2e59a20f205bb85a89c53f1936454680651e618e',
             '  Implementation  0x17144556fd3424edc8fc8a4c940b2d04936d17eb',
             '  Token           stETH · 18 decimals',
             '',
         ]);
-        expect(out[11]).toBe('Events (2)');
-        expect(out[12]).toMatch(/^ {2}Name {2,}Fields$/);
-        expect(out[13]).toMatch(/^ {2}Transfer {2,}from:address, to:address, value:uint256 \(stETH\)$/);
-        expect(out[14]).toMatch(/^ {2}Submitted {2,}sender:address, amount:uint256 \(ETH\), referral:address$/);
-        expect(out[16]).toBe('Write functions (20 of 25)');
-        expect(out[17]).toBe('  fn0(uint256)');
-        expect(out[36]).toBe('  fn19(uint256)');
-        expect(out[38]).toBe('Calls (last 7d): 1 contract · 1,204 calls · 2 reverts');
-        expect(out[39]).toMatch(/^ {2}Calls into {2,}Method {2,}Type {2,}Calls {2,}Reverts {2,}Last {2,}Address$/);
-        expect(out[40]).toMatch(new RegExp(`^ {2}Chainlink: ETH/USD {2,}latestRoundData {2,}staticcall {2,}1,204 {2,}2 {2,}1h {2,}${ORACLE}$`));
-        expect(out).toHaveLength(41);
+        expect(out[10]).toBe('Events (2)');
+        expect(out[11]).toMatch(/^ {2}Name {2,}Fields$/);
+        expect(out[12]).toMatch(/^ {2}Transfer {2,}from:address, to:address, value:uint256 \(stETH\)$/);
+        expect(out[13]).toMatch(/^ {2}Submitted {2,}sender:address, amount:uint256 \(ETH\), referral:address$/);
+        expect(out[15]).toBe('Write functions (20 of 25)');
+        expect(out[16]).toBe('  fn0(uint256)');
+        expect(out[35]).toBe('  fn19(uint256)');
+        expect(out[37]).toBe('Calls (last 7d): 1 contract · 1,204 calls · 2 reverts');
+        expect(out[38]).toMatch(/^ {2}Calls into {2,}Method {2,}Type {2,}Calls {2,}Reverts {2,}Last {2,}Address$/);
+        expect(out[39]).toMatch(new RegExp(`^ {2}Chainlink: ETH/USD {2,}latestRoundData {2,}staticcall {2,}1,204 {2,}2 {2,}1h {2,}${ORACLE}$`));
+        expect(out).toHaveLength(40);
         expect(result).toEqual(described);
     });
 
     it('a contract without an ABI says so in the facts and has no events or functions block; a dash for an unknown owner', async () => {
-        mockApi({ 'POST /api/mainnet/tools/describe_contract': () => ok({ ...described, standards: [], groups: [], tvlUsd: 0, owner: null, implementation: null, token: null, events: null, functions: null, calls: null }) });
+        mockApi({ 'POST /api/mainnet/tools/describe_contract': () => ok({ ...described, standards: [], groups: [], owner: null, implementation: null, token: null, events: null, functions: null, calls: null }) });
         await describeCommand([STETH]);
         const out = printed();
         expect(out.slice(1)).toEqual([
@@ -132,7 +130,6 @@ describe('describe', () => {
             '  Kinds      token, proxy',
             '  Standards  none detected',
             '  Groups     none',
-            '  TVL        $0',
             '  Owner      —',
             `  ABI        none known (add one with contract-dev contracts set-abi ${STETH} --abi <file>)`,
         ]);

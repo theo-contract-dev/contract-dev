@@ -29,7 +29,7 @@ Query (with --event): the events themselves, worked through formulas, in the lan
                       [--by contract|day|week|sender|<name>]… [--sum|--avg|--min|--max "<expr>" | --count]
                       [--window 1h|24h|7d|30d|90d] [--limit <n>]
   --sort ranks the events, largest first (newest first without it); --by groups them and --sum, --avg,
-  --min, --max or --count adds each group up. Tokens are named in the formula: usd(raw, token),
+  --min, --max or --count adds each group up (without --by, the whole window: one total). Tokens are named in the formula: usd(raw, token),
   amount(raw, token), the token an address, a read or a parameter (\`contract-dev describe <contract>\` shows each
   field's token as checked against the contract's transactions). Each event is priced on its own day. Each listed
   event says who made it: the wallet (a smart account when there is one), the signer it came via, a searcher bot.

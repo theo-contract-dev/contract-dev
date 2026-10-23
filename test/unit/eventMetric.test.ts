@@ -1,5 +1,5 @@
 import { run } from '../../src/cli/index';
-import { mockApi, useEnvAuth } from './_mockApi';
+import { mockApi, useEnvAuth, printed } from './_mockApi';
 import { parseRead, definitionFrom } from '../../src/cli/commands/eventMetric';
 import { parseFlags } from '../../src/cli/commands/_args';
 
@@ -53,5 +53,33 @@ describe('metric monitor without a destination', () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/add_metric_monitor': () => ({ payload: { ok: true, result: { monitor: { id: 'mm1', name: 'Large swap fee' } }, ms: 3 } }) });
         await run(['metric', 'monitor', 'Swap fees', '--name', 'Large swap fee', '--when', 'value > 5000']);
         expect(calls[0].body.input).toEqual({ metric: 'Swap fees', name: 'Large swap fee', when: 'value > 5000' });
+    });
+});
+
+describe('track formula --preview', () => {
+    useEnvAuth();
+    const DSA = '0x9600a48ed0f931d0c422d574e3275a90d8b22745';
+    const args = ['track', 'formula', DSA, '--label', 'wstETH APR', '--call', 'r=stEthPerToken() on 0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0 decimals 18', '--value', '(r - ago(r, 7d)) / ago(r, 7d) * 365 / 7 * 100'];
+    it('asks the tool for a preview and prints the value, each call and each ago() reading; nothing is saved', async () => {
+        const calls = mockApi({
+            'POST /api/mainnet/tools/track_formula': () => ({ payload: { ok: true, result: {
+                preview: true,
+                value: { label: 'wstETH APR', contract: 'Instadapp DSA', formula: '(r - ago(r, 7d)) / ago(r, 7d) * 365 / 7 * 100' },
+                now: { value: '2.223871', calls: [{ name: 'r', answer: '1.2468' }], earlier: [{ name: 'r', ago: '7d', answer: '1.2463' }] },
+                note: 'Nothing saved.',
+            }, ms: 3 } }),
+        });
+        await run([...args, '--preview']);
+        expect(calls[0].body.input).toMatchObject({ contract: DSA, label: 'wstETH APR', preview: true });
+        const out = printed().join('\n');
+        expect(out).toMatch(/^Preview: nothing saved\./);
+        expect(out).toMatch(/Value now: 2\.223871/);
+        expect(out).toMatch(/r, 7d ago\s+1\.2463/);
+    });
+    it('without --preview it saves (no preview in the input); an unknown flag is refused, never ignored', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/track_formula': () => ({ payload: { ok: true, result: { saved: true }, ms: 3 } }) });
+        await run(args);
+        expect(calls[0].body.input.preview).toBeUndefined();
+        await expect(run([...args, '--dry-run'])).rejects.toThrow(/Unknown flag --dry-run for track formula/);
     });
 });

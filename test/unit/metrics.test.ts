@@ -146,12 +146,10 @@ describe('track', () => {
         await expect(trackCommand([VAULT, 'function', '--function', 'balanceOf(address)'])).rejects.toThrow(/takes 1 argument, got 0/);
     });
 
-    it('tvl sends no label or params — the server names the built-in', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tracked-metrics': (c) => ({ status: 200, payload: { trackedMetric: { id: 'm9', chainId: 1, address: VAULT, kind: 'tvlUsd', label: 'Treasury · TVL' }, created: false } }) });
-        await trackCommand([VAULT, 'tvl']);
-        expect(calls).toHaveLength(1);
-        expect(calls[0].body).toEqual({ chainId: 1, address: VAULT, kind: 'tvlUsd' });
-        expect(printed()[0]).toMatch(/Already tracking Treasury · TVL/);
+    it('tvl is no longer a kind: refused before anything is sent', async () => {
+        const calls = mockApi({});
+        await expect(trackCommand([VAULT, 'tvl'])).rejects.toThrow(/Unknown kind "tvl"/);
+        expect(calls).toHaveLength(0);
     });
 
     it('trace kinds: a signature becomes its selector, windows are validated, callers filter', async () => {
@@ -209,6 +207,28 @@ describe('metrics / untrack', () => {
         expect(out[0]).toMatch(/ 13$/);
         expect(out[1]).toMatch(/1,000,000 {2}\(paused\)$/);
         expect(out[2]).toMatch(/—$/); // no reading yet = unknown, not zero
+        expect(calls).toHaveLength(1); // a narrowed list is tracked values only
+    });
+
+    it('list without filters adds the event, table and group metrics, each with its kind', async () => {
+        const listed = [
+            { id: 'e1', name: 'Swap fees', kind: 'event', scope: 'Uniswap v3', status: 'ready', records: 1204 },
+            { id: 'e2', name: 'Outstanding', kind: 'item', scope: 'Wildcat markets', status: 'ready' },
+            { id: 'e3', name: 'Deposits', kind: 'event', scope: 'Vault', status: 'reading its history', records: 12 },
+        ];
+        const calls = mockApi({
+            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: metrics.slice(0, 1) } }),
+            'POST /api/mainnet/tools/describe_metric': () => ({ payload: { ok: true, result: { metrics: listed }, ms: 1 } }),
+        });
+        const r = (await metricsCommand([])) as unknown[];
+        expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tracked-metrics', '/api/mainnet/tools/describe_metric']);
+        const out = printed();
+        expect(out[0]).toMatch(/^m1 {2}nativeBalance/);
+        expect(out.slice(1, 3)).toEqual(['', 'Event, table and group metrics']);
+        expect(out[3]).toMatch(/^e1 {2}event {10}Swap fees {28}Uniswap v3 {19}1,204 records$/);
+        expect(out[4]).toMatch(/^e2 {2}table .*Wildcat markets +ready$/);
+        expect(out[5]).toMatch(/reading its history$/);
+        expect(r).toHaveLength(4);
     });
 
     it('show resolves by label and fetches the series', async () => {

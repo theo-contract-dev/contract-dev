@@ -1,7 +1,6 @@
 import { fmtAge, fmtChange, fmtCompact, fmtInt, fmtPct, fmtUsd, fmtUsdSigned, sparkline, table } from '../../src/cli/view';
 import { matchContract } from '../../src/cli/data';
 import { fmtNative, sourceFiles } from '../../src/cli/commands/explorer';
-import { totalSeries } from '../../src/cli/commands/tvl';
 import type { WatchedAccount } from '../../src/cli/commands/watch';
 import { contractHealth } from '../../src/cli/commands/inspect';
 import { monitorState } from '../../src/cli/commands/monitor';
@@ -87,17 +86,6 @@ describe('sparkline', () => {
         expect(line).toHaveLength(49);
         expect(line[0]).toBe('▁');
         expect(line[48]).toBe('█');
-    });
-});
-
-describe('totalSeries', () => {
-    it('sums the chains slot by slot, leaving a slot no chain read empty', () => {
-        expect(
-            totalSeries([
-                { chainId: 1, contracts: 1, values: [10, 11, null], liveUsd: 11 },
-                { chainId: 43114, contracts: 1, values: [1, null, null], liveUsd: 1 },
-            ]),
-        ).toEqual([11, 11, null]);
     });
 });
 

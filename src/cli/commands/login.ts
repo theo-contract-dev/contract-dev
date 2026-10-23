@@ -1,5 +1,5 @@
 import { hostname } from 'node:os';
-import { spawn } from 'node:child_process';
+import { openBrowser } from '../browser';
 import { parseFlags, flag } from './_args';
 import { offerSkillAfterLogin } from './skills';
 import {
@@ -50,22 +50,41 @@ export interface WhoamiPayload {
   workspaces?: Array<{ id: string; name: string; slug?: string }>;
   /** the API key this request authenticated with — what `logout` revokes */
   apiKeyId?: string | null;
+  /** the workspace's plan, how far back it reads and what it has used of each allowance (an older server sends none) */
+  plan?: PlanPayload | null;
 }
 
-function openBrowser(url: string): void {
-  const [cmd, cmdArgs]: [string, string[]] =
-    process.platform === 'darwin'
-      ? ['open', [url]]
-      : process.platform === 'win32'
-        ? ['cmd', ['/c', 'start', '', url]]
-        : ['xdg-open', [url]];
-  try {
-    const child = spawn(cmd, cmdArgs, { stdio: 'ignore', detached: true });
-    child.on('error', () => {});
-    child.unref();
-  } catch {
-    // browserless environment — the printed URL covers it
-  }
+/** One allowance: what is used, and the plan's limit (-1 = none). */
+interface Allowance {
+  used: number;
+  limit: number;
+}
+
+export interface PlanPayload {
+  plan: string;
+  label: string;
+  historyDays: number | null;
+  trialEndsAt?: string | null;
+  watchedAccounts?: Allowance;
+  monitors?: Allowance;
+  reports?: Allowance;
+  tables?: Allowance;
+  trackedValues?: Allowance;
+}
+
+/** The plan in one line: Free · 7 days of history · contracts and wallets 11/25 · monitors 29/50 · reports 3/3 · tables 0/2. */
+export function planLine(p: PlanPayload): string {
+  const of = (a: Allowance | undefined, what: string): string | null => (a ? `${what} ${a.used.toLocaleString('en-US')}${a.limit < 0 ? '' : `/${a.limit.toLocaleString('en-US')}`}` : null);
+  const parts = [
+    `${p.label}${p.trialEndsAt ? ` (trial until ${p.trialEndsAt.slice(0, 10)})` : ''}`,
+    p.historyDays != null ? `${p.historyDays.toLocaleString('en-US')} ${p.historyDays === 1 ? 'day' : 'days'} of history` : null,
+    of(p.watchedAccounts, 'contracts and wallets'),
+    of(p.monitors, 'monitors'),
+    of(p.reports, 'reports'),
+    of(p.tables, 'tables'),
+    of(p.trackedValues, 'tracked values'),
+  ];
+  return parts.filter((x): x is string => !!x).join(' · ');
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -170,6 +189,8 @@ export async function whoamiCommand(args: string[] = []): Promise<WhoamiPayload 
   }
   const payload = await apiRequest<WhoamiPayload>(auth, 'GET', '/api/cli/whoami');
   console.log(`${payload.email ?? 'unknown user'}${payload.org?.name ? ` (workspace: ${payload.org.name})` : ''}`);
+  // the limits up front, rather than on the first refusal
+  if (payload.plan) console.log(`Plan: ${planLine(payload.plan)}`);
   console.log(`Auth: ${auth.source === 'env' ? 'environment credentials' : credentialsPath()} → ${auth.apiUrl}${payload.apiKeyId ? `  (key ${payload.apiKeyId})` : ''}`);
   return payload;
 }

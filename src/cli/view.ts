@@ -1,4 +1,4 @@
-// Text output for the data commands (activity, methods, flows, users, tvl, …): aligned
+// Text output for the data commands (activity, methods, flows, users, …): aligned
 // tables, compact numbers, ages and sparklines. Pure functions that return strings, so the
 // commands print them and the tests read them.
 //
@@ -134,7 +134,7 @@ const BARS = '▁▂▃▄▅▆▇█';
 
 /**
  * A series as one line of block characters, at most `width` wide (longer series keep the last
- * value of each stretch). Counts sit on a zero floor; a level such as value held is drawn
+ * value of each stretch). Counts sit on a zero floor; a level such as a tracked value is drawn
  * between its own low and high (`floor: 'min'`), or a 0.7% move would be a flat line.
  */
 export function sparkline(values: Array<number | null | undefined>, opts: { floor?: 'zero' | 'min'; width?: number } = {}): string {

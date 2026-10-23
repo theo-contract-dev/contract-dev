@@ -111,15 +111,18 @@ describe('monitor add --group and delete several', () => {
         await expect(monitorCommand(['add', '--group', 'Lido', '--event', 'Paused'])).rejects.toThrow(/up to 91 monitors/);
     });
 
-    it('delete takes several ids or names, resolves them all first, and deletes nothing on a typo', async () => {
-        const list = { invariants: [{ id: 'a1', name: 'Upgrade · stETH' }, { id: 'a2', name: 'Upgrade · wstETH' }] };
-        const calls = mockApi({ 'GET /api/mainnet/invariants': () => ({ payload: list }), 'DELETE /api/mainnet/invariants/a1': () => ({ payload: { ok: true } }), 'DELETE /api/mainnet/invariants/a2': () => ({ payload: { ok: true } }) });
+    it('delete takes several ids or names; the ones that match go, and the rest are named with a failing exit', async () => {
+        const list = { invariants: [{ id: 'a1', name: 'Upgrade · stETH' }, { id: 'a2', name: 'Upgrade · wstETH' }, { id: 'a3', name: 'Twin' }, { id: 'a4', name: 'Twin' }] };
+        const handlers = { 'GET /api/mainnet/invariants': () => ({ payload: list }), 'DELETE /api/mainnet/invariants/a1': () => ({ payload: { ok: true } }), 'DELETE /api/mainnet/invariants/a2': () => ({ payload: { ok: true } }) };
+        const calls = mockApi(handlers);
         const r: any = await monitorCommand(['delete', 'a1', 'Upgrade · wstETH']);
         expect(r.ids).toEqual(['a1', 'a2']);
         expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual(['/api/mainnet/invariants/a1', '/api/mainnet/invariants/a2']);
-        const again = mockApi({ 'GET /api/mainnet/invariants': () => ({ payload: list }) });
-        await expect(monitorCommand(['delete', 'a1', 'nope'])).rejects.toThrow(/No monitor matches "nope".*Nothing was deleted/);
-        expect(again.filter((c) => c.method === 'DELETE')).toEqual([]);
+        const again = mockApi(handlers);
+        await expect(monitorCommand(['delete', 'a1', 'nope', 'twin'])).rejects.toThrow('Deleted 1 monitor; not deleted: no monitor matches "nope"; 2 monitors are named "twin", use an id: a3, a4 (run `contract-dev monitors` to list them).');
+        expect(again.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual(['/api/mainnet/invariants/a1']);
+        mockApi(handlers);
+        await expect(monitorCommand(['delete', 'nope'])).rejects.toThrow(/^Nothing was deleted: no monitor matches "nope"/);
     });
 });
 
@@ -146,6 +149,35 @@ describe('monitor add: several events, dollars', () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok({ monitor: { id: 'm1', name: 'Big swaps' }, sentence: 'Swap worth more than $1,000,000', backtest: null }) });
         await monitorCommand(['add', '--on', 'pool', '--event', 'Swap', '--when', 'usd(abs(amount0), token0()) > 1000000', '--name', 'Big swaps']);
         expect(calls[0].body.input).toEqual({ mode: 'event', contract: 'pool', event: 'Swap', when: 'usd(abs(amount0), token0()) > 1000000', name: 'Big swaps' });
+    });
+
+    it('when every event fails, each reason is said once, as the error', async () => {
+        mockApi({ 'POST /api/mainnet/tools/create_monitor': (c) => ({ status: 400, payload: { ok: false, error: `No contract in Uniswap v3 can take this monitor: no ${c.body.input.event} event.`, code: 'NONE_FIT' } }) });
+        await expect(monitorCommand(['add', '--group', 'Uniswap v3', '--event', 'Upgraded', '--event', 'Paused'])).rejects.toThrow(
+            'Upgraded: No contract in Uniswap v3 can take this monitor: no Upgraded event.\nPaused: No contract in Uniswap v3 can take this monitor: no Paused event.',
+        );
+        expect(printed()).toEqual([]);
+        mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ({ status: 403, payload: { ok: false, error: 'This workspace has used all of its monitors.', code: 'UPGRADE_REQUIRED' } }) });
+        await expect(monitorCommand(['add', '--on', 'pool', '--event', 'Mint', '--event', 'Burn'])).rejects.toThrow(/^This workspace has used all of its monitors\.$/);
+    });
+
+    it('a dollar line in a token the event names is one monitor on an event metric, for a contract or a whole group', async () => {
+        const metric = { id: 'cm1', name: 'Withdraw in USD · Aave V3', url: 'https://app/metrics/cm1', made: true };
+        const result = (made: boolean) => ({ monitor: { id: 'm7', name: 'Aave withdraw > $25M' }, created: [{ id: 'm7', name: 'Aave withdraw > $25M', contract: 'Aave V3' }], failed: [], sentence: 'Each Withdraw worth more than $25,000,000 on its day', sendsTo: 0, notes: [], metric: { ...metric, made } });
+        mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok(result(true)) });
+        await monitorCommand(['add', '--group', 'Aave V3', '--event', 'Withdraw', '--when', 'usd(amount, reserve) > 25000000', '--name', 'Aave withdraw > $25M']);
+        expect(printed()).toEqual(['Each Withdraw worth more than $25,000,000 on its day', 'Created monitor "Aave withdraw > $25M" (m7) on the metric "Withdraw in USD · Aave V3".']);
+        (console.log as jest.Mock).mockClear();
+        mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok(result(false)) });
+        await monitorCommand(['add', '--on', 'Pool', '--event', 'Withdraw', '--when', 'usd(amount, reserve) > 25000000']);
+        expect(printed()).toEqual(['Each Withdraw worth more than $25,000,000 on its day', 'Created monitor "Aave withdraw > $25M" (m7) on the existing metric "Withdraw in USD · Aave V3".']);
+        (console.log as jest.Mock).mockClear();
+        mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok(result(true)) });
+        await monitorCommand(['add', '--group', 'Aave V3', '--event', 'Withdraw', '--event', 'Borrow', '--when', 'usd(amount, reserve) > 25000000']);
+        expect(printed()).toEqual([
+            'Withdraw: created "Aave withdraw > $25M" (m7) on the metric "Withdraw in USD · Aave V3" — Each Withdraw worth more than $25,000,000 on its day',
+            'Borrow: created "Aave withdraw > $25M" (m7) on the metric "Withdraw in USD · Aave V3" — Each Withdraw worth more than $25,000,000 on its day',
+        ]);
     });
 });
 

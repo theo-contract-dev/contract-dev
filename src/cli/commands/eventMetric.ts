@@ -279,9 +279,9 @@ export function parseFormulaCall(raw: string): Record<string, unknown> {
 /** `track formula <contract> --label … --call … --value …`: a value worked out from several views at one block. */
 export async function trackFormula(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) {
-    console.log(`contract-dev track formula <contract> --label "<name>" --call "<name>=<call> [on <target>] [with <args>] [decimals <n>]"… --value "<expression>" [--chain <id>]
+    console.log(`contract-dev track formula <contract> --label "<name>" --call "<name>=<call> [on <target>] [with <args>] [decimals <n>]"… --value "<expression>" [--chain <id>] [--preview]
 
-A value worked out from several reads at the same block, sampled every block, charted, reported and monitored
+A value worked out from several reads at the same block, read every minute, charted, reported and monitored
 like any tracked value. A call is a view (getBuffer(), getFee(address) with 0x…; on <contract> unless "on"
 names another: a 0x address, or a view the contract answers with one, like asset()), a coin balance
 (balance(self), balance(0x…)), or a storage word (slot(self, 7); slot(self, keccak(0xLender…, 3)) for a
@@ -289,16 +289,22 @@ mapping's key). A view that returns an array answers a list: owners[1], len(owne
 sum(amounts). The value is an expression over the calls' names (buffer - debt, assets / supply, max(a - b, 0)),
 worked out exactly; dollars only through a stated token: usd(held, 0xa0b8…) at the current price, amount(raw, 0x…)
 by the token's decimals, where the token is its 0x address or a call that answers one (t0 = token0()).
+ago(<call>, 7d) is the call as it answered that long before the value's block (1m to 365d): a staking token's
+trailing yield is (rate - ago(rate, 7d)) / ago(rate, 7d) * 365 / 7 * 100. --preview reads it once now, with
+each call's answer (and each ago() reading), and saves nothing.
 
 Examples:
   contract-dev track formula 0xae7ab96520de3a18e5e111b5eaab095312d7fe84 --label "stETH share rate" \\
     --call "pooled=getTotalPooledEther() decimals 18" --call "shares=getTotalShares() decimals 18" --value "pooled / shares"
+  contract-dev track formula 0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0 --label "wstETH staking APR (7d)" \\
+    --call "rate=stEthPerToken() decimals 18" --value "(rate - ago(rate, 7d)) / ago(rate, 7d) * 365 / 7 * 100"
   contract-dev track formula 0xVault… --label "Headroom" --call "held=totalAssets()" --call "debt=totalDebt() on 0xRisk…" \\
     --call "eth=balance(self)" --value "usd(held, 0xa0b8…) - usd(debt, 0xa0b8…) + usd(eth, 0x0000000000000000000000000000000000000000)"
 `);
     return;
   }
   const flags = parseFlags(args);
+  onlyFlags(flags, 'track formula', ['label', 'call', 'value', 'chain', 'preview']);
   const contract = requirePositional(flags._ as string[], 0, 'contract');
   const label = flag(flags, 'label');
   if (!label) throw new Error('--label names the value: --label "Free buffer".');
@@ -307,7 +313,46 @@ Examples:
   const value = flag(flags, 'value');
   if (!value) throw new Error('--value is the expression over the calls\' names: --value "pooled / shares".');
   const chainId = chainFlag(flags);
-  return print('track_formula', { contract, label, calls, value, ...(chainId != null ? { chainId } : {}) });
+  const input = { contract, label, calls, value, ...(chainId != null ? { chainId } : {}) };
+  if (flag(flags, 'preview') === undefined) return print('track_formula', input);
+  const result = await runTool<FormulaPreview>(requireAuth(), 'track_formula', { ...input, preview: true });
+  for (const line of formulaPreviewLines(result)) console.log(line);
+  return result;
+}
+
+/** What track_formula answers with preview: the value read now, each call's answer and each ago() reading. */
+export interface FormulaPreview {
+  preview?: boolean;
+  value?: { label?: string; contract?: string; formula?: string; tokens?: string[] };
+  now?: {
+    value: string | null;
+    calls?: { name: string; answer: string | null }[];
+    earlier?: { name: string; ago: string; answer: string | null }[];
+    warning?: string;
+    notThen?: string;
+    unpriced?: string;
+  };
+  note?: string;
+}
+
+/** A formula preview as text: what was read, the value, then every read beside its answer. */
+export function formulaPreviewLines(r: FormulaPreview): string[] {
+  const v = r.value ?? {};
+  const now = r.now;
+  const reads = [
+    ...(now?.calls ?? []).map((c) => ({ read: c.name, answer: c.answer })),
+    ...(now?.earlier ?? []).map((c) => ({ read: `${c.name}, ${c.ago} ago`, answer: c.answer })),
+  ];
+  const width = Math.max(4, ...reads.map((x) => x.read.length));
+  return [
+    'Preview: nothing saved.',
+    `${v.label ?? ''}${v.contract ? ` · ${v.contract}` : ''}`,
+    ...(v.formula ? [`  ${v.formula}`] : []),
+    '',
+    `Value now: ${now?.value ?? '— (no value)'}`,
+    ...(reads.length ? ['', ...reads.map((x) => `  ${x.read.padEnd(width)}  ${x.answer ?? '— (no answer)'}`)] : []),
+    ...[now?.warning, now?.notThen, now?.unpriced].filter((x): x is string => !!x).flatMap((x) => ['', x]),
+  ];
 }
 
 /** `metric group "<name>" --group … --column …`: a group's column rolled up into one metric, recorded forward. */

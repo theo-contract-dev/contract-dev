@@ -98,7 +98,6 @@ contract-dev track 0xSafe...  native-balance --chain 43114
 contract-dev track 0xSafe...  erc20-balance --token 0xToken...
 contract-dev track 0xVault... function --function "convertToAssets(uint256) returns (uint256)" --args 1e18 --decimals 18
 contract-dev track 0xPair...  function --function "getReserves() returns (uint112,uint112,uint32)" --word 1
-contract-dev track 0xPool...  tvl
 contract-dev track 0xPool...  calls --method "swap(address,bool,int256,uint160,bytes)" --window 15m
 contract-dev track 0xPool...  revert-rate --except 0xBot1...,0xBot2...
 ```
@@ -225,10 +224,9 @@ contract-dev query wallets --group pools --days 7 --where '{Status} == "new"'   
 contract-dev events steth                       # events emitted, event by event, and the ones that never fired
 contract-dev events --group pools --event Swap --read "t0=token0()" --fixed t0 --by contract --sum "usd(abs(amount0), t0)"   # volume per pool
 contract-dev history steth --event WithdrawalQueued --by week   # every firing since launch
-contract-dev tvl                                # value held: now, its change, by chain and token
-contract-dev contracts show steth               # its Overview tab: what it is, value and its change, last 24h, monitors, metrics
+contract-dev contracts show steth               # its Overview tab: what it is, last 24h, monitors, metrics
 contract-dev holders <contract>                 # a token's holders
-contract-dev who 0x1b7a… --holdings             # who an address is; what it holds
+contract-dev who 0x1b7a…                        # who an address is
 contract-dev read steth getTotalPooledEther --decimals 18 --at 2026-01-01   # a view function, now or in the past
 ```
 
@@ -248,7 +246,7 @@ scripts and agents. API keys get 120 requests a minute on these.
 ### Reports
 
 A report is a table of those figures — active wallets, transactions, reverted share,
-volume in and out, TVL, an event's count, a tracked metric — over the workspace, a
+volume in and out, an event's count, a tracked metric — over the workspace, a
 group or one contract, sent to the workspace's destinations on a schedule. A daily
 report prints the last 24h, its change against the day before, then 7d and 30d; a
 weekly one 7d, its change, then 30d and 90d.
@@ -265,7 +263,7 @@ contract-dev report pause "Daily report" / resume / delete
 ```
 
 `--row` takes a kind (`activeWallets`, `transactions`, `revertedShare`, `volumeInUsd`,
-`volumeOutUsd`, `tvlUsd`, `alertsOpened`, `eventCount:<event>`, `trackedMetric:<id|label>`,
+`volumeOutUsd`, `alertsOpened`, `eventCount:<event>`, `trackedMetric:<id|label>`,
 `customMetric:<name>`),
 one per flag and in order; given, they replace the template's rows. `--to` takes the
 same destinations as `monitor add`; without one the report still runs on schedule and its
@@ -281,8 +279,8 @@ grammar, the table language:
 ```bash
 contract-dev find pools                                  # the watched contracts that behave like pools
 contract-dev find lido                                   # contracts, groups, metrics, monitors, reports, destinations named like it
-contract-dev describe steth                              # kinds, standards, owner, TVL; its events and their fields; write functions
-contract-dev query contracts --group pools --sort "{TVL}"                                # rank a group by a column
+contract-dev describe steth                              # kinds, standards, owner; its events and their fields; write functions
+contract-dev query contracts --group markets --sort "{Held}"                             # rank a group by a column
 contract-dev query contracts --group markets --show headroom="{Held} - {Required}" --where "headroom < 0" --sort headroom --asc
 contract-dev query contracts --group markets --read cov="coverageLiquidity() in asset()" --sort cov --asc   # a view read on every member now
 contract-dev query contracts --group markets --by kind --sum "{Supplied}"                # fold rows into groups
@@ -364,12 +362,11 @@ contract-dev query                One dataset as a table: contracts / table / me
 contract-dev queries              show / csv / refresh / rename / delete the answers kept at a page (charts and tables)
 contract-dev events               Events emitted, event by event; any question over recent events, in the formula language
 contract-dev history              Every firing of an event since launch: counts by period, wallets, the largest
-contract-dev tvl                  Value held, its change, what it is made of
 contract-dev contracts            list / show <contract> / set-abi
 contract-dev holders              A token's holders
 contract-dev find                 What a name points at: contracts, groups, metrics, monitors, reports, destinations
-contract-dev describe             What a contract is: kinds, standards, owner, TVL, events, write functions
-contract-dev who                  Who an address, ENS name or label is; --holdings for what it holds
+contract-dev describe             What a contract is: kinds, standards, owner, events, write functions
+contract-dev who                  Who an address, ENS name or label is
 contract-dev read                 Call a view function, now or at a past date or block
 contract-dev tx                   A transaction: outcome, decoded call, fees, transfers, logs
 contract-dev address              An address: balance, identity, recent transactions

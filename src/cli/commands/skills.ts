@@ -345,7 +345,10 @@ export async function askYesNo(question: string): Promise<boolean> {
 export async function offerSkillAfterLogin(opts: { install?: boolean; skip?: boolean; interactive: boolean; ask?: (q: string) => Promise<boolean> }): Promise<SkillOutcome[] | null> {
   if (opts.skip) return null;
   const targets = skillTargets(false);
-  if (!opts.install && targets.some((t) => t.state === 'installed' || t.state === 'linked')) return null;
+  // nothing to offer when a copy is there already: ours in the home folders or the repository the shell is in (an older
+  // one is refreshed by the next command), or one in every home folder, which an install would leave as it is
+  const present = (t: SkillTarget) => t.state === 'installed' || t.state === 'linked';
+  if (!opts.install && (targets.some(present) || targets.every((t) => t.state !== 'missing') || safeTargets(true).some(present))) return null;
   let yes = !!opts.install;
   if (!yes) {
     if (!opts.interactive || readPreferences().skillDeclined === true) {

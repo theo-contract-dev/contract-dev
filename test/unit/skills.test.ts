@@ -169,5 +169,20 @@ describe('agent skill', () => {
             expect(await offerSkillAfterLogin({ interactive: true, skip: true, ask })).toBeNull();
             expect(ask).not.toHaveBeenCalled();
         });
+
+        it('does not ask when the repository has it, or when every home folder holds a copy of its own', async () => {
+            installSkill({ project: true });
+            const ask = jest.fn(async () => true);
+            expect(await offerSkillAfterLogin({ interactive: true, ask })).toBeNull();
+            fs.rmSync(path.join(repo, '.claude'), { recursive: true, force: true });
+            fs.rmSync(path.join(repo, '.agents'), { recursive: true, force: true });
+            for (const dir of [claude(), agents()]) {
+                fs.mkdirSync(dir, { recursive: true });
+                fs.writeFileSync(path.join(dir, 'SKILL.md'), '# copied by hand\n');
+            }
+            expect(await offerSkillAfterLogin({ interactive: true, ask })).toBeNull();
+            expect(ask).not.toHaveBeenCalled();
+            expect(lines()).toEqual([]);
+        });
     });
 });

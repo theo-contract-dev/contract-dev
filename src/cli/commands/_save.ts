@@ -9,7 +9,7 @@ export type SaveForm = (typeof SAVE_FORMS)[number];
 export const SAVE_HELP = `  --save [bars|stacked|diverging|line|table]   Keep the answer at a page in the app, as a chart or a table, and print its link
   --keep                                       Keep it as a TABLE under Tables, re-run every time it is opened (not a snapshot)
   --title "<title>"                            The page's title (made from the question when left out)
-  --draw <column>                              The column a chart draws when the rows carry several (a read's name beside TVL)`;
+  --draw <column>                              The column a chart draws when the rows carry several (a read's name beside the dataset's own figures)`;
 
 /** The `save` argument the tools take, or undefined when --save was not given. */
 export function saveFromFlags(flags: ParsedFlags): { as?: SaveForm; title?: string; value?: string; keep?: boolean } | undefined {

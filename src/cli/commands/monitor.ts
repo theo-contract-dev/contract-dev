@@ -1,5 +1,6 @@
 import { parseFlags, flag, flagAll, onlyFlags, requirePositional, type ParsedFlags } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
+import { openBrowser } from '../browser';
 import { runTool } from '../tools';
 import { formatValue, shortHex, TrackedMetric } from './metrics';
 import { parseChainId } from './watch';
@@ -11,7 +12,7 @@ import { parseUntil, type InvariantExpr } from '../monitor-expr';
 const HELP = `contract-dev monitor — alert when a tracked value crosses a line, an event is emitted, or a contract goes quiet
 
 Usage:
-  contract-dev monitors                                   List monitors (status, rule, open alert)
+  contract-dev monitors                                   List monitors (status, rule, open alert, where each sends)
   contract-dev monitor add <value> --when "<formula>" [--warn "<formula>"] [--to <dest,…>] [--name "…"] [--max-age <sec>]
                                                           A monitor on a tracked value
   contract-dev monitor add --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]… [--name "…"]
@@ -26,7 +27,8 @@ Usage:
   contract-dev monitor pause <id|name> / resume <id|name>
   contract-dev monitor snooze <id|name> <30m|2h|1d|iso>   Mute pages until then (still evaluates)
   contract-dev monitor unsnooze <id|name>
-  contract-dev monitor delete <id|name>…                 Delete one or several (ids from --json, or names)
+  contract-dev monitor delete <id|name>…                 Delete one or several (ids from --json, or names); one that
+                                                          matches nothing is named after the rest are deleted
   contract-dev monitor exclude <default> <address> [--chain <id>]   Leave a contract out of a default monitor
   contract-dev monitor include <default> <address> [--chain <id>]   Put it back
   contract-dev channels                                   Alert destinations — what --to accepts
@@ -63,8 +65,12 @@ From a sentence (an event monitor, or a silence monitor):
                            event's fields joined by and (amount0 > 0, to != 0x…), one field's values joined by or
                            (to == 0xA or to == 0xB); a token amount as amount(field, token) >= 50 and a dollar line
                            as usd(abs(field), token) > 1000000 (turned into the token at today's price, once), the
-                           token a 0x address, emitter() for the contract itself, or a view like token0(). A field
-                           compared without amount() or usd() is in base units. Without --when every emission alerts
+                           token a 0x address, emitter() for the contract itself, or a view like token0(). A dollar
+                           line's token may also be one of the event's own address fields, usd(amount, reserve) >
+                           25000000: every event is then priced in its own token on its day, through an event metric
+                           add makes (or reuses) and names, one monitor on it for the contract or the whole group. A
+                           field compared without amount() or usd() is in base units. Without --when every emission
+                           alerts
   --silence                Alert when the contract goes quiet: no call for --for; with --method, no call to that
                            method; with --event, no emission of it
   --method <name>          The method whose silence matters (silence only)
@@ -92,14 +98,26 @@ const CHANNELS_HELP = `contract-dev channels — the workspace's alert destinati
 
 Usage:
   contract-dev channels                    List destinations (id, kind, label, target)
+  contract-dev channels add telegram       Connect a Telegram chat or group: prints a link to open in Telegram
+  contract-dev channels add slack [--channel <name>] [--workspace <name>] [--connect] [--no-browser]
+                                           Connect Slack (approved once in a browser), then add a channel
   contract-dev channels test <id|label>    Send a test alert to one destination
   contract-dev channels disable <id|label> Stop sending to it (kept, can be enabled again)
   contract-dev channels enable <id|label>
   contract-dev channels remove <id|label>  Disconnect it
 
-Connect Telegram, Discord or Slack in the app under Monitoring → Destinations; this lists
-what's there so \`contract-dev monitor add --to …\` can name it. Test, enable, disable and
-remove need an owner or admin, as in the app.
+add telegram prints a link for a chat with the bot and one for a group; open one in Telegram
+and press Start, and the command waits until the chat is connected.
+
+add slack connects a Slack workspace the first time (or with --connect, another one): it opens
+Slack's approval page in a browser signed in to contract.dev. With --channel alerts it then adds
+that channel as a destination and the bot posts a note there; without it, it lists the channels
+it can add. A private channel appears once the bot is invited to it (/invite @contract.dev).
+Write the channel without its # (or quote it): an unquoted # starts a comment in most shells.
+
+Discord is connected in the app under Settings → Message destinations. Connecting Telegram or
+Slack, test, enable, disable and remove need an owner or admin, as in the app; adding a channel
+of a connected Slack workspace needs write access.
 `;
 
 export interface AlertChannel {
@@ -171,9 +189,12 @@ export interface Invariant {
   /** a default's contracts, each with its state (present on list and show) */
   subjects?: BuiltinSubject[] | null;
   exprAst: InvariantExpr;
+  /** the healthy side the monitor checks ("tvl >= tvl 1h ago × 0.95"): `alertsWhen` says it the way it alerts */
   exprText: string;
   warnExprAst: InvariantExpr | null;
   warnExprText: string | null;
+  /** the rule the way it alerts, per tier ("Below 25,000", "TVL < TVL 1h ago × 0.95", "Emitted"); an older server sends none */
+  alertsWhen?: { critical: string | null; warning: string | null } | null;
   maxInputAgeSec: number | null;
   enabled: boolean;
   snoozedUntil: string | null;
@@ -210,6 +231,140 @@ export function findChannel(all: AlertChannel[], raw: string): AlertChannel {
 
 const describeChannel = (c: AlertChannel) => `${c.kind} ${c.label ?? c.target}`;
 
+/** Where a monitor pages: each destination by kind and label (its id when the list did not have it), every one, or nobody. */
+export function sendsToText(m: Pick<Invariant, 'channelIds' | 'notifyAll'>, channels: AlertChannel[] | null): string {
+  const ids = m.channelIds ?? [];
+  if (ids.length === 0) return m.notifyAll ? 'every destination' : 'nobody';
+  if (!channels) return plural(ids.length, 'destination');
+  return ids
+    .map((id) => {
+      const c = channels.find((ch) => ch.id === id);
+      return c ? describeChannel(c) : id;
+    })
+    .join(', ');
+}
+
+/** A first letter lowercased unless it starts an acronym: "Below" → "below", "TVL" stays. */
+const lowerFirst = (s: string): string => (/^[A-Z][a-z]/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s);
+
+/**
+ * A monitor's rule the way it alerts, with its warning: "alerts when below 25,000; warns when below 30,000",
+ * "alerts when TVL < TVL 1h ago × 0.95", "alerts when emitted". The stored text is the healthy side the monitor
+ * checks, which reads backwards (2026-10-22), so it is shown only when the server has no words for the rule.
+ */
+export function ruleText(m: Pick<Invariant, 'exprText' | 'warnExprText' | 'alertsWhen'>): string {
+  const w = m.alertsWhen;
+  if (w && (w.critical || w.warning)) return [w.critical ? `alerts when ${lowerFirst(w.critical)}` : null, w.warning ? `warns when ${lowerFirst(w.warning)}` : null].filter(Boolean).join('; ');
+  return `${m.exprText}${m.warnExprText ? `  (warn: ${m.warnExprText})` : ''}`;
+}
+
+// ── connecting a destination (2026-10-22): Telegram by a link opened in Telegram, Slack by one approval in a browser, then a channel ──
+
+/** How long a connect waits between looks; tests make it short. */
+const pollMs = (): number => Number(process.env.CONTRACT_DEV_POLL_MS) || 3_000;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Asks `look` again and again until it answers or the deadline passes (null); a failed look is tried again. */
+async function waitFor<T>(look: () => Promise<T | null | undefined>, untilMs: number): Promise<T | null> {
+  while (Date.now() < untilMs) {
+    await sleep(pollMs());
+    const hit = await look().catch(() => null);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+interface TelegramLink {
+  expiresAt: string;
+  directUrl: string;
+  groupUrl: string;
+}
+
+async function addTelegram(): Promise<AlertChannel> {
+  const auth = requireAuth();
+  const before = new Set((await listChannels(auth)).map((c) => c.id));
+  const link = await apiRequest<TelegramLink>(auth, 'POST', '/api/cli/alert-channels/telegram');
+  console.log('Open one of these in Telegram and press Start:');
+  console.log(`  a chat with the bot   ${link.directUrl}`);
+  console.log(`  a group               ${link.groupUrl}`);
+  console.log('Waiting for Telegram…');
+  const expires = Date.parse(link.expiresAt);
+  const channel = await waitFor(async () => (await listChannels(auth)).find((c) => c.kind === 'telegram' && !before.has(c.id)), Number.isFinite(expires) ? expires : Date.now() + 10 * 60_000);
+  if (!channel) throw new Error('The link expired before a chat was connected. Run contract-dev channels add telegram again.');
+  console.log(`Connected ${describeChannel(channel)} (${channel.id}). Send it a test with: contract-dev channels test ${channel.id}`);
+  return channel;
+}
+
+interface SlackWorkspace {
+  id: string;
+  teamName: string | null;
+  connectedAt: string;
+}
+
+interface SlackChannel {
+  id: string;
+  name: string;
+  isPrivate: boolean;
+  isMember: boolean;
+}
+
+const SLACK_FLAGS = ['channel', 'workspace', 'connect', 'no-browser'] as const;
+/** The channels listed when none is named. */
+const SLACK_LIST_MAX = 40;
+
+/** The connected Slack workspace a command means: the only one, or the one named by --workspace. */
+function pickWorkspace(all: SlackWorkspace[], ref: string | undefined): SlackWorkspace {
+  const names = all.map((w) => w.teamName ?? w.id).join(', ');
+  if (ref) {
+    const lower = ref.trim().toLowerCase();
+    const hit = all.find((w) => w.id === ref.trim() || (w.teamName ?? '').toLowerCase() === lower);
+    if (!hit) throw new Error(`No connected Slack workspace is called "${ref}". Connected: ${names}.`);
+    return hit;
+  }
+  if (all.length === 1) return all[0];
+  throw new Error(`Several Slack workspaces are connected (${names}): name one with --workspace.`);
+}
+
+async function addSlack(flags: ParsedFlags): Promise<unknown> {
+  onlyFlags(flags, 'channels add slack', SLACK_FLAGS);
+  const channelRef = flag(flags, 'channel');
+  const workspaceRef = flag(flags, 'workspace');
+  if (channelRef === 'true') throw new Error('--channel needs a channel name, like --channel alerts.');
+  if (workspaceRef === 'true') throw new Error("--workspace needs the Slack workspace's name.");
+  const auth = requireAuth();
+  let { workspaces } = await apiRequest<{ available: boolean; workspaces: SlackWorkspace[] }>(auth, 'GET', '/api/cli/slack');
+  workspaces = workspaces ?? [];
+  let fresh: SlackWorkspace | null = null;
+  if (workspaces.length === 0 || flags.connect === 'true') {
+    // the approval is Slack's own page, so it happens in a browser; this waits for the connection to land
+    const { url } = await apiRequest<{ url: string }>(auth, 'POST', '/api/cli/slack');
+    const before = new Set(workspaces.map((w) => w.id));
+    console.log('Approve contract.dev in Slack, in a browser signed in to contract.dev:');
+    console.log(`  ${url}`);
+    if (flags['no-browser'] !== 'true') openBrowser(url);
+    console.log('Waiting for Slack…');
+    fresh = await waitFor(async () => (await apiRequest<{ workspaces: SlackWorkspace[] }>(auth, 'GET', '/api/cli/slack')).workspaces?.find((w) => !before.has(w.id)), Date.now() + 10 * 60_000);
+    if (!fresh) throw new Error('Slack was not connected within 10 minutes. Run contract-dev channels add slack again.');
+    console.log(`Connected the Slack workspace ${fresh.teamName ?? fresh.id}.`);
+  }
+  const ws = fresh ?? pickWorkspace(workspaces, workspaceRef);
+  const team = ws.teamName ?? 'that Slack workspace';
+  const { channels } = await apiRequest<{ teamName: string | null; channels: SlackChannel[] }>(auth, 'GET', `/api/cli/slack/${encodeURIComponent(ws.id)}/channels`);
+  if (!channelRef) {
+    console.log(channels.length > 0 ? `Channels in ${team} that can be added:` : `No channels in ${team} can be added yet.`);
+    for (const c of channels.slice(0, SLACK_LIST_MAX)) console.log(`  #${c.name}${c.isPrivate ? '  (private)' : ''}`);
+    if (channels.length > SLACK_LIST_MAX) console.log(`  … ${fmtInt(channels.length - SLACK_LIST_MAX)} more`);
+    console.log('Add one with: contract-dev channels add slack --channel <name>');
+    return { workspace: ws, channels };
+  }
+  const want = channelRef.trim().replace(/^#/, '').toLowerCase();
+  const picked = channels.find((c) => c.id === channelRef.trim() || c.name.toLowerCase() === want);
+  if (!picked) throw new Error(`No channel #${want} in ${team} can be added. A private channel appears once the bot is invited to it (/invite @contract.dev); contract-dev channels add slack lists the ones that can.`);
+  const r = await apiRequest<{ channel: AlertChannel; created: boolean }>(auth, 'POST', '/api/cli/alert-channels', { kind: 'slack', installId: ws.id, channelId: picked.id });
+  console.log(r.created ? `Added #${picked.name} in ${team} (${r.channel.id}); the bot posted a note there.` : `#${picked.name} in ${team} is already a destination (${r.channel.id}).`);
+  return r;
+}
+
 export async function channelsCommand(args: string[] = []): Promise<AlertChannel[] | unknown> {
   const [sub, ...rest] = args;
   switch (sub) {
@@ -218,6 +373,17 @@ export async function channelsCommand(args: string[] = []): Promise<AlertChannel
     case '--help':
       console.log(CHANNELS_HELP);
       return;
+    case 'add': {
+      const flags = parseFlags(rest);
+      const kind = String(flags._[0] ?? '').toLowerCase();
+      if (kind === 'telegram') {
+        onlyFlags(flags, 'channels add telegram', []);
+        return await addTelegram();
+      }
+      if (kind === 'slack') return await addSlack(flags);
+      if (kind === 'discord') throw new Error('Discord is connected in the app under Settings → Message destinations.');
+      throw new Error('Say which: contract-dev channels add telegram, or contract-dev channels add slack [--channel <name>].');
+    }
     case 'test':
     case 'enable':
     case 'disable':
@@ -252,7 +418,7 @@ export async function channelsCommand(args: string[] = []): Promise<AlertChannel
   }
   const channels = await listChannels(requireAuth());
   if (!channels.length) {
-    console.log('No alert destinations. Connect Telegram, Discord or Slack in the app under Monitoring → Destinations.');
+    console.log('No alert destinations. Connect one with contract-dev channels add telegram or contract-dev channels add slack (Discord in the app).');
     return [];
   }
   for (const c of channels) {
@@ -334,11 +500,13 @@ export async function monitorsCommand(args: string[] = []): Promise<Invariant[] 
     console.log('No monitors. Create one with `contract-dev monitor add <value> --when "value < 25000" --to <dest>`.');
     return [];
   }
+  // the destinations by name, so routing can be checked from the list; a count when they cannot be read
+  const channels = invariants.some((m) => (m.channelIds ?? []).length > 0) ? await listChannels(auth).catch(() => null) : [];
   for (const m of invariants) {
-    const rule = `${m.exprText}${m.warnExprText ? `  (warn: ${m.warnExprText})` : ''}`;
+    const rule = ruleText(m);
     const open = m.openIncident ? `  OPEN ${m.openIncident.level} since ${m.openIncident.openedAt}` : '';
     const snoozed = m.snoozedUntil && new Date(m.snoozedUntil) > new Date() ? `  snoozed until ${m.snoozedUntil}` : '';
-    console.log(`${monitorState(m).padEnd(9)} ${m.id}  ${m.name}  —  ${rule}${open}${snoozed}`);
+    console.log(`${monitorState(m).padEnd(9)} ${m.id}  ${m.name}  —  ${rule}${open}${snoozed}  sends to: ${sendsToText(m, channels)}`);
   }
   return invariants;
 }
@@ -425,7 +593,8 @@ async function addMonitor(args: string[]): Promise<unknown> {
   const maxAge = parseMaxAge(flags);
   if (maxAge !== undefined) input.maxAgeSec = maxAge;
   const r = await runTool<ValueMonitorResult>(requireAuth(), 'add_value_monitor', input);
-  console.log(`Created monitor "${r.monitor.name}" (${r.monitor.id}): ${r.monitor.rule ?? when}${r.monitor.warn ? `, warn at ${r.monitor.warn}` : ''}`);
+  // the rule as written, the way it alerts: the stored one is the healthy side the monitor checks, which reads backwards
+  console.log(`Created monitor "${r.monitor.name}" (${r.monitor.id}): alerts when ${when}${warn !== undefined ? `, warns when ${warn}` : ''}`);
   console.log('First verdict on the next reading.');
   return r;
 }
@@ -467,13 +636,14 @@ async function setMonitor(args: string[]): Promise<Invariant | ValueMonitorResul
   }
 
   if (!ruled && Object.keys(body).length === 0) throw new Error('Nothing to change — pass --when, --warn/--no-warn, --to, --max-age or --name.');
+  // a new rule as written, the way it alerts; otherwise the rule the monitor has, worded by the server when it can
+  const asWritten = [when !== undefined ? `alerts when ${when}` : null, warn !== undefined ? `warns when ${warn}` : null, noWarn ? 'no warning' : null].filter(Boolean).join(', ');
   if (Object.keys(body).length === 0) {
-    const m = ruled!.monitor;
-    console.log(`Updated "${m.name}": ${m.rule ?? DASH}${m.warn ? `, warn at ${m.warn}` : ''}`);
+    console.log(`Updated "${ruled!.monitor.name}": ${asWritten}`);
     return ruled!;
   }
   const { invariant } = await apiRequest<{ invariant: Invariant }>(auth, 'PATCH', `/api/mainnet/invariants/${existing.id}`, body);
-  console.log(`Updated "${invariant.name}": ${invariant.exprText}${invariant.warnExprText ? `, warn at ${invariant.warnExprText}` : ''}`);
+  console.log(`Updated "${invariant.name}": ${asWritten || ruleText(invariant)}`);
   return invariant;
 }
 
@@ -511,7 +681,21 @@ export interface CreatedFromIntent {
   monitor: Invariant;
   sentence: string;
   backtest: Backtest | null;
+  /** A dollar line priced in a token the event names: the event metric the monitor is judged on. */
+  metric?: MonitorMetric;
 }
+
+/** The event metric a monitor with a per-event dollar line reads: made for it, or one the workspace had (made false). */
+export interface MonitorMetric {
+  id: string;
+  name: string;
+  url?: string;
+  made: boolean;
+}
+
+/** The monitor made on its metric, in one line. */
+export const onMetricLine = (monitor: { id: string; name: string }, metric: MonitorMetric): string =>
+  `Created monitor "${monitor.name}" (${monitor.id}) on the ${metric.made ? '' : 'existing '}metric "${metric.name}".`;
 
 /** 90m · 24h · 3d (also 3600s, 1w) → seconds, from a minute to 30 days. */
 export function parseDuration(raw: string, label = '--for'): number {
@@ -599,6 +783,9 @@ export interface GroupSet {
   created?: Array<{ id: string; name: string; contract: string }>;
   failed?: Array<{ contract: string; error: string }>;
   notes?: string[];
+  /** A dollar line priced in a token the event names: one monitor over the whole group, on this event metric. */
+  monitor?: { id: string; name: string };
+  metric?: MonitorMetric;
 }
 
 /** A group's monitors in a few lines: the sentence, how many, and what was left out or failed. */
@@ -630,9 +817,19 @@ async function addSeveralEvents(flags: ParsedFlags, events: string[]): Promise<A
       }
     }),
   );
+  // nothing made: each event's reason once, as the error, rather than a line each and then the first one again
+  if (outcomes.every((o) => o.error)) {
+    const reasons = Array.from(new Set(outcomes.map((o) => o.error)));
+    throw new Error(reasons.length === 1 ? String(reasons[0]) : outcomes.map((o) => `${o.event}: ${o.error}`).join('\n'));
+  }
   for (const o of outcomes) {
+    const metric = (o.result as CreatedFromIntent | GroupSet | undefined)?.metric;
     if (o.error) console.log(`${o.event}: not created — ${o.error}`);
-    else if (base.group) {
+    else if (metric) {
+      // a dollar line priced per event: one monitor on its event metric, for the contract or the whole group
+      const one = o.result as CreatedFromIntent;
+      console.log(`${o.event}: created "${one.monitor.name}" (${one.monitor.id}) on the ${metric.made ? '' : 'existing '}metric "${metric.name}" — ${one.sentence}`);
+    } else if (base.group) {
       const set = o.result as GroupSet;
       const extra = groupSetLines(set, base.group).slice(2);
       console.log(`${o.event}: ${plural(set.created?.length ?? 0, 'monitor')}${set.skippedCount ? ` · left out ${fmtInt(set.skippedCount)}` : ''}`);
@@ -642,7 +839,6 @@ async function addSeveralEvents(flags: ParsedFlags, events: string[]): Promise<A
       console.log(`${o.event}: created "${one.monitor.name}" (${one.monitor.id}) — ${one.sentence}`);
     }
   }
-  if (outcomes.every((o) => o.error)) throw new Error(outcomes[0].error);
   return outcomes;
 }
 
@@ -653,6 +849,12 @@ async function addMonitorFromIntent(flags: ParsedFlags): Promise<CreatedFromInte
   if (intent.group) {
     // the CLI acts on purpose: the server's many-at-once check is for chat, so it is passed here
     const set = await runTool<GroupSet>(requireAuth(), 'create_monitor', { ...intent, confirmMany: true });
+    if (set.metric && set.monitor) {
+      // a dollar line priced per event: one monitor over the whole group, on an event metric, not one per contract
+      console.log(set.sentence ?? DASH);
+      console.log(onMetricLine(set.monitor, set.metric));
+      return set;
+    }
     for (const line of groupSetLines(set, intent.group)) console.log(line);
     return set;
   }
@@ -660,7 +862,7 @@ async function addMonitorFromIntent(flags: ParsedFlags): Promise<CreatedFromInte
   console.log(created.sentence);
   // saving replays nothing; an older server may still send a backtest, shown when it does
   if (created.backtest) for (const line of backtestLines(created.backtest)) console.log(line);
-  console.log(`Created monitor "${created.monitor.name}" (${created.monitor.id}).`);
+  console.log(created.metric ? onMetricLine(created.monitor, created.metric) : `Created monitor "${created.monitor.name}" (${created.monitor.id}).`);
   return created;
 }
 
@@ -836,8 +1038,15 @@ async function showMonitor(args: string[]): Promise<Invariant> {
 
   console.log(`${invariant.name}  (${invariant.id})`);
   console.log(`  status: ${invariant.status}${invariant.statusSince ? ` since ${invariant.statusSince}` : ''}${invariant.enabled ? '' : '  (paused)'}`);
-  console.log(`  alert:  ${invariant.exprText}`);
-  if (invariant.warnExprText) console.log(`  warn:   ${invariant.warnExprText}`);
+  // the rule the way it alerts; the stored text (the healthy side it checks) only when the server words none
+  const words = invariant.alertsWhen;
+  if (words && (words.critical || words.warning)) {
+    if (words.critical) console.log(`  alerts when: ${words.critical}`);
+    if (words.warning) console.log(`  warns when:  ${words.warning}`);
+  } else {
+    console.log(`  alert:  ${invariant.exprText}`);
+    if (invariant.warnExprText) console.log(`  warn:   ${invariant.warnExprText}`);
+  }
   if (invariant.maxInputAgeSec != null) console.log(`  stale after: ${invariant.maxInputAgeSec}s without a fresh reading`);
   if (invariant.snoozedUntil && new Date(invariant.snoozedUntil) > new Date()) console.log(`  snoozed until: ${invariant.snoozedUntil}`);
   if (watch) {
@@ -850,11 +1059,7 @@ async function showMonitor(args: string[]): Promise<Invariant> {
     const value = m ? formatValue(m.liveValue != null ? m.liveValue : m.lastValue) : '—';
     console.log(`    ${input.alias.padEnd(24)} = ${value.padStart(16)}   ${metricName(m)} (chain ${m?.chainId ?? '?'}, ${m ? shortHex(m.address) : '?'}, ${input.trackedOnchainValueId})`);
   }
-  const destinations = invariant.channelIds.map((id) => {
-    const c = channels.find((ch) => ch.id === id);
-    return c ? `${c.kind} ${c.label ?? c.target}` : id;
-  });
-  console.log(`  sends to: ${destinations.length ? destinations.join(', ') : invariant.notifyAll ? 'every destination' : 'nobody'}`);
+  console.log(`  sends to: ${sendsToText(invariant, channels)}`);
   if (isBuiltinMonitor(invariant)) {
     const subjects = invariant.subjects;
     const excluded = invariant.params?.excluded ?? [];
@@ -964,18 +1169,19 @@ async function deleteMonitor(args: string[]): Promise<{ ok: true; id: string; id
   const refs = flags._ as string[];
   requirePositional(refs, 0, 'monitor (id or name)');
   const auth = requireAuth();
-  // every ref resolved against one listing before anything is deleted, so a typo deletes nothing
+  // every ref resolved against one listing: the ones that match are deleted, the rest are named after with a failing
+  // exit (2026-10-22: one stale id among forty-seven used to delete none of them). A shared name is never guessed at.
   const { invariants } = await apiRequest<{ invariants: Invariant[] }>(auth, 'GET', '/api/mainnet/invariants');
   const all = invariants ?? [];
-  const targets = refs.map((ref) => {
+  const targets: Invariant[] = [];
+  const missed: string[] = [];
+  for (const ref of refs) {
     const byId = all.find((m) => m.id === ref);
-    if (byId) return byId;
     const lower = ref.trim().toLowerCase();
-    const byName = all.filter((m) => m.name.toLowerCase() === lower || slugOf(m.name) === lower);
-    if (byName.length === 1) return byName[0];
-    if (byName.length > 1) throw new Error(`${byName.length} monitors are named "${ref}" — use an id: ${byName.map((m) => m.id).join(', ')}. Nothing was deleted.`);
-    throw new Error(`No monitor matches "${ref}" (run \`contract-dev monitors\` to list them). Nothing was deleted.`);
-  });
+    const byName = byId ? [byId] : all.filter((m) => m.name.toLowerCase() === lower || slugOf(m.name) === lower);
+    if (byName.length === 1) targets.push(byName[0]);
+    else missed.push(byName.length > 1 ? `${byName.length} monitors are named "${ref}", use an id: ${byName.map((m) => m.id).join(', ')}` : `no monitor matches "${ref}"`);
+  }
   const ids: string[] = [];
   for (const m of targets) {
     if (ids.includes(m.id)) continue;
@@ -983,5 +1189,6 @@ async function deleteMonitor(args: string[]): Promise<{ ok: true; id: string; id
     console.log(`Deleted monitor "${m.name}" (${m.id}) and its episode history.`);
     ids.push(m.id);
   }
+  if (missed.length > 0) throw new Error(`${ids.length > 0 ? `Deleted ${plural(ids.length, 'monitor')}; not deleted: ` : 'Nothing was deleted: '}${missed.join('; ')} (run \`contract-dev monitors\` to list them).`);
   return { ok: true, id: ids[0], ids };
 }

@@ -9,7 +9,7 @@ import { incidentsCommand } from './commands/incidents';
 import { reportCommand } from './commands/report';
 import { statusCommand } from './commands/status';
 import { eventsCommand } from './commands/events';
-import { tvlCommand, holdersCommand } from './commands/tvl';
+import { holdersCommand } from './commands/holders';
 import { txCommand, addressCommand, blockCommand, walletCommand, sourceCommand } from './commands/explorer';
 import { findCommand, describeCommand } from './commands/ask';
 import { whoCommand, readCommand } from './commands/questions';
@@ -30,7 +30,7 @@ Account:
   contract-dev whoami                     Show which account + workspace the CLI acts as
   contract-dev workspace <sub>            Show or switch the workspace the CLI acts on (try: workspace help)
   contract-dev logout                     Revoke the key and delete the saved credentials
-  contract-dev status                     The workspace at a glance: contracts, TVL, transactions, alerts
+  contract-dev status                     The workspace at a glance: contracts, transactions, alerts
 
 Watch contracts:
   contract-dev watch <address>            Watch a mainnet contract (try: watch help)
@@ -62,27 +62,26 @@ Metrics:
   contract-dev metric define "<name>" …   A metric added up from events, each read at its own transaction (try: metrics help)
   contract-dev metric group "<name>" --group <g> --column <key>   A group's column rolled up into one metric across its contracts
   contract-dev metrics export <id|label>  A metric's history as CSV or JSON
-  contract-dev track <address> <kind>     Track a balance, supply, call result, TVL or method telemetry (try: track help)
+  contract-dev track <address> <kind>     Track a balance, supply, call result or method telemetry (try: track help)
   contract-dev untrack <id|label>         Stop tracking
 
 Data (<contract> is an address or a watched contract's name):
   contract-dev events [<contract>]        Events emitted, event by event, and the ones declared but never fired
   contract-dev events <contract> --event <Name> --sort "<expr>"   The events themselves through formulas: sort, filter, group (try: events help)
   contract-dev history [<contract>] --event <Name>   Every firing since launch: by week, sizes, top wallets, when (try: history help)
-  contract-dev tvl [<contract>]           Value held: now, its change, what it is made of (try: tvl help)
   contract-dev contracts show <contract>  One contract at a glance (its Overview tab)
-  contract-dev holders <contract>         A token's holders
+  contract-dev holders <contract>         A token's holders (try: holders help)
 
 Ask (questions over the workspace; scope is --group <name>, --contract <ref> or --chain <id>, else everything):
   contract-dev find <query>               What a name points at: contracts (by name, address or kind: pools, vaults,
                                           tokens), groups, metrics, monitors, reports, destinations
-  contract-dev describe <contract>        What a contract is: kinds, standards, owner, TVL, its events and write
+  contract-dev describe <contract>        What a contract is: kinds, standards, owner, its events and write
                                           functions
   contract-dev query <contracts|table|metric|monitors|alerts|reports> …
                                           One dataset, asked in the table language: --where, --show, --sort, --by with
                                           --sum or --count, --total; --save keeps the answer at a page (try: query help)
   contract-dev queries [show|csv|refresh|rename|as|delete <id|title>]   The answers kept at a page: charts and tables
-  contract-dev who <address|ENS|name>     Who it is; --holdings: what it holds
+  contract-dev who <address|ENS|name>     Who it is
   contract-dev read <contract> <function> [<arg>…]   Call a view function, now or --at a past time (try: read help)
 
 Explorer (any address on a supported chain):
@@ -182,9 +181,6 @@ export async function run(args: string[]): Promise<unknown> {
     case 'events':
     case 'event':
       return await eventsCommand(rest);
-    case 'tvl':
-    case 'value':
-      return await tvlCommand(rest);
     case 'holders':
       return await holdersCommand(rest);
     case 'tx':

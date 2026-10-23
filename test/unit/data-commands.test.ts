@@ -9,8 +9,8 @@ const WSTETH = '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0';
 const accounts = () => ({
     payload: {
         accounts: [
-            { id: 'a1', chainId: 1, chainIds: [1], address: STETH, accountType: 'contract', name: 'Lido: stETH', valueUsd: 9_500_000 },
-            { id: 'a2', chainId: 1, chainIds: [1], address: WSTETH, accountType: 'contract', name: 'Lido: wstETH', valueUsd: 12_400_000_000 },
+            { id: 'a1', chainId: 1, chainIds: [1], address: STETH, accountType: 'contract', name: 'Lido: stETH' },
+            { id: 'a2', chainId: 1, chainIds: [1], address: WSTETH, accountType: 'contract', name: 'Lido: wstETH' },
         ],
     },
 });
@@ -47,28 +47,6 @@ describe('data commands', () => {
 
 
 
-
-    it('tvl gives the value now and its change since the start of the window', async () => {
-        mockApi({
-            'GET /api/mainnet/console/tvl': () => ({
-                payload: {
-                    range: '24h',
-                    slots: [0, 1],
-                    stepSec: 900,
-                    chains: [{ chainId: 1, contracts: 2, values: [100_000_000, 110_000_000], liveUsd: 110_000_000 }],
-                    holdings: [{ chainId: 1, token: STETH, symbol: 'stETH', usd: 110_000_000, amount: 41_000, priceUsd: 2682.02, holders: [{ address: WSTETH, usd: 110_000_000 }] }],
-                    totalUsd: 110_000_000,
-                    otherUsd: 0,
-                    unattributedUsd: 0,
-                    holdingsSampledAt: null,
-                },
-            }),
-        });
-        await run(['tvl']);
-        const out = printed();
-        expect(out[1]).toBe('$110.00M now · +$10.00M (+10%) over 24h');
-        expect(out.some((l) => /stETH\s+Ethereum\s+41\.0K\s+\$2,682\.02\s+\$110\.00M\s+100\.0%\s+0x7f39…2ca0/.test(l))).toBe(true);
-    });
 
     it('tx looks on every supported chain and reports the one that has it', async () => {
         const hash = `0x${'b'.repeat(64)}`;
@@ -144,8 +122,8 @@ describe('data commands', () => {
     });
 
     it('a rate-limited key gets the server\'s words, with no retry', async () => {
-        const calls = mockApi({ 'GET /api/mainnet/console/tvl': () => ({ status: 429, payload: { error: 'Too many requests from this API key. Retry in 39s.', code: 'RATE_LIMITED' } }) });
-        await expect(run(['tvl'])).rejects.toThrow('Too many requests from this API key. Retry in 39s.');
+        const calls = mockApi({ 'GET /api/mainnet/accounts': () => ({ status: 429, payload: { error: 'Too many requests from this API key. Retry in 39s.', code: 'RATE_LIMITED' } }) });
+        await expect(run(['contracts', 'list'])).rejects.toThrow('Too many requests from this API key. Retry in 39s.');
         expect(calls).toHaveLength(1);
     });
 });

@@ -10,12 +10,12 @@ describe('status', () => {
             'GET /api/mainnet/accounts': () => ({
                 payload: {
                     accounts: [
-                        { id: 'a1', chainId: 1, chainIds: [1], address: '0xaaa', accountType: 'contract', name: 'USDC', valueUsd: 2_000_000 },
-                        { id: 'a2', chainId: 42161, chainIds: [42161], address: '0xbbb', accountType: 'contract', name: null, valueUsd: 500_000 },
+                        { id: 'a1', chainId: 1, chainIds: [1], address: '0xaaa', accountType: 'contract', name: 'USDC' },
+                        { id: 'a2', chainId: 42161, chainIds: [42161], address: '0xbbb', accountType: 'contract', name: null },
                     ],
                 },
             }),
-            'GET /api/mainnet/vitals': () => ({ payload: { org: { contracts: 2, chains: 2, tvlUsd: 2_500_000, txTotal: 1234, txFailed: 12 } } }),
+            'GET /api/mainnet/vitals': () => ({ payload: { org: { contracts: 2, chains: 2, txTotal: 1234, txFailed: 12 } } }),
             'GET /api/mainnet/invariants': () => ({
                 payload: {
                     // the server's words: ok, breached, warning, warming, stale; an enabled flag for paused ones
@@ -34,28 +34,28 @@ describe('status', () => {
             'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [{}, {}, {}] } }),
         });
         const report = (await statusCommand([]))!;
-        expect(report).toMatchObject({ contracts: 2, chains: 2, tvlUsd: 2_500_000, tx24h: 1234, failed24h: 12, metrics: 3 });
+        expect(report).toMatchObject({ contracts: 2, chains: 2, tx24h: 1234, failed24h: 12, metrics: 3 });
+        expect(report).not.toHaveProperty('tvlUsd');
         expect(report.monitors).toEqual({ total: 5, healthy: 2, warning: 0, alerting: 1, warming: 1, disabled: 1 });
         expect(report.openAlerts).toHaveLength(1);
         const out = printed();
         expect(out[0]).toBe('Workspace:     Acme (acme)');
-        expect(out[1]).toBe('Contracts:     2 on 2 chains · TVL $2.50M');
+        expect(out[1]).toBe('Contracts:     2 on 2 chains');
         expect(out[2]).toBe('Transactions:  1,234 in 24h · 12 failed');
         expect(out).toContain('Open alerts:   1');
         expect(out.some((line) => line.startsWith('Stagenets'))).toBe(false);
     });
 
-    it('falls back to the rows\' TVL and a dash for transactions when the vitals route fails', async () => {
+    it('prints a dash for transactions when the vitals route fails', async () => {
         mockApi({
             'GET /api/cli/whoami': () => ({ payload: { email: null, org: null, workspaces: [] } }),
-            'GET /api/mainnet/accounts': () => ({ payload: { accounts: [{ id: 'a1', chainId: 1, chainIds: [1], address: '0xaaa', accountType: 'contract', name: null, valueUsd: 100 }] } }),
+            'GET /api/mainnet/accounts': () => ({ payload: { accounts: [{ id: 'a1', chainId: 1, chainIds: [1], address: '0xaaa', accountType: 'contract', name: null }] } }),
             'GET /api/mainnet/vitals': () => ({ status: 503, payload: { error: 'Data unavailable' } }),
             'GET /api/mainnet/invariants': () => ({ payload: { invariants: [] } }),
             'GET /api/mainnet/incidents': () => ({ payload: { days: 1, incidents: [] } }),
             'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [] } }),
         });
         const report = (await statusCommand([]))!;
-        expect(report.tvlUsd).toBe(100);
         expect(report.tx24h).toBeNull();
         expect(printed()[2]).toBe('Transactions:  — in 24h · — failed');
         expect(printed().at(-1)).toBe('Open alerts:   0');
