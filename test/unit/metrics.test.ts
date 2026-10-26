@@ -284,3 +284,56 @@ describe('metrics / untrack', () => {
         expect(printed()[0]).toMatch(/monitors reading it are gone/);
     });
 });
+
+describe('metric pin', () => {
+    useEnvAuth();
+    const tracked = { id: 'm1', chainId: 1, address: VAULT, kind: 'nativeBalance', label: 'Bal', params: null, enabled: true, lastValue: 2 };
+    const tool = () => ({ payload: { ok: true, result: { metrics: [{ id: 'cm1', name: 'Swap fees', kind: 'event' }] } } });
+
+    it('pins a tracked value by its label through its own route', async () => {
+        const calls = mockApi({
+            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [tracked] } }),
+            'PATCH /api/mainnet/tracked-metrics/m1': (c) => ({ payload: { trackedMetric: { ...tracked, pinnedAt: c.body.pinned ? '2026-10-26T12:00:00Z' : null } } }),
+        });
+        await metricsCommand(['pin', 'Bal']);
+        const patch = calls.find((c) => c.method === 'PATCH')!;
+        expect(patch.path).toBe('/api/mainnet/tracked-metrics/m1');
+        expect(patch.body).toEqual({ pinned: true });
+        expect(printed()[0]).toBe("Pinned Bal to the overview's header.");
+        await metricsCommand(['unpin', 'm1']);
+        expect(calls.filter((c) => c.method === 'PATCH')[1].body).toEqual({ pinned: false });
+        expect(printed()[1]).toBe('Unpinned Bal.');
+    });
+
+    it('a name no tracked value has is looked up among the event, table and group metrics', async () => {
+        const calls = mockApi({
+            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [tracked] } }),
+            'POST /api/mainnet/tools/describe_metric': tool,
+            'PATCH /api/mainnet/custom-metrics/cm1': (c) => ({ payload: { metric: { id: 'cm1', name: 'Swap fees', pinnedAt: c.body.pinned ? '2026-10-26T12:00:00Z' : null } } }),
+        });
+        await metricsCommand(['pin', 'swap fees']);
+        const patch = calls.find((c) => c.method === 'PATCH')!;
+        expect(patch.path).toBe('/api/mainnet/custom-metrics/cm1');
+        expect(patch.body).toEqual({ pinned: true });
+        expect(printed()[0]).toBe("Pinned Swap fees to the overview's header.");
+        await expect(metricsCommand(['pin', 'Nothing here'])).rejects.toThrow(/No metric matches "Nothing here"/);
+    });
+
+    it('a pin past the header\'s room repeats the server\'s reason', async () => {
+        mockApi({
+            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [tracked] } }),
+            'PATCH /api/mainnet/tracked-metrics/m1': () => ({ status: 409, payload: { error: 'The overview holds 5 pinned metrics. Unpin one first.' } }),
+        });
+        await expect(metricsCommand(['pin', 'Bal'])).rejects.toThrow(/Unpin one first/);
+    });
+
+    it('lists the pinned ones', async () => {
+        mockApi({
+            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [{ ...tracked, pinnedAt: '2026-10-26T12:00:00Z' }] } }),
+            'POST /api/mainnet/tools/describe_metric': () => ({ payload: { ok: true, result: { metrics: [{ id: 'cm1', name: 'Swap fees', kind: 'event', status: 'ready', records: 12, pinned: true }] } } }),
+        });
+        await metricsCommand([]);
+        expect(printed()[0]).toMatch(/Bal.*\(pinned\)$/);
+        expect(printed().some((l) => /Swap fees.*12 records  \(pinned\)$/.test(l))).toBe(true);
+    });
+});

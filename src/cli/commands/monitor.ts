@@ -4,7 +4,7 @@ import { openBrowser } from '../browser';
 import { runTool } from '../tools';
 import { formatValue, shortHex, TrackedMetric } from './metrics';
 import { parseChainId } from './watch';
-import { chainFlag, limitFlag, parseRange } from '../data';
+import { chainFlag, chainOf, limitFlag, parseRange } from '../data';
 import { DASH, chainLabel, fmtAge, fmtInt, fmtTime, plural, shortAddr, sparkline, table } from '../view';
 import { fmtSpan } from './oracles';
 import { parseUntil, type InvariantExpr } from '../monitor-expr';
@@ -1142,9 +1142,9 @@ async function excludeSubcommand(args: string[], exclude: boolean): Promise<Inva
   const ref = requirePositional(positional, 0, 'default monitor (control-change, dependency-failure or revert-spike)');
   const address = requirePositional(positional, 1, 'contract address');
   if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error(`contract address must be a 0x address (got: ${address})`);
-  const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
-
   const auth = requireAuth();
+  // the contract's own chain when the workspace watches it on one, else --chain: never assumed
+  const chainId = await chainOf(auth, address, chainFlag(flags));
   const existing = await resolveMonitor(auth, ref);
   if (!isBuiltinMonitor(existing)) {
     throw new Error(`"${existing.name}" is a custom monitor — only default monitors cover contracts. Delete or edit its rule instead.`);

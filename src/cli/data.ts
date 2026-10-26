@@ -31,6 +31,31 @@ export function chainFlag(flags: ParsedFlags): number | undefined {
   return raw === undefined ? undefined : parseChainId(raw, '--chain');
 }
 
+/** The sentence that asks for the chain: an address is on every chain, so nothing is assumed. */
+export const sayChain = (what: string): string => `Say which chain ${what} is on: --chain arbitrum (or ethereum, base, 8453, …).`;
+
+/**
+ * The chain to read an address on (2026-10-23): --chain, else the one chain this workspace
+ * watches it on. Never a default: the same address is on every chain, so one the workspace does
+ * not watch, or watches on several chains, asks for --chain (an Arbitrum wallet read on Ethereum
+ * looked like a real answer).
+ */
+export async function chainOf(auth: ResolvedAuth, address: string, chainId: number | undefined): Promise<number> {
+  if (chainId !== undefined) return chainId;
+  const lower = address.toLowerCase();
+  const chains = Array.from(new Set((await workspaceContracts(auth)).filter((c) => c.address.toLowerCase() === lower).map((c) => c.chainId)));
+  if (chains.length === 1) return chains[0];
+  if (chains.length > 1) throw new Error(`${address} is watched on ${chains.map(chainLabel).join(' and ')}: say which with --chain.`);
+  throw new Error(sayChain(address));
+}
+
+/** --chain, required: for what has no chain of its own to go by (a block number, a contract being watched). */
+export function requireChain(flags: ParsedFlags, what: string): number {
+  const chainId = chainFlag(flags);
+  if (chainId === undefined) throw new Error(sayChain(what));
+  return chainId;
+}
+
 /** --limit, a positive whole number up to `max`. */
 export function limitFlag(flags: ParsedFlags, fallback: number, max = 500): number {
   const raw = flag(flags, 'limit');

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { showContract } from './inspect';
 import { parseFlags, flag, requirePositional, type ParsedFlags } from './_args';
+import { requireChain } from '../data';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { runTool } from '../tools';
 import { fmtInt, plural } from '../view';
@@ -21,8 +22,8 @@ Usage:
   contract-dev contracts show <address|name>          One contract at a glance: what it is, what it holds, its last 24h
 
 Flags (watch <address>):
-  --chain <id>     Chain the contract lives on (default: 1). Names work: ethereum, arbitrum,
-                   avalanche, sepolia.
+  --chain <id>     Chain the contract lives on, always said: an address is on every chain.
+                   Names work: ethereum, arbitrum, base, optimism, polygon, bnb, monad, …
   --name <label>   Display name. Omit to use the app's name for the address, else the
                    token's name(), else its verified name; change it later with rename.
   --abi <file>     ABI for a contract the explorer holds no verified source for: a JSON
@@ -265,7 +266,7 @@ export function splitNamed(arg: string): { address: string; name: string } {
 }
 
 async function watchMany(flags: ParsedFlags, args: string[], group: string | undefined): Promise<WatchContractsResult> {
-  const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
+  const chainId = requireChain(flags, args.length === 1 ? splitNamed(args[0]).address : 'each of these contracts');
   const name = flag(flags, 'name');
   const named = args.map(splitNamed);
   const addresses = named.map((n) => n.address);
@@ -295,7 +296,8 @@ async function addSubcommand(args: string[]): Promise<WatchedAccount | WatchCont
   if (group === 'true') throw new Error('--group needs a name');
   if (positional.length > 1 || group !== undefined) return await watchMany(flags, positional, group);
   const { address, name: inline } = splitNamed(positional[0]);
-  const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
+  // a contract is watched per chain, and an address is on every chain: the chain is always said (2026-10-23)
+  const chainId = requireChain(flags, address);
   const name = flag(flags, 'name') ?? (inline || undefined);
   const abiFile = flag(flags, 'abi');
   const abi = abiFile ? readAbiFile(abiFile) : undefined;

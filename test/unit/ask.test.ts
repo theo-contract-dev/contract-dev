@@ -20,7 +20,10 @@ describe('find', () => {
             { chainId: 42161, address: POOL, name: 'ETH/USDC pool', groups: [], kinds: ['pool'], standards: [] },
         ],
         groups: [{ group: 'lido', contracts: 2 }],
-        metrics: [{ id: 'm1', label: 'stETH supply', kind: 'totalSupply', chainId: 1, address: STETH }],
+        metrics: [
+            { id: 'm1', label: 'stETH supply', kind: 'totalSupply', chainId: 1, address: STETH },
+            { id: 'cm1', label: 'Lido deposits', kind: 'event metric', chainId: null, address: '', scope: 'lido' },
+        ],
         monitors: [
             { id: 'inv1', name: 'Transfer on Lido: stETH', kind: 'eventFired', status: 'ok' },
             { id: 'inv2', name: 'Treasury floor', kind: null, status: 'breached' },
@@ -41,15 +44,18 @@ describe('find', () => {
         expect(out[4]).toBe('');
         expect(out[5]).toBe('Groups (1)');
         expect(out[7]).toMatch(/^ {2}lido {2,}2$/);
-        expect(out[9]).toBe('Metrics (1)');
-        expect(out[11]).toMatch(new RegExp(`^ {2}m1 {2,}stETH supply {2,}totalSupply {2,}Ethereum {2,}${STETH}$`));
-        expect(out[13]).toBe('Monitors (2)');
-        expect(out[15]).toMatch(/^ {2}inv1 {2,}Transfer on Lido: stETH {2,}eventFired {2,}ok$/);
-        expect(out[16]).toMatch(/^ {2}inv2 {2,}Treasury floor {2,}custom {2,}breached$/);
+        expect(out[9]).toBe('Metrics (2)');
+        expect(out[10]).toMatch(/^ {2}Id {2,}Label {2,}Kind {2,}On$/);
+        // a tracked value is on one contract; an event, table or group metric says the group or contract it covers
+        expect(out[11]).toMatch(new RegExp(`^ {2}m1 {2,}stETH supply {2,}totalSupply {2,}Ethereum ${STETH}$`));
+        expect(out[12]).toMatch(/^ {2}cm1 {2,}Lido deposits {2,}event metric {2,}lido$/);
+        expect(out[14]).toBe('Monitors (2)');
+        expect(out[16]).toMatch(/^ {2}inv1 {2,}Transfer on Lido: stETH {2,}eventFired {2,}ok$/);
+        expect(out[17]).toMatch(/^ {2}inv2 {2,}Treasury floor {2,}custom {2,}breached$/);
         // no Reports block: the section was empty
-        expect(out[18]).toBe('Destinations (1)');
-        expect(out[20]).toMatch(/^ {2}ch2 {2,}discord_bot {2,}#alerts {2,}Acme$/);
-        expect(out).toHaveLength(21);
+        expect(out[19]).toBe('Destinations (1)');
+        expect(out[21]).toMatch(/^ {2}ch2 {2,}discord_bot {2,}#alerts {2,}Acme$/);
+        expect(out).toHaveLength(22);
         expect(result).toEqual(found);
     });
 

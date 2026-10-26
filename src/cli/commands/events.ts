@@ -27,7 +27,7 @@ Query (with --event): the events themselves, worked through formulas, in the lan
                       [--read "<name>=<call> [on <target>] [with <arg>, …]"]… [--fixed <read>]…
                       [--show "<name>=<expr>"]… [--where "<expr>"] [--sort "<expr>" [--asc]]
                       [--by contract|day|week|sender|<name>]… [--sum|--avg|--min|--max "<expr>" | --count]
-                      [--window 1h|24h|7d|30d|90d] [--limit <n>]
+                      [--window 1h|24h|7d|30d|90d|365d] [--limit <n>]
   --sort ranks the events, largest first (newest first without it); --by groups them and --sum, --avg,
   --min, --max or --count adds each group up (without --by, the whole window: one total). Tokens are named in the formula: usd(raw, token),
   amount(raw, token), the token an address, a read or a parameter (\`contract-dev describe <contract>\` shows each
@@ -171,7 +171,8 @@ export function queryInput(flags: ParsedFlags): Record<string, unknown> {
   if (measures.length > 1) throw new Error('One measure per query: --sum, --avg, --min, --max or --count.');
   if (measures.length === 1) input.measure = measures[0];
   const window = flag(flags, 'window');
-  if (window !== undefined) input.window = window;
+  // a year reads as 1y too
+  if (window !== undefined) input.window = /^(1y|1yr|1year|12m)$/i.test(String(window).trim()) ? '365d' : window;
   if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 20, 100);
   return input;
 }

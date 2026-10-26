@@ -46,7 +46,7 @@ Usage:
                                                       One monitor on every member, judged on a column of the table
   contract-dev group monitor delete <group> <id|name>…  Remove a group monitor and the monitor it put on every member
 
---chain takes an id or a name (ethereum, arbitrum, avalanche, sepolia); the server reads ethereum without one.
+--chain takes an id or a name (ethereum, arbitrum, avalanche, sepolia); a factory or registry not watched here needs it.
 --event / --field name the factory's creation event and its address argument that is the new contract. Both are
 required: nothing is picked from names. Without them the answer lists every event with an address argument.
 --args: the read's argument values in order, comma-separated. Nothing is assumed about what a reading is: --token
@@ -134,7 +134,7 @@ export interface GroupColumn {
   /** A formula column (the read grammar): its expression, its calls, and `type` bool when it answers yes or no. */
   expr?: string;
   type?: string;
-  calls?: Array<{ name: string; kind?: string; signature?: string; on?: string; args?: string[]; key?: string; decimals?: number }>;
+  calls?: Array<{ name: string; kind?: string; signature?: string; output?: string; on?: string; args?: string[]; key?: string; decimals?: number }>;
   kind: string;
 }
 
@@ -204,7 +204,7 @@ export interface ColumnResult {
     unit: ColumnUnit;
     decimalsFrom?: string | null;
     /** A formula column: its calls and its expression; `type` bool when it answers yes or no. */
-    calls?: Array<{ name: string; kind?: string; signature?: string; on?: string; args?: string[]; key?: string; decimals?: number }>;
+    calls?: Array<{ name: string; kind?: string; signature?: string; output?: string; on?: string; args?: string[]; key?: string; decimals?: number }>;
     expr?: string;
     type?: string;
     token?: string;
@@ -221,7 +221,7 @@ function callWords(c: NonNullable<ColumnResult['column']['calls']>[number]): str
   let text: string;
   if (c.kind === 'balance') text = `balance(${on ?? 'self'})`;
   else if (c.kind === 'slot') text = `slot(${on ?? 'self'}, ${c.key ?? '0'})`;
-  else text = `${c.signature ?? ''}${on ? ` on ${on}` : ''}${c.args?.length ? ` with ${c.args.join(', ')}` : ''}`;
+  else text = `${c.signature ?? ''}${c.output ? `.${c.output}` : ''}${on ? ` on ${on}` : ''}${c.args?.length ? ` with ${c.args.join(', ')}` : ''}`;
   return `${c.name} = ${text}${c.decimals ? ` decimals ${c.decimals}` : ''}`;
 }
 

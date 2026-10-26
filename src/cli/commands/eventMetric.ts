@@ -13,19 +13,27 @@ import { printResult } from './_print';
 export const EVENT_METRIC_HELP = `Event metrics — a number added up from events, each read exactly at its own transaction:
   contract-dev metric define "<name>" --event <Event> [--event …] [--group <group> | --contract <ref>]
                               [--read "<name>=<call>[.<output>] [on <target>] [with <arg>, …]"]… [--fixed <read>]…
-                              [--field "<name>=<expr>"]… [--value "<expr>"] [--where "<rule>"]
-                              [--aggregate sum|count|avg|min|max] [--split contract|none|<name>] [--unit usd|count|number]
+                              [--field "<name>=<expr>[ on <Event>]"]… [--value "<expr>"] [--where "<rule>"]
+                              [--aggregate sum|count|avg|min|max|latest] [--split contract|none|<name>] [--unit usd|count|number]
+                              [--line "<an index>"]          What one line of the split is, as the person would say it; needed
+                                                      when --split is a parameter, read or field (--split index --line "an index")
                               [--history <days>] [--keep <param>[,<param>…] | --keep all]
+                              [--description "<sentence>"]   One sentence saying what it measures, the top of its page
                               [--pair "<Event> [on <field>]"]…   Another event of the same transaction, its fields read as Event.field
                                                       (--event BridgeStarted --pair "DZapBridgeStarted on transactionId" --split DZapBridgeStarted.integrator)
                                                       Saved at once; its history is read back in the background and
                                                       kept up to date
+                                                      A field "on <Event>" is for that event alone: the same name once per
+                                                      event when the events name a thing differently (--field "amt=amount
+                                                      on BridgeStarted" --field "amt=amountIn on CctpBridgeTransferStarted")
   contract-dev metric events                          The event metrics: scope, events, unit, status, records
   contract-dev metric show <name> [--days <n>] [--by hour|day] [--split <contract|key>] [--records <n>] [--newest]
                                                       Its total, the largest contracts, a series, and the records behind
                                                       it with their parameters, reads and fields
   contract-dev metric update <name> [--name "<new>"] [any define flag]   Replace those parts; the history is read again
   contract-dev metric delete <name>
+  contract-dev metric pin <name> | unpin <name>       Show the metric in the overview's header, after Contracts and Activity
+                                                      (five at most, in the order pinned), or take it off
   contract-dev metric table "<name>" --table "<table>" [--column "<label>"] [--among active|done|all]
                               [--aggregate sum|count|avg|min|max] [--split contract|none] [--unit usd|count|number]
                                                       A number over a table's rows, recorded each minute from now
@@ -59,7 +67,10 @@ Expressions use the event's parameters by name (a struct's member as swapInfo.fr
 a struct array's member as a list: sum(usd(swapInfo.fromAmount, swapInfo.fromToken)), len(swapInfo.fromAmount)), the reads, earlier fields, emitter(), sender(), time(), block(),
 tx(), amount(raw, token), usd(raw, token) at the event's day's price (native ETH is token 0x0000…0000, written out in
 full), price(token), if(), min(), max(), abs(),
-round(). Arithmetic is exact. Every chain the workspace watches; up to 89 days of history.
+round(). Arithmetic is exact. Every chain the workspace watches; the plan's history (7 days on Free, 90 on Team).
+--aggregate latest reads a LEVEL off the events: each split's newest value is carried forward until its next
+event and the splits add up, so the figure is the value now, never a sum over the period (an index's AUM from
+the per-Garden value every rebalance round emits). Use it when the event carries a balance or a total.
 
 Example (Uniswap v3 swap fees in dollars, per pool):
   contract-dev metric define "Swap fees" --group "Uniswap v3" --event Swap \\
@@ -133,22 +144,27 @@ export function definitionFrom(flags: ParsedFlags): Record<string, unknown> {
   const fixed = new Set(flagAll(flags, 'fixed').map((f) => f.trim()));
   const reads = flagAll(flags, 'read').map((r) => parseRead(r, fixed));
   if (reads.length > 0) input.reads = reads;
+  // "<name>=<expr> on <Event>": the expression is for that event alone, the same name given once per event when
+  // the events name the same thing differently (an update with no --event takes any name there; the server checks it)
+  const eventNames = events.map((e) => e.trim().split('(')[0].trim().toLowerCase());
   const fields = flagAll(flags, 'field').map((raw) => {
     const eq = raw.indexOf('=');
     const name = eq > 0 ? raw.slice(0, eq).trim() : '';
-    const expr = eq > 0 ? raw.slice(eq + 1).trim() : '';
-    if (!name || !expr) throw new Error('--field takes name=expression: --field "in0=if(amount0 > 0, amount0, 0)".');
-    return { name, expr };
+    const whole = eq > 0 ? raw.slice(eq + 1).trim() : '';
+    if (!name || !whole) throw new Error('--field takes name=expression: --field "in0=if(amount0 > 0, amount0, 0)", or name=expression on <Event>: --field "amt=amount on BridgeStarted" --field "amt=amountIn on CctpBridgeTransferStarted".');
+    const m = /^(.*\S)\s+on\s+([A-Za-z_][A-Za-z0-9_]*)$/s.exec(whole);
+    const on = m && (eventNames.length === 0 || eventNames.includes(m[2].toLowerCase())) ? m[2] : undefined;
+    return { name, expr: on ? m![1].trim() : whole, ...(on ? { on } : {}) };
   });
   if (fields.length > 0) input.fields = fields;
-  for (const key of ['value', 'where', 'aggregate', 'split', 'unit'] as const) {
+  for (const key of ['value', 'where', 'aggregate', 'split', 'line', 'unit'] as const) {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }
   const history = flag(flags, 'history');
   if (history !== undefined) {
     const n = Number(String(history).replace(/d$/, ''));
-    if (!Number.isInteger(n) || n < 1 || n > 89) throw new Error('--history takes a number of days from 1 to 89.');
+    if (!Number.isInteger(n) || n < 1 || n > 365) throw new Error('--history takes a number of days from 1 to 365.');
     input.history = n;
   }
   // parameters kept on every record beyond what the formulas read: --keep recipient --keep swapInfo.dex, or --keep all
@@ -164,7 +180,7 @@ export function definitionFrom(flags: ParsedFlags): Record<string, unknown> {
   return input;
 }
 
-const scopeInput = (flags: ParsedFlags): Record<string, unknown> => {
+export const scopeInput = (flags: ParsedFlags): Record<string, unknown> => {
   const group = flag(flags, 'group');
   const contract = flag(flags, 'contract');
   const chainId = chainFlag(flags);
@@ -183,7 +199,8 @@ export async function defineEventMetric(args: string[]): Promise<unknown> {
   const name = requirePositional(flags._ as string[], 0, 'name');
   const definition = definitionFrom(flags);
   if (!definition.events) throw new Error('--event names what is counted: --event Swap.');
-  return print('define_metric', { name, ...scopeInput(flags), ...definition });
+  const description = flag(flags, 'description');
+  return print('define_metric', { name, ...scopeInput(flags), ...(description ? { description } : {}), ...definition });
 }
 
 /** `metric show <name>` for an event metric; null when no event metric has that name. */
@@ -194,7 +211,7 @@ export async function showEventMetric(args: string[]): Promise<unknown> {
   const days = flag(flags, 'days') ?? flag(flags, 'range');
   if (days !== undefined) {
     const n = Number(String(days).replace(/d$/, ''));
-    if (!Number.isInteger(n) || n < 1 || n > 90) throw new Error('--days takes a number of days from 1 to 90.');
+    if (!Number.isInteger(n) || n < 1 || n > 365) throw new Error('--days takes a number of days from 1 to 365.');
     input.days = n;
   }
   for (const key of ['by', 'split'] as const) {
@@ -207,11 +224,16 @@ export async function showEventMetric(args: string[]): Promise<unknown> {
   return print('describe_metric', input);
 }
 
-/** Whether a name is an event metric's (for `metric show`, which also reads tracked values). */
-export async function isEventMetric(ref: string): Promise<boolean> {
+/** An event, table or group metric by its id or name (case-insensitively), or null when none has it. */
+export async function findEventMetric(ref: string): Promise<{ id: string; name: string } | null> {
   const list = await runTool<{ metrics?: { id: string; name: string }[] }>(requireAuth(), 'describe_metric', {});
   const r = ref.trim().toLowerCase();
-  return (list.metrics ?? []).some((m) => m.id === ref.trim() || m.name.trim().toLowerCase() === r);
+  return (list.metrics ?? []).find((m) => m.id === ref.trim() || m.name.trim().toLowerCase() === r) ?? null;
+}
+
+/** Whether a name is an event metric's (for `metric show`, which also reads tracked values). */
+export async function isEventMetric(ref: string): Promise<boolean> {
+  return (await findEventMetric(ref)) != null;
 }
 
 /** The event metrics, for `metric events`. */
@@ -228,9 +250,10 @@ export async function updateEventMetric(args: string[]): Promise<unknown> {
   const flags = parseFlags(args);
   const metric = requirePositional(flags._ as string[], 0, 'metric');
   const name = flag(flags, 'name');
+  const description = flag(flags, 'description');
   const definition = definitionFrom(flags);
-  if (!name && Object.keys(definition).length === 0) throw new Error('Nothing to change: pass --name "<name>" or the parts of the definition to replace (--event, --read, --field, --value, --where, …).');
-  return print('update_metric', { metric, ...(name ? { name } : {}), ...definition });
+  if (!name && description === undefined && Object.keys(definition).length === 0) throw new Error('Nothing to change: pass --name "<name>", --description "<sentence>" or the parts of the definition to replace (--event, --read, --field, --value, --where, …).');
+  return print('update_metric', { metric, ...(name ? { name } : {}), ...(description !== undefined ? { description } : {}), ...definition });
 }
 
 export async function deleteEventMetric(args: string[]): Promise<unknown> {
@@ -365,7 +388,7 @@ export async function defineGroupMetric(args: string[]): Promise<unknown> {
   const column = flag(flags, 'column');
   if (!column) throw new Error('--column names the column to roll up, by key or label.');
   const input: Record<string, unknown> = { name, group, column };
-  for (const key of ['aggregate', 'split', 'unit', 'token'] as const) {
+  for (const key of ['aggregate', 'split', 'unit', 'token', 'description'] as const) {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }
@@ -380,7 +403,7 @@ export async function defineItemMetric(args: string[]): Promise<unknown> {
   const table = flag(flags, 'table');
   if (!table) throw new Error('--table names the item table (contract-dev table list shows them).');
   const input: Record<string, unknown> = { name, table };
-  for (const key of ['column', 'among', 'aggregate', 'split', 'unit'] as const) {
+  for (const key of ['column', 'among', 'aggregate', 'split', 'unit', 'description'] as const) {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }

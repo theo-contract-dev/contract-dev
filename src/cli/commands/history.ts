@@ -26,7 +26,7 @@ changes, like asset() or token0()), the token named in it (\`contract-dev descri
 token as checked against the contract's transactions). Then the spread of those values (total, quartiles, dollar
 buckets when the formula prices them, each firing at its own day's price), and each contract's and wallet's total.
 --who counts by an address field of the event (account, owner); by default the transaction's signer. A long history is read over up to three calls (--once stops after one).
---save [bars|table] keeps the timeline at a page in the app (a chart) and prints its link; --of contracts or --of wallets keeps that table instead; --title names the page.
+--save [bars|table] saves the timeline as a snapshot under Queries (a chart) and prints its link; --of contracts or --of wallets saves that table instead; --title names the page.
 --address reads a contract nobody watches (a position manager, a factory) straight from the chain's log history,
 narrowed: --wallet with --who naming an indexed address field (--who to --wallet 0x…) is applied by the log index
 itself, or --window is 30d at most. With no verified ABI, write the event as its full signature.

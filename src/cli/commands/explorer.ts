@@ -3,10 +3,11 @@ import { dirname, isAbsolute, join, normalize, resolve } from 'node:path';
 import { parseFlags, flag } from './_args';
 import { requireAuth, apiRequest, ResolvedAuth } from '../credentials';
 import { runTool } from '../tools';
-import { chainFlag, isAddress, limitFlag, resolveContract, workspaceContracts } from '../data';
+import { chainFlag, chainOf, isAddress, limitFlag, requireChain, resolveContract } from '../data';
 import { DASH, chainLabel, fmtAge, fmtCompact, fmtInt, fmtUsd, nameOr, plural, shortAddr, table } from '../view';
 import { relPath } from '../format';
 import { feedPanelRows, loadFeed, type ChainlinkFeedFacts } from './oracles';
+import { CHAIN_NAMES } from './watch';
 
 const HELP = `contract-dev explorer lookups — any transaction, address or block on a supported chain
 
@@ -15,16 +16,19 @@ Usage:
   contract-dev address <0x…> [--chain] [--limit]         An address: balance, what it is, its recent transactions;
                                                          a Chainlink feed says what it reads now and its published terms
   contract-dev block <number> [--chain] [--limit]        A block and its transactions
-  contract-dev wallet <0x…> [--chain] [--approvals|--txs]   A wallet's tokens, its open approvals, or its transactions
+  contract-dev wallet <0x…> [--chain] [--approvals]     A wallet's transactions (every chain without --chain), or its
+                                                         open approvals
   contract-dev source <contract|0x…> [--chain] [--out <dir>]  A contract's verified source; --out writes the files
 
-Chains: Ethereum, Arbitrum, Avalanche and Sepolia. Without --chain, tx looks on each of them,
-address and source use the chain a watched contract is on (else Ethereum), and block reads
-Ethereum. Add --json for the full answers.
+--chain takes an id or a name (ethereum, arbitrum, base, …). Nothing is assumed: a block needs
+it; an address needs it unless the workspace watches that address on one chain; tx without it
+looks on every chain; source without it uses a watched contract's chain or looks the address up.
+Add --json for the full answers.
 `;
 
-const CHAINS = [1, 42161, 43114, 11155111];
-const NATIVE: Record<number, string> = { 1: 'ETH', 42161: 'ETH', 43114: 'AVAX', 11155111: 'ETH' };
+// a hash is on one chain only, so tx without --chain asks every chain the CLI names
+const CHAINS = Array.from(new Set(Object.values(CHAIN_NAMES)));
+const NATIVE: Record<number, string> = { 1: 'ETH', 42161: 'ETH', 43114: 'AVAX', 11155111: 'ETH', 8453: 'ETH', 10: 'ETH', 137: 'POL', 56: 'BNB', 143: 'MON' };
 
 /** A wei amount as the chain's coin: 1.5 ETH, 0.000123 AVAX. */
 export function fmtNative(wei: string | null | undefined, chainId: number): string {
@@ -179,13 +183,6 @@ interface AddressPayload {
   txs: Array<{ hash: string; blockNumber: number; timestamp: number; from: string; to: string | null; valueWei: string; methodName: string | null; selector: string | null; failed: boolean }>;
 }
 
-/** The chain to read an address on: --chain, else the chain it is watched on, else Ethereum. */
-async function chainForAddress(auth: ResolvedAuth, address: string, chainId: number | undefined): Promise<number> {
-  if (chainId !== undefined) return chainId;
-  const watched = await workspaceContracts(auth).catch(() => []);
-  return watched.find((w) => w.address.toLowerCase() === address.toLowerCase())?.chainId ?? 1;
-}
-
 export async function addressCommand(args: string[]): Promise<AddressPayload | void> {
   if (help(args)) {
     console.log(HELP);
@@ -196,7 +193,7 @@ export async function addressCommand(args: string[]): Promise<AddressPayload | v
   if (!isAddress(address)) throw new Error('address takes an address (0x…).');
   const limit = limitFlag(flags, 15, 50);
   const auth = requireAuth();
-  const chainId = await chainForAddress(auth, address, chainFlag(flags));
+  const chainId = await chainOf(auth, address, chainFlag(flags));
   const a = await apiRequest<AddressPayload>(auth, 'GET', `/api/mainnet/explorer/address?chainId=${chainId}&address=${address.toLowerCase()}`, undefined, { timeoutMs: 60_000 });
   const id = a.identity;
   console.log(`${a.address} · ${chainLabel(chainId)} · ${a.isContract ? 'contract' : 'wallet'}`);
@@ -254,7 +251,7 @@ export async function blockCommand(args: string[]): Promise<BlockPayload | void>
   const flags = parseFlags(args);
   const n = Number(flags._[0]);
   if (!Number.isInteger(n) || n < 0) throw new Error('block takes a block number.');
-  const chainId = chainFlag(flags) ?? 1;
+  const chainId = requireChain(flags, `block ${n}`);
   const limit = limitFlag(flags, 20, 1000);
   const auth = requireAuth();
   const b = await apiRequest<BlockPayload>(auth, 'GET', `/api/mainnet/explorer/block?chainId=${chainId}&number=${n}`, undefined, { timeoutMs: 60_000 });
@@ -279,12 +276,6 @@ export async function blockCommand(args: string[]): Promise<BlockPayload | void>
 }
 
 // ── wallet ───────────────────────────────────────────────────────────────
-
-interface WalletTokens {
-  totalUsd: number | null;
-  truncated: boolean;
-  tokens: Array<{ chainId: number; tokenAddress: string | null; symbol: string; name: string; balanceFormatted: number; usdPrice: number | null; usdValue: number | null; nativeToken: boolean }>;
-}
 
 interface WalletApprovals {
   totalUsdAtRisk: number;
@@ -333,43 +324,26 @@ export async function walletCommand(args: string[]): Promise<unknown> {
     return a;
   }
 
-  if (flag(flags, 'txs') === 'true') {
-    const t = await apiRequest<WalletTxs>(auth, 'GET', `${base}/transactions${q}`, undefined, opts);
-    console.log(`${address} · transactions · ${where}\n`);
-    if (!t.transactions?.length) {
-      console.log('No transactions.');
-      return t;
-    }
-    for (const line of table(t.transactions.slice(0, limit), [
-      { header: 'Age', value: (r) => fmtAge(Date.parse(r.timestamp)), align: 'right' },
-      { header: 'Dir', value: (r) => r.direction },
-      { header: 'Method', value: (r) => r.method ?? 'transfer', max: 24 },
-      { header: 'Counterparty', value: (r) => shortAddr(r.counterparty) },
-      { header: 'Value', value: (r) => `${fmtCompact(r.valueNative)} ${r.nativeSymbol}`, align: 'right' },
-      { header: 'Gas', value: (r) => fmtUsd(r.gasCostUsd), align: 'right' },
-      { header: 'Status', value: (r) => (r.failed ? 'failed' : 'success') },
-      { header: 'Tx', value: (r) => r.hash },
-    ])) {
-      console.log(line);
-    }
+  // its transactions, the default (--txs still reads them): the token balances went with holdings (2026-10-22)
+  const t = await apiRequest<WalletTxs>(auth, 'GET', `${base}/transactions${q}`, undefined, opts);
+  console.log(`${address} · transactions · ${where}\n`);
+  if (!t.transactions?.length) {
+    console.log('No transactions.');
     return t;
   }
-
-  const w = await apiRequest<WalletTokens>(auth, 'GET', `${base}/tokens${q}`, undefined, opts);
-  console.log(`${address} · tokens · ${where}`);
-  console.log(`${fmtUsd(w.totalUsd)} across ${plural(w.tokens?.length ?? 0, 'token')}${w.truncated ? ' (the largest only)' : ''}\n`);
-  const tokens = (w.tokens ?? []).slice().sort((a, b) => (b.usdValue ?? -1) - (a.usdValue ?? -1)).slice(0, limit);
-  for (const line of table(tokens, [
-    { header: 'Token', value: (r) => r.symbol, max: 16 },
-    { header: 'Chain', value: (r) => chainLabel(r.chainId) },
-    { header: 'Balance', value: (r) => fmtCompact(r.balanceFormatted), align: 'right' },
-    { header: 'Price', value: (r) => (r.usdPrice == null ? DASH : r.usdPrice >= 1 ? `$${r.usdPrice.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : `$${r.usdPrice.toPrecision(3)}`), align: 'right' },
-    { header: 'Value', value: (r) => fmtUsd(r.usdValue), align: 'right' },
-    { header: 'Address', value: (r) => (r.nativeToken ? 'native' : r.tokenAddress ?? DASH) },
+  for (const line of table(t.transactions.slice(0, limit), [
+    { header: 'Age', value: (r) => fmtAge(Date.parse(r.timestamp)), align: 'right' },
+    { header: 'Dir', value: (r) => r.direction },
+    { header: 'Method', value: (r) => r.method ?? 'transfer', max: 24 },
+    { header: 'Counterparty', value: (r) => shortAddr(r.counterparty) },
+    { header: 'Value', value: (r) => `${fmtCompact(r.valueNative)} ${r.nativeSymbol}`, align: 'right' },
+    { header: 'Gas', value: (r) => fmtUsd(r.gasCostUsd), align: 'right' },
+    { header: 'Status', value: (r) => (r.failed ? 'failed' : 'success') },
+    { header: 'Tx', value: (r) => r.hash },
   ])) {
     console.log(line);
   }
-  return w;
+  return t;
 }
 
 // ── source ───────────────────────────────────────────────────────────────
@@ -462,7 +436,7 @@ export async function sourceCommand(args: string[]): Promise<unknown> {
     address = c.address;
     chainId = c.chainId;
   }
-  chainId = await chainForAddress(auth, address, chainId);
+  chainId = await chainOf(auth, address, chainId);
   const s = await apiRequest<{ name: string | null; sourceCode: string | null }>(auth, 'GET', `/api/mainnet/explorer/source?chainId=${chainId}&address=${address.toLowerCase()}`, undefined, {
     timeoutMs: 60_000,
   });

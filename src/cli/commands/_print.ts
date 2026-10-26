@@ -1,7 +1,7 @@
 // A tool's answer as terminal lines, for the commands that print a whole result (table, history):
 // a scalar as `label  value`, a list of flat rows as an aligned table, a section indented under its
 // name. --json still hands back the tool's own result, so nothing here decides what is said.
-import { DASH, table, type Column } from '../view';
+import { DASH, fmtSpan, fmtUsd, table, type Column } from '../view';
 
 const isScalar = (v: unknown): v is string | number | boolean | null => v == null || ['string', 'number', 'boolean'].includes(typeof v);
 const human = (k: string): string => k.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
@@ -17,6 +17,38 @@ export function cell(v: unknown): string {
   const o = v as Record<string, unknown>;
   if (typeof o.address === 'string') return typeof o.name === 'string' && o.name ? `${o.name} (${o.address})` : o.address;
   return JSON.stringify(v);
+}
+
+/** A value as its column's unit says: a unix time as a UTC stamp, a duration (held in seconds) compactly (3h, 12d), dollars as dollars ($436.8K); anything else as the server sent it. */
+export function byUnit(v: unknown, unit: string | undefined): unknown {
+  if (typeof v !== 'number') return v;
+  if (unit === 'time') return new Date(v * 1000).toISOString().slice(0, 16).replace('T', ' ');
+  if (unit === 'duration') return fmtSpan(v);
+  if (unit === 'usd') return fmtUsd(v);
+  return v;
+}
+
+/** A breakdown's column: each row's `breakdown` holds its parts (that column's value, `value`, `rows`). */
+export interface BreakdownColumn {
+  key: string;
+  label: string;
+  unit?: string;
+}
+
+/**
+ * The cells of rows split again by a column (a wallet, then its chains): each row as it is, then
+ * one line per part under it, indented, its value in the first column and its own figures (each
+ * measure, its rows) under the row's; the row's other columns stay blank on a part's line.
+ */
+export function partCells(rows: Record<string, unknown>[], keys: string[], unitOf: Map<string, string | undefined>, split: BreakdownColumn | undefined): string[][] {
+  const out: string[][] = [];
+  for (const r of rows) {
+    out.push(keys.map((k) => cell(byUnit(r[k], unitOf.get(k)))));
+    const parts = split && Array.isArray(r.breakdown) ? (r.breakdown as Record<string, unknown>[]) : [];
+    // the part's own figures (each measure, its rows) under the row's; the row's other columns stay blank
+    for (const x of parts) out.push(keys.map((k, i) => (i === 0 ? `  ${cell(byUnit(x[split!.key], split!.unit))}` : k !== 'parts' && Object.prototype.hasOwnProperty.call(x, k) ? cell(byUnit(x[k], unitOf.get(k))) : '')));
+  }
+  return out;
 }
 
 /** A list of rows as a table: the columns the first rows carry, scalars first, at most `maxColumns`. */

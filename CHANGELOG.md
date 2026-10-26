@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+### Changed — tables are live, queries are snapshots
+- `contract-dev table create "<name>" --from <data>` with `query`'s own flags makes a LIVE TABLE under Tables, asked
+  again while it is open: `--from "<data name>"` (event data, a metric's records, a table's rows) or `--from
+  transactions`, `transfers`, `wallets`, `contracts`, `metrics`, `monitors`, `alerts`, `reports`. `--opens <Event>`
+  still makes a table of things that open and close inside contracts. `table list`, `table show` and `table delete`
+  cover both kinds.
+- `--keep` on `query`, `events` and `history` is gone (it says what to use instead): `--save` saves a SNAPSHOT under
+  Queries, the answer as it was. Live tables are over data the workspace keeps, so `events` and `history` save
+  snapshots only.
+- `contract-dev queries` lists the snapshots alone; `queries keep` and `queries unkeep` are gone (a snapshot stays a
+  snapshot: make a live table from the same question, or with Make live table on its page).
+- After a save the CLI says which it made: `Snapshot under Queries, drawn as a table · …` or `Live table under Tables · …`.
+
+### Added
+- `contract-dev metric pin <name>` / `metric unpin <name>`: the metric in the overview's header, after Contracts and
+  Activity, with its figure and the day's shape (hourly bars for a sum or count, a spark for a level). Five at most,
+  in the order pinned; a tracked value by id or label, or an event, table or group metric by name. `metrics` marks
+  the pinned ones.
+- `metric define|update|table|group --description "<sentence>"`: one sentence saying what the metric measures, shown
+  at the top of its page.
+- `metric define|update --line "<an index>"`: what one line of the split is, as the person would say it, shown at
+  the top of the metric's page as "Each line  An index". Required with `--split <name>`; the field's name would say
+  nothing to a reader.
+- `metric define|update --field "<name>=<expr> on <Event>"`: a field for one of the counted events alone, the same
+  name given once per event when the events name a thing differently (`--field "amt=amount on BridgeStarted"
+  --field "amt=amountIn on CctpBridgeTransferStarted"`), in place of `if(amount == null, amountIn, amount)`.
+
+- `query … --by <column> --breakdown <column>`: each group split again, its parts listed under it, largest first,
+  with a column counting them. `query metric "Swap volume" --by wallet --sum "{Value}" --breakdown chain` is
+  each wallet's total and how many chains, then its total on each; live tables open each row onto its parts, and
+  `queries csv` writes one line per part. Metric records gain a Chain column.
+
+- `query … --by <column> --measure <name>="<fn>(<expr>) [where <rule>]"` (repeatable): several named values per group, each
+  a column (count, sum, avg, min, max, distinct, first, last), each counting or adding only the rows its `where` keeps: an
+  integrator table with swaps, bridges and volume side by side from one dataset. `--distinct`, `--first`, `--last` as single
+  measures; `--having "<rule>"` keeps groups by their values; `--sort` with `--by` ranks the groups by any measure.
+- `contract-dev data list|define|query`: the rows the workspace keeps, by name. `data define` keeps event data (each event a row
+  with its fields, no number in mind; its own figure is a count); `query data "<name>"` asks any event data (a metric's records
+  included) or table a question. Table rows gain a Chain column.
+
+### Fixed
+- `query` and `queries show` print dollar columns as dollars (`$436.8K`), their totals too, as the app does.
+- `query metric help` (and `query <dataset> --help`) prints the help instead of looking for a metric called "help".
+- `find` lists event, table and group metrics beside the tracked values, each with the group or contract it covers.
+
 ## 3.0.0 — 2026-10-23
 
 ### Removed — the stagenet commands

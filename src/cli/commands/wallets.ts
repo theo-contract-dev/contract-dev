@@ -5,6 +5,7 @@
 // `query transactions|transfers|wallets --contract <name>` like a contract's. A group holds contracts
 // or wallets, never both.
 import { parseFlags, flag, requirePositional } from './_args';
+import { requireChain } from '../data';
 import { apiRequest, requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { describeAccount, findWatchedAccount, parseChainId, renameCommand, unwatchCommand, type WatchedAccount } from './watch';
@@ -37,7 +38,7 @@ async function addWallet(args: string[]): Promise<WatchedAccount> {
   const positional = flags._ as string[];
   const address = requirePositional(positional, 0, 'address');
   if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error(`Not an address: ${address}`);
-  const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
+  const chainId = requireChain(flags, address);
   const name = flag(flags, 'name');
   const group = flag(flags, 'group');
   if (group === 'true') throw new Error('--group needs a name');

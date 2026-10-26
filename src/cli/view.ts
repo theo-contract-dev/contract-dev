@@ -92,14 +92,20 @@ export function fmtChange(now: number | null | undefined, prev: number | null | 
 
 // ── time ─────────────────────────────────────────────────────────────────
 
-/** How long ago, compactly: 42s · 12m · 3h · 2d. */
-export function fmtAge(ms: number | null | undefined, now = Date.now()): string {
-  if (!finite(ms) || ms <= 0) return DASH;
-  const s = Math.max(0, Math.round((now - ms) / 1000));
+/** A span of seconds, compactly: 42s · 12m · 3h · 2d. Zero is 0s. */
+export function fmtSpan(seconds: number | null | undefined): string {
+  if (!finite(seconds)) return DASH;
+  const s = Math.max(0, Math.round(seconds));
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
+}
+
+/** How long ago, compactly: 42s · 12m · 3h · 2d. */
+export function fmtAge(ms: number | null | undefined, now = Date.now()): string {
+  if (!finite(ms) || ms <= 0) return DASH;
+  return fmtSpan((now - ms) / 1000);
 }
 
 /** 2026-10-01 03:19 UTC — an absolute time that reads the same on every machine. */

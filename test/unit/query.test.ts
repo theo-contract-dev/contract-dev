@@ -1,4 +1,5 @@
 import { run } from '../../src/cli/index';
+import { parseMeasure } from '../../src/cli/commands/query';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
 
 const ok = (result: unknown) => ({ status: 200, payload: { ok: true, result } });
@@ -52,6 +53,63 @@ describe('query', () => {
         await expect(run(['query', 'monitors', '--count'])).rejects.toThrow(/say --by/);
         await expect(run(['query', 'monitors', '--show', '{Held} - 1'])).rejects.toThrow(/name=expression/);
         await expect(run(['query', 'table'])).rejects.toThrow(/Name the table/);
+    });
+
+    it('help after the dataset is the help, never a metric or table called "help"', async () => {
+        const calls = mockApi({});
+        await run(['query', 'metric', 'help']);
+        await run(['query', 'table', '--help']);
+        expect(calls).toHaveLength(0);
+        expect(printed().join('\n')).toMatch(/contract-dev query — ask one dataset a question/);
+    });
+
+    it('--breakdown splits each group again: sent with --by, its parts printed indented under each row', async () => {
+        const calls = mockApi({
+            'POST /api/mainnet/tools/query_metric': () =>
+                ok({
+                    dataset: 'metric',
+                    columns: [
+                        { key: 'sender', label: 'Wallet', kind: 'text' },
+                        { key: 'value', label: 'sum of Value', kind: 'number', unit: 'usd' },
+                        { key: 'rows', label: 'Rows', kind: 'number', unit: 'count' },
+                        { key: 'parts', label: 'Chains', kind: 'number', unit: 'count' },
+                    ],
+                    breakdown: { key: 'chain', label: 'Chain', kind: 'text' },
+                    rows: [{ sender: '0xa', value: 530, rows: 4, chainId: 8453, parts: 2, breakdown: [{ chain: 'Base', value: 500, rows: 1, chainId: 8453 }, { chain: 'Ethereum', value: 30, rows: 3, chainId: 1 }] }],
+                    matched: 1,
+                    returned: 1,
+                    more: 0,
+                    grouped: { by: ['sender'], measure: 'sum({Value})' },
+                }),
+        });
+        await run(['query', 'metric', 'Swap volume', '--by', 'wallet', '--sum', '{Value}', '--breakdown', 'chain']);
+        expect(calls[0].body.input).toEqual({ by: ['wallet'], measure: { fn: 'sum', expr: '{Value}' }, breakdown: 'chain', metric: 'Swap volume' });
+        const out = printed();
+        const at = out.findIndex((l) => /^0xa /.test(l));
+        expect(out[at]).toMatch(/^0xa +\$530 +4 +2$/);
+        expect(out[at + 1]).toMatch(/^ {2}Base +\$500 +1$/);
+        expect(out[at + 2]).toMatch(/^ {2}Ethereum +\$30 +3$/);
+        await expect(run(['query', 'metric', 'Swap volume', '--breakdown', 'chain'])).rejects.toThrow(/say --by/);
+    });
+
+    it('a dollar column prints as dollars, its totals too; a count stays a number', async () => {
+        mockApi({
+            'POST /api/mainnet/tools/query_metric': () =>
+                ok({
+                    dataset: 'metric',
+                    columns: [{ key: 'sender', label: 'Wallet', kind: 'text' }, { key: 'value', label: 'sum of Value', kind: 'number', unit: 'usd' }, { key: 'rows', label: 'Rows', kind: 'number', unit: 'count' }],
+                    rows: [{ sender: '0x3008', value: 436767.93603, rows: 27 }],
+                    matched: 1,
+                    returned: 1,
+                    more: 0,
+                    totals: { value: 436767.93603 },
+                    grouped: { by: ['sender'], measure: 'sum({Value})' },
+                }),
+        });
+        await run(['query', 'metric', 'Swap volume', '--by', 'sender', '--sum', '{Value}', '--total', 'value']);
+        const out = printed().join('\n');
+        expect(out).toMatch(/0x3008 +\$436\.8K +27/);
+        expect(out).toMatch(/Totals: value \$436\.8K/);
     });
 });
 
@@ -168,5 +226,101 @@ describe('query transactions / transfers / wallets', () => {
         expect(calls[2].body.input).toEqual({ days: 7 });
         expect(out).toContain('Active 26 (the window before: 22) · New 16 (before: 15)');
         await expect(run(['query', 'transfers', '--in', '--out'])).rejects.toThrow(/not both/);
+    });
+});
+
+describe('query measures', () => {
+    useEnvAuth();
+
+    it('parseMeasure reads name=fn(expr) [where rule], an expression holding calls and quotes of its own', () => {
+        expect(parseMeasure('swaps=count')).toEqual({ name: 'swaps', fn: 'count' });
+        expect(parseMeasure('volume=sum({Value})')).toEqual({ name: 'volume', fn: 'sum', expr: '{Value}' });
+        expect(parseMeasure('vol=sum(usd(amount, if(token == "x", t0, t1)))')).toEqual({ name: 'vol', fn: 'sum', expr: 'usd(amount, if(token == "x", t0, t1))' });
+        expect(parseMeasure('bridges=count where {Event} == "BridgeStarted"')).toEqual({ name: 'bridges', fn: 'count', where: '{Event} == "BridgeStarted"' });
+        expect(parseMeasure('big=sum({Value}) where {Value} > 10000')).toEqual({ name: 'big', fn: 'sum', expr: '{Value}', where: '{Value} > 10000' });
+        expect(parseMeasure('chains=DISTINCT(chain)')).toEqual({ name: 'chains', fn: 'distinct', expr: 'chain' });
+        expect(() => parseMeasure('sum({Value})')).toThrow(/name=/);
+        expect(() => parseMeasure('x=median({Value})')).toThrow(/not a measure/);
+        expect(() => parseMeasure('x=sum(({Value})')).toThrow(/never closes/);
+        expect(() => parseMeasure('x=sum({Value}) when 1')).toThrow(/only "where <rule>"/);
+    });
+
+    it('--measure, --having and a group --sort go to the tool; query data names its data, with days or among', async () => {
+        const calls = mockApi({
+            'POST /api/mainnet/tools/query_data': () => ok({ dataset: 'metric', data: { name: 'DZap swaps', kind: 'data' }, columns: [], rows: [], matched: 0, returned: 0, more: 0 }),
+        });
+        await run(['query', 'data', 'DZap', 'swaps', '--days', '90', '--by', 'wallet', '--measure', 'volume=sum(vol)', '--measure', 'swaps=count', '--having', 'volume > 10000', '--sort', 'swaps']);
+        await run(['query', 'data', 'Withdrawal rounds', '--among', 'all', '--by', 'contract', '--count']);
+        expect(calls.map((c) => c.body.input)).toEqual([
+            { sort: 'swaps', by: ['wallet'], measures: [{ name: 'volume', fn: 'sum', expr: 'vol' }, { name: 'swaps', fn: 'count' }], having: 'volume > 10000', data: 'DZap swaps', days: 90 },
+            { by: ['contract'], measure: { fn: 'count' }, data: 'Withdrawal rounds', among: 'all' },
+        ]);
+    });
+
+    it('refuses a measure with no --by, two kinds of measure at once, and having with no --by', async () => {
+        mockApi({});
+        await expect(run(['query', 'data', 'x', '--measure', 'n=count'])).rejects.toThrow(/say --by/);
+        await expect(run(['query', 'data', 'x', '--by', 'wallet', '--count', '--measure', 'n=count'])).rejects.toThrow(/not both/);
+        await expect(run(['query', 'data', 'x', '--having', 'rows > 1'])).rejects.toThrow(/--having keeps groups/);
+        await expect(run(['query', 'data'])).rejects.toThrow(/Name the data/);
+    });
+
+    it('a part line under a breakdown carries every measure of its row', async () => {
+        mockApi({
+            'POST /api/mainnet/tools/query_data': () =>
+                ok({
+                    dataset: 'metric',
+                    columns: [
+                        { key: 'sender', label: 'Wallet', kind: 'text' },
+                        { key: 'volume', label: 'volume', kind: 'number', unit: 'usd' },
+                        { key: 'swaps', label: 'swaps', kind: 'number', unit: 'count' },
+                        { key: 'rows', label: 'Rows', kind: 'number', unit: 'count' },
+                        { key: 'parts', label: 'Chains', kind: 'number', unit: 'count' },
+                    ],
+                    breakdown: { key: 'chain', label: 'Chain', kind: 'text' },
+                    rows: [{ sender: '0xa', volume: 530, swaps: 4, rows: 4, parts: 1, breakdown: [{ chain: 'Base', volume: 530, swaps: 4, rows: 4 }] }],
+                    matched: 1,
+                    returned: 1,
+                    more: 0,
+                    grouped: { by: ['sender'], measure: 'volume=sum(vol), swaps=count' },
+                }),
+        });
+        await run(['query', 'data', 'DZap swaps', '--by', 'wallet', '--measure', 'volume=sum(vol)', '--measure', 'swaps=count', '--breakdown', 'chain']);
+        const out = printed();
+        const at = out.findIndex((l) => /^0xa /.test(l));
+        expect(out[at]).toMatch(/^0xa +\$530 +4 +4 +1$/);
+        expect(out[at + 1]).toMatch(/^ {2}Base +\$530 +4 +4$/);
+    });
+});
+
+describe('live tables and snapshots', () => {
+    useEnvAuth();
+    const saved = (kept: boolean) =>
+        ok({ dataset: 'data', columns: [], rows: [{ wallet: '0xa', volume: 5 }], matched: 1, returned: 1, more: 0, saved: { id: 'q1', url: `http://app/${kept ? 'tables' : 'queries'}/q1`, as: 'table', title: 'Top wallets', asOf: '2026-10-26T00:00:00Z', ...(kept ? { kept } : {}) } });
+
+    it('table create --from asks the question through query and keeps it as a live table named by the table', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/query_data': () => saved(true), 'POST /api/mainnet/tools/query_transfers': () => saved(true) });
+        await run(['table', 'create', 'Top wallets', '--from', 'DZap activity', '--days', '1', '--by', 'wallet', '--measure', 'volume=sum(vol)']);
+        await run(['table', 'create', 'Top wallets', '--from=transfers', '--group', 'DZap Routers', '--by', 'wallet', '--sum', '{USD}']);
+        expect(calls.map((c) => [c.path, c.body.input])).toEqual([
+            ['/api/mainnet/tools/query_data', { by: ['wallet'], measures: [{ name: 'volume', fn: 'sum', expr: 'vol' }], data: 'DZap activity', days: 1, save: { as: 'table', title: 'Top wallets', keep: true } }],
+            ['/api/mainnet/tools/query_transfers', { by: ['wallet'], measure: { fn: 'sum', expr: '{USD}' }, group: 'DZap Routers', save: { as: 'table', title: 'Top wallets', keep: true } }],
+        ]);
+        expect(printed().join('\n')).toMatch(/Live table under Tables · Top wallets: http:\/\/app\/tables\/q1/);
+    });
+
+    it('--save is a snapshot under Queries; --keep is gone and says what to use', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/query_data': () => saved(false) });
+        await run(['query', 'data', 'DZap activity', '--by', 'wallet', '--count', '--save']);
+        expect(calls[0].body.input.save).toEqual({});
+        expect(printed().join('\n')).toMatch(/Snapshot under Queries, drawn as a table · Top wallets/);
+        await expect(run(['query', 'data', 'DZap activity', '--by', 'wallet', '--count', '--keep'])).rejects.toThrow(/table create "<name>" --from/);
+    });
+
+    it('a live table refuses an item table\'s flags and a snapshot\'s, and table create says which kind it needs', async () => {
+        mockApi({});
+        await expect(run(['table', 'create', 'X', '--from', 'transfers', '--opens', 'Foo'])).rejects.toThrow(/--opens is for a table that opens rows/);
+        await expect(run(['table', 'create', 'X', '--from', 'transfers', '--by', 'wallet', '--count', '--save'])).rejects.toThrow(/leave out --save/);
+        await expect(run(['table', 'create', 'X', '--group', 'G'])).rejects.toThrow(/--from <data> for a live table/);
     });
 });

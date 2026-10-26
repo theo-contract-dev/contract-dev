@@ -61,7 +61,8 @@ export function windowFlag(flags: ParsedFlags, fallback: Range = '7d'): Range {
 export interface FindResult {
   contracts: Array<{ chainId: number; address: string; name: string; groups: string[]; kinds: string[]; standards: string[] }>;
   groups: Array<{ group: string; contracts: number }>;
-  metrics: Array<{ id: string; label: string | null; kind: string; chainId: number; address: string }>;
+  /** Tracked values (on one contract) and event, table and group metrics (`scope`: the group or contract they cover). */
+  metrics: Array<{ id: string; label: string | null; kind: string; chainId: number | null; address: string; scope?: string }>;
   monitors: Array<{ id: string; name: string; kind: string | null; status: string }>;
   reports: Array<{ id: string; name: string; cadence: string }>;
   destinations: Array<{ id: string; kind: string; label: string | null; target: string }>;
@@ -89,8 +90,7 @@ export function findSections(r: FindResult): string[][] {
     { header: 'Id', value: (m) => m.id },
     { header: 'Label', value: (m) => m.label ?? DASH, max: 40 },
     { header: 'Kind', value: (m) => m.kind },
-    { header: 'Chain', value: (m) => chainLabel(m.chainId) },
-    { header: 'Address', value: (m) => m.address },
+    { header: 'On', value: (m) => m.scope ?? `${chainLabel(m.chainId)} ${m.address}`, max: 60 },
   ]);
   section('Monitors', r.monitors, [
     { header: 'Id', value: (m) => m.id },

@@ -1,30 +1,44 @@
-// Item tables, through the platform's tools: the things inside contracts (withdrawal rounds, loans,
-// requests), one row per id an event or a list view announces, over their whole life, with status
-// columns chosen by rules, formula columns, and a rule that finishes a row. list, show (counts,
-// findings and endings by period, rows per status, how long rows take, the biggest and newest rows,
-// one row by id), create (from event names in the contracts' ABIs; --hidden keeps it off the Tables
-// page), update (rename, set when rows finish, put on or take off the page) and delete (the table
-// with its rows, their tracked values and its monitors). --json hands back the tool's own result.
+// Everything on the Tables page, through the platform's tools. Two kinds, one command (2026-10-26):
+//   - a live table: a question over data the workspace keeps, asked again while it is open
+//     (`create "<name>" --from <data>` with the query's own flags; it was `query … --keep`);
+//   - an item table: the things inside contracts (withdrawal rounds, loans, requests), one row per id
+//     an event or a list view announces, over their whole life, with status columns chosen by rules,
+//     formula columns, and a rule that finishes a row (`create "<name>" --opens <Event>`).
+// list (both), show (an item table's counts, findings and endings by period, rows per status, how
+// long rows take, the biggest and newest rows, one row by id; a live table's rows, asked now),
+// update (an item table: rename, set when rows finish, put on or take off the page) and delete.
+// --json hands back the tool's own result.
 import { parseFlags, flag, flagAll, requirePositional, type ParsedFlags } from './_args';
 import { parseFormulaCall } from './eventMetric';
 import { apiRequest, requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag, limitFlag } from '../data';
-import { printResult } from './_print';
+import { printResult, columnsTable, partCells, type BreakdownColumn } from './_print';
+import { queryCommand } from './query';
 
-const HELP = `contract-dev table — item tables: withdrawal rounds, loans, requests… one row per id, over their whole life
+const HELP = `contract-dev table — everything on the Tables page: live tables over the workspace's data, and item tables
+(withdrawal rounds, loans, requests… one row per id, over their whole life)
 
 Usage:
+  contract-dev table create "<name>" --from <data> [the query's flags]
+                                                      A live table: the question kept under Tables and asked again while
+                                                      it is open. --from "<data name>" for event data, a metric's records
+                                                      or a table's rows (contract-dev data list); --from transactions,
+                                                      transfers, wallets, contracts, metrics, monitors, alerts or reports
+                                                      for those. The flags are contract-dev query's (--where, --by,
+                                                      --measure, --having, --breakdown, --sort, --days, --group…)
   contract-dev table list [--group <group>] [--contract <ref>]
-                                                      Every table, hidden ones too: what finds a row, the events it
-                                                      watches, when a row finishes, rows active and finished
+                                                      Every table, hidden ones too: the live tables, then each item table's
+                                                      rule for a row, the events it watches, when a row finishes, rows
+                                                      active and finished
   contract-dev table show <table> [--by day|week|month] [--since YYYY-MM-DD] [--among active|done|all]
                               [--column <key|label>] [--contract <ref>] [--limit <n>]
                                                       Findings and endings per period, rows per status, how long rows
                                                       take, column totals, the biggest and newest rows, the busiest contracts
   contract-dev table show <table> --row <id>          One row: its values, its statuses, its watched events and its own
                                                       events since it was found
-  contract-dev table delete <table>                   Remove it: its rows, their tracked values and its monitors go with it
+  contract-dev table show <live table>                 A live table's rows, asked now
+  contract-dev table delete <table>                   Remove it (an item table's rows, their tracked values and its monitors go with it)
   contract-dev table create "<name>" --opens <Event> [--status "<Label>: <Opt>=<rule>; <Opt>=<rule>; <Opt>"]…
                               [--formula "<Label>=<expr>[; call <name>=<call>]…[; token <token>][; show usd]"]… [--finished "<rule>"] [--closes <Event>|list] [--id <field>]
                               [--group <group> | --contract <ref>] [--count "<Event>[:label] [on <field>]"]…
@@ -60,7 +74,12 @@ asset()" with --event WithdrawalQueued.expiry --event WithdrawalExecuted.expiry 
 Without a token a number is shown as the chain holds it; "decimals <n>" scales a plain number. --token on update
 sets, changes or (with nothing after =) clears a column's token.
 
+A snapshot (the answer as it was, under Queries) is contract-dev query … --save, not a table.
+
 Examples:
+  contract-dev table create "Top integrators" --from "DZap activity" --days 90 --by integrator \\
+    --measure swaps='count where {Event} == "DZapTokenSwapped"' --measure volume="sum(vol)" --breakdown chain
+  contract-dev table create "Top wallets, 24h" --from transfers --group "DZap Routers" --days 1 --by wallet --sum "{USD}"
   contract-dev table list
   contract-dev table create "Withdrawal rounds" --group "Wildcat markets" --opens WithdrawalBatchCreated --closes WithdrawalBatchClosed --count "WithdrawalQueued:Queued on expiry" --hidden
   contract-dev table create "Withdrawal rounds" --group "Wildcat markets" --opens WithdrawalBatchCreated --id-shown date \\
@@ -116,12 +135,78 @@ const scopeInput = (flags: ParsedFlags): Record<string, unknown> => {
   return { ...(group ? { group } : {}), ...(contract ? { contract } : {}), ...(chainId != null && contract ? { chainId } : {}) };
 };
 
+/** A live table as the saved-queries routes answer it. */
+interface LiveTable {
+  id: string;
+  title: string;
+  tool: string;
+  rows: number;
+  url: string;
+  asOf?: string;
+}
+interface LiveTableView extends LiveTable {
+  asOf: string;
+  snapshot: { columns: { key: string; label: string; unit?: string }[]; rows: Record<string, unknown>[]; matched: number; notes?: string[]; breakdown?: BreakdownColumn };
+}
+
+const liveTables = async (auth: ReturnType<typeof requireAuth>): Promise<LiveTable[]> =>
+  (await apiRequest<{ queries: LiveTable[] }>(auth, 'GET', '/api/mainnet/queries?kept=1')).queries ?? [];
+
+/** The live table a name means: its id, or its whole title (case-insensitive); null when none is called that. */
+async function findLive(auth: ReturnType<typeof requireAuth>, ref: string): Promise<LiveTable | null> {
+  const all = await liveTables(auth);
+  const byId = all.find((t) => t.id === ref);
+  if (byId) return byId;
+  const byTitle = all.filter((t) => t.title.trim().toLowerCase() === ref.toLowerCase());
+  if (byTitle.length > 1) throw new Error(`"${ref}" names ${byTitle.length} live tables (${byTitle.map((t) => t.id).join(', ')}); pass the id.`);
+  return byTitle[0] ?? null;
+}
+
+/** What --from names: a dataset's own word, or a name query data resolves (event data, a metric's records, a table's rows). */
+const FROM_DATASETS = ['contracts', 'metrics', 'monitors', 'alerts', 'reports', 'transactions', 'transfers', 'wallets'];
+
+/** `table create "<name>" --from <data> …`: the question asked through `query` and kept as a live table. */
+async function createLiveTable(args: string[]): Promise<unknown> {
+  const name = args[0];
+  if (!name || name.startsWith('--')) throw new Error('Name the table first: contract-dev table create "<name>" --from <data> ….');
+  const rest = args.slice(1);
+  const at = rest.findIndex((a) => a === '--from' || a.startsWith('--from='));
+  const from = (rest[at].startsWith('--from=') ? rest[at].slice('--from='.length) : rest[at + 1] ?? '').trim();
+  if (!from || from.startsWith('--')) throw new Error('--from names the data: "<data name>" (contract-dev data list), or transactions, transfers, wallets, contracts, metrics, monitors, alerts, reports.');
+  const others = rest.filter((_, i) => i !== at && !(i === at + 1 && !rest[at].startsWith('--from=')));
+  for (const f of ['--opens', '--closes', '--status', '--formula', '--finished', '--hidden', '--keep'])
+    if (others.some((a) => a === f || a.startsWith(`${f}=`))) throw new Error(`${f} is for a table that opens rows on an event (--opens); a live table takes the query's flags (contract-dev query help).`);
+  const query = FROM_DATASETS.includes(from.toLowerCase()) ? [from.toLowerCase()] : ['data', from];
+  return queryCommand([...query, ...others], { live: name });
+}
+
 async function listTables(args: string[]): Promise<unknown> {
   if (HELP_WORDS.includes(args[0])) return void console.log(HELP);
   const flags = parseFlags(args);
-  const result = await runTool<Record<string, unknown>>(requireAuth(), 'list_tables', scopeInput(flags));
+  const auth = requireAuth();
+  const scoped = Object.keys(scopeInput(flags)).length > 0;
+  // the live tables are the workspace's, not a group's: a scoped list is the item tables alone
+  const [result, live] = await Promise.all([runTool<Record<string, unknown>>(auth, 'list_tables', scopeInput(flags)), scoped ? Promise.resolve([]) : liveTables(auth)]);
+  if (live.length > 0) {
+    console.log(`Live tables (${live.length})`);
+    for (const line of columnsTable(['Id', 'Name', 'Rows', 'Link'], live.map((t) => [t.id, t.title, String(t.rows), t.url]))) console.log(line);
+    console.log('');
+  }
   for (const line of printResult(result)) console.log(line);
-  return result;
+  return live.length > 0 ? { ...result, live } : result;
+}
+
+/** A live table's rows, asked now. */
+async function showLive(auth: ReturnType<typeof requireAuth>, found: LiveTable): Promise<LiveTableView> {
+  const { query } = await apiRequest<{ query: LiveTableView }>(auth, 'POST', `/api/mainnet/queries/${found.id}/refresh`, undefined, { timeoutMs: 90_000 });
+  const snap = query.snapshot;
+  console.log(`${query.title} · live table · ${snap.rows.length} row${snap.rows.length === 1 ? '' : 's'}${snap.matched > snap.rows.length ? ` of ${snap.matched}` : ''} · ${query.url}`);
+  const columns = snap.columns.slice(0, 8);
+  const unitOf = new Map(snap.columns.map((c) => [c.key, c.unit]));
+  for (const line of columnsTable(columns.map((c) => c.label), partCells(snap.rows, columns.map((c) => c.key), unitOf, snap.breakdown))) console.log(line);
+  if (snap.columns.length > columns.length) console.log(`(${snap.columns.length - columns.length} more columns: --json for all)`);
+  for (const n of snap.notes ?? []) console.log(n);
+  return query;
 }
 
 async function showTable(args: string[]): Promise<unknown> {
@@ -129,6 +214,9 @@ async function showTable(args: string[]): Promise<unknown> {
   const flags = parseFlags(args);
   const table = (flags._ as string[]).join(' ').trim();
   if (!table) throw new Error('Name the table (contract-dev table list shows them).');
+  const auth = requireAuth();
+  const live = await findLive(auth, table);
+  if (live) return showLive(auth, live);
   const input: Record<string, unknown> = { table };
   for (const key of ['row', 'contract', 'by', 'since', 'column', 'among'] as const) {
     const v = flag(flags, key);
@@ -140,7 +228,7 @@ async function showTable(args: string[]): Promise<unknown> {
   const chainId = chainFlag(flags);
   if (chainId != null && input.contract) input.chainId = chainId;
   if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 5, 25);
-  const result = await runTool<Record<string, unknown>>(requireAuth(), 'describe_table', input);
+  const result = await runTool<Record<string, unknown>>(auth, 'describe_table', input);
   for (const line of printResult(result)) console.log(line);
   return result;
 }
@@ -159,7 +247,11 @@ async function deleteTable(args: string[]): Promise<{ ok: true; id: string }> {
   const table = byId ?? (byName.length === 1 ? byName[0] : undefined);
   if (!table) {
     if (byName.length > 1) throw new Error(`"${ref}" names ${byName.length} tables (${byName.map((t) => t.id).join(', ')}); pass the id.`);
-    throw new Error(`No table matches "${ref}" (contract-dev table list shows them).`);
+    const live = await findLive(auth, ref);
+    if (!live) throw new Error(`No table matches "${ref}" (contract-dev table list shows them).`);
+    await apiRequest(auth, 'DELETE', `/api/mainnet/queries/${live.id}`);
+    console.log(`Deleted live table "${live.title}" (${live.id}).`);
+    return { ok: true, id: live.id };
   }
   await apiRequest(auth, 'DELETE', `/api/console/tables/${table.id}`);
   console.log(`Deleted table "${table.name}" (${table.id}): its rows, their tracked values and its monitors.`);
@@ -295,10 +387,11 @@ function eventsFrom(flags: ParsedFlags): string[] {
 
 async function createTable(args: string[]): Promise<unknown> {
   if (!args.length || HELP_WORDS.includes(args[0])) return void console.log(HELP);
+  if (args.some((a) => a === '--from' || a.startsWith('--from='))) return createLiveTable(args);
   const flags = parseFlags(args);
   const name = requirePositional(flags._ as string[], 0, 'name');
   const opens = flag(flags, 'opens');
-  if (!opens) throw new Error('--opens names what makes a row: an event (WithdrawalBatchCreated) or a list view (getUnpaidBatchExpiries()).');
+  if (!opens) throw new Error('Say what the table holds: --from <data> for a live table over the workspace\'s data (top wallets, integrators, swaps over a line), or --opens <Event> for things that open and close inside contracts (contract-dev table help).');
   const input: Record<string, unknown> = { name, opens, ...scopeInput(flags) };
   for (const key of ['closes', 'id', 'closesOn', 'finished'] as const) {
     const v = flag(flags, key);

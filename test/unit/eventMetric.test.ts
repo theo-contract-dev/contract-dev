@@ -27,7 +27,25 @@ describe('event metric flags', () => {
       value: 'usd(in0 * fee / 1000000, t0)',
       history: 7,
     });
-    expect(() => definitionFrom(parseFlags(['x', '--history', '120']))).toThrow(/1 to 89/);
+    expect(() => definitionFrom(parseFlags(['x', '--history', '400']))).toThrow(/1 to 365/);
+  });
+
+  it('a field "on <Event>" is for that event alone; a trailing "on" that names no counted event stays in the expression', () => {
+    const d = definitionFrom(parseFlags(['x', '--event', 'BridgeStarted', '--event', 'CctpBridgeTransferStarted', '--field', 'amt=amount on BridgeStarted', '--field', 'amt=amountIn on CctpBridgeTransferStarted', '--field', 'tok=from']));
+    expect(d.fields).toEqual([
+      { name: 'amt', expr: 'amount', on: 'BridgeStarted' },
+      { name: 'amt', expr: 'amountIn', on: 'CctpBridgeTransferStarted' },
+      { name: 'tok', expr: 'from' },
+    ]);
+    // an update names no events: any name after "on" is taken as one, and the server checks it
+    expect(definitionFrom(parseFlags(['x', '--field', 'amt=amountIn on CctpBridgeTransferStarted'])).fields).toEqual([{ name: 'amt', expr: 'amountIn', on: 'CctpBridgeTransferStarted' }]);
+    expect(definitionFrom(parseFlags(['x', '--event', 'Swap', '--field', 'x=a on b'])).fields).toEqual([{ name: 'x', expr: 'a on b' }]);
+  });
+
+  it('--line says what one line of the split is', () => {
+    const d = definitionFrom(parseFlags(['x', '--event', 'GardenRedistributed', '--split', 'index', '--line', 'an index']));
+    expect(d.split).toBe('index');
+    expect(d.line).toBe('an index');
   });
 });
 

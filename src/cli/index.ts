@@ -14,6 +14,7 @@ import { txCommand, addressCommand, blockCommand, walletCommand, sourceCommand }
 import { findCommand, describeCommand } from './commands/ask';
 import { whoCommand, readCommand } from './commands/questions';
 import { queryCommand } from './commands/query';
+import { dataCommand } from './commands/data';
 import { queriesCommand } from './commands/queries';
 import { groupCommand, factoryCommand } from './commands/group';
 import { walletsCommand } from './commands/wallets';
@@ -62,6 +63,7 @@ Metrics:
   contract-dev metric define "<name>" …   A metric added up from events, each read at its own transaction (try: metrics help)
   contract-dev metric group "<name>" --group <g> --column <key>   A group's column rolled up into one metric across its contracts
   contract-dev metrics export <id|label>  A metric's history as CSV or JSON
+  contract-dev metric pin <name>          Show a metric in the overview's header, after Contracts and Activity (five at most; unpin takes it off)
   contract-dev track <address> <kind>     Track a balance, supply, call result or method telemetry (try: track help)
   contract-dev untrack <id|label>         Stop tracking
 
@@ -77,9 +79,11 @@ Ask (questions over the workspace; scope is --group <name>, --contract <ref> or 
                                           tokens), groups, metrics, monitors, reports, destinations
   contract-dev describe <contract>        What a contract is: kinds, standards, owner, its events and write
                                           functions
-  contract-dev query <contracts|table|metric|monitors|alerts|reports> …
+  contract-dev query <contracts|table|metric|data|transactions|transfers|wallets|monitors|alerts|reports> …
                                           One dataset, asked in the table language: --where, --show, --sort, --by with
-                                          --sum or --count, --total; --save keeps the answer at a page (try: query help)
+                                          --sum, --count or several --measure, --having, --breakdown, --total; --save keeps
+                                          the answer at a page, --keep as a table (try: query help)
+  contract-dev data <list|define>         The rows the workspace keeps, by name: event data and tables (try: data help)
   contract-dev queries [show|csv|refresh|rename|as|delete <id|title>]   The answers kept at a page: charts and tables
   contract-dev who <address|ENS|name>     Who it is
   contract-dev read <contract> <function> [<arg>…]   Call a view function, now or --at a past time (try: read help)
@@ -214,6 +218,8 @@ export async function run(args: string[]): Promise<unknown> {
       return await whoCommand(rest);
     case 'query':
       return await queryCommand(rest);
+    case 'data':
+      return await dataCommand(rest);
     case 'queries':
       return await queriesCommand(rest);
     case 'read':

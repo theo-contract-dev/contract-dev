@@ -2,14 +2,14 @@ import { Interface, isAddress } from 'ethers';
 import { parseFlags, flag, requirePositional, requireFlag } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { parseChainId, WatchedAccount } from './watch';
-import { resolveContract } from '../data';
+import { chainFlag, chainOf, resolveContract } from '../data';
 import { runTool } from '../tools';
-import { EVENT_METRIC_HELP, defineEventMetric, defineGroupMetric, defineItemMetric, deleteEventMetric, isEventMetric, listEventMetrics, monitorEventMetric, showEventMetric, trackFormula, updateEventMetric } from './eventMetric';
+import { EVENT_METRIC_HELP, defineEventMetric, defineGroupMetric, defineItemMetric, deleteEventMetric, findEventMetric, isEventMetric, listEventMetrics, monitorEventMetric, showEventMetric, trackFormula, updateEventMetric } from './eventMetric';
 
 const TRACK_HELP = `contract-dev track — track an on-chain value as a metric (charted on /metrics, usable by monitors)
 
 Usage:
-  contract-dev track <address> <kind> [--chain <id>] [--label "<name>"] [kind flags]
+  contract-dev track <address|name> <kind> [--chain <id>] [--label "<name>"] [kind flags]
   contract-dev untrack <id|label> [...]          Stop tracking (also removes monitors that read it)
 
 Kinds:
@@ -40,18 +40,24 @@ Usage:
   contract-dev metrics resume <id|label>
   contract-dev metrics decimals <id|label> <n|clear>        Display scale — re-interprets the stored history
                                                             (monitor thresholds on it were typed against the old scale)
+  contract-dev metrics pin <id|label|name>                  Show the metric in the overview's header, after Contracts
+                                                            and Activity (five at most, in the order pinned): a tracked
+                                                            value, or an event, table or group metric by its name
+  contract-dev metrics unpin <id|label|name>                Take it off the header
   contract-dev metrics export <id|label> [--range 24h|7d|30d|90d|all] [--format csv|json]
                                                             The metric's history: at, value, block, tx (default: csv)
   contract-dev track …                                      Start tracking (try: track help; also: metrics track …)
   contract-dev untrack <id|label>                           Stop tracking (also: metrics untrack …)
 
 A metric may be referred to by its id or, when unambiguous, its label. \`--chain\` takes a
-chain id or name (ethereum, arbitrum, avalanche, sepolia). Tracking a value that is already
-tracked returns the existing metric.
+chain id or name (ethereum, arbitrum, base, …); track reads a watched contract's own chain and
+asks for --chain otherwise. Tracking a value that is already tracked returns the existing metric.
 `;
 
 // The serialized TrackedOnchainValue row the app's API returns (lastValueRaw decoded to lastValue).
 export interface TrackedMetric {
+  /** When it was pinned to the overview's header (ISO); null or absent = not pinned. */
+  pinnedAt?: string | null;
   id: string;
   chainId: number;
   address: string;
@@ -269,9 +275,12 @@ export async function trackCommand(args: string[]): Promise<TrackedMetric | void
   const kindName = requirePositional(positional, 1, `kind (one of: ${LISTED_KINDS.join(', ')})`);
   const kind = KINDS[kindName];
   if (!kind) throw new Error(`Unknown kind "${kindName}". One of: ${LISTED_KINDS.join(', ')}`);
-  const chainId = parseChainId(flag(flags, 'chain') ?? '1', '--chain');
+  // the chain is said, or is the watched contract's own; never assumed (2026-10-23: four values went on Ethereum for Arbitrum contracts)
+  const subject = requirePositional(positional, 0, 'address').trim();
+  const stated = chainFlag(flags);
+  const chainId = isAddress(subject) ? await chainOf(requireAuth(), subject, stated) : (stated ?? (await resolveContract(requireAuth(), subject)).chainId);
   // a watched contract's name works as well as its address (track stETH totalSupply)
-  const address = await addressOrName(requirePositional(positional, 0, 'address'), 'address', chainId);
+  const address = await addressOrName(subject, 'address', chainId);
 
   let params: Record<string, unknown> | undefined;
   let labelSuffix = kind.label;
@@ -377,6 +386,10 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
       return await patchMetric(rest, 'resume');
     case 'decimals':
       return await patchMetric(rest, 'decimals');
+    case 'pin':
+      return await pinMetric(rest, true);
+    case 'unpin':
+      return await pinMetric(rest, false);
     case 'export':
       return await exportMetric(rest);
     case 'track':
@@ -430,7 +443,7 @@ async function listMetrics(args: string[]): Promise<Array<TrackedMetric | Listed
     return [];
   }
   for (const m of tracked) {
-    const state = m.enabled ? '' : '  (paused)';
+    const state = `${m.enabled ? '' : '  (paused)'}${m.pinnedAt ? '  (pinned)' : ''}`;
     console.log(
       `${m.id}  ${m.kind.padEnd(14)} ${String(m.chainId).padEnd(6)} ${shortHex(m.address)}  ${(m.label ?? '').padEnd(36)} ${formatValue(currentValue(m))}${state}`,
     );
@@ -438,7 +451,7 @@ async function listMetrics(args: string[]): Promise<Array<TrackedMetric | Listed
   if (others.length) {
     if (tracked.length) console.log('');
     console.log('Event, table and group metrics');
-    for (const m of others) console.log(`${m.id}  ${(METRIC_KIND_WORDS[m.kind] ?? m.kind).padEnd(14)} ${m.name.padEnd(36)} ${(m.scope ?? '').padEnd(28)} ${listedStatus(m)}`);
+    for (const m of others) console.log(`${m.id}  ${(METRIC_KIND_WORDS[m.kind] ?? m.kind).padEnd(14)} ${m.name.padEnd(36)} ${(m.scope ?? '').padEnd(28)} ${listedStatus(m)}${m.pinned ? '  (pinned)' : ''}`);
   } else if (othersFailed) console.log('\nEvent metrics could not be listed just now: contract-dev metric events.');
   return [...tracked, ...others];
 }
@@ -452,6 +465,8 @@ interface ListedMetric {
   status?: string;
   records?: number;
   error?: string;
+  /** On the overview's header strip. */
+  pinned?: boolean;
 }
 
 /** The CLI's word for each kind: an item metric is made with `metric table`. */
@@ -575,6 +590,36 @@ async function patchMetric(args: string[], action: 'rename' | 'pause' | 'resume'
     }
   }
   return trackedMetric;
+}
+
+/**
+ * `metric pin|unpin <ref>`: the metric on the overview's header strip, after Contracts and Activity (five
+ * at most, in the order pinned), or off it. A tracked value by id or label first; a name no tracked
+ * value has may be an event, table or group metric's. A pin past the strip's room is refused by the
+ * server with the reason.
+ */
+async function pinMetric(args: string[], pinned: boolean): Promise<unknown> {
+  const flags = parseFlags(args);
+  const ref = (flags._ as string[]).join(' ').trim();
+  if (!ref) throw new Error(`Missing required metric: contract-dev metric ${pinned ? 'pin' : 'unpin'} <id|label|name>`);
+  const auth = requireAuth();
+  let tracked: TrackedMetric | null = null;
+  try {
+    tracked = await resolveMetric(auth, ref);
+  } catch (e) {
+    if (!(e instanceof Error && /No tracked metric matches/.test(e.message))) throw e;
+  }
+  if (tracked) {
+    const { trackedMetric } = await apiRequest<{ trackedMetric: TrackedMetric }>(auth, 'PATCH', `/api/mainnet/tracked-metrics/${tracked.id}`, { pinned });
+    const name = tracked.label ?? tracked.kind;
+    console.log(pinned ? `Pinned ${name} to the overview's header.` : `Unpinned ${name}.`);
+    return trackedMetric;
+  }
+  const other = await findEventMetric(ref);
+  if (!other) throw new Error(`No metric matches "${ref}" (run \`contract-dev metrics\` to list them).`);
+  const { metric } = await apiRequest<{ metric: { id: string; name: string; pinnedAt: string | null } }>(auth, 'PATCH', `/api/mainnet/custom-metrics/${other.id}`, { pinned });
+  console.log(pinned ? `Pinned ${metric.name} to the overview's header.` : `Unpinned ${metric.name}.`);
+  return metric;
 }
 
 export async function untrackCommand(args: string[]): Promise<Array<{ id: string; label: string | null }> | void> {

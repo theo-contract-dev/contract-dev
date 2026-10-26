@@ -23,8 +23,9 @@ export function parseFlags(args: string[]): ParsedFlags {
       if (eq >= 0) {
         set(a.slice(2, eq), a.slice(eq + 1));
       } else {
+        // an empty value (--value "") is a value, given to clear the part; only a missing one reads as true
         const next = args[i + 1];
-        if (next && !next.startsWith('--')) {
+        if (next !== undefined && !next.startsWith('--')) {
           set(a.slice(2), next);
           i++;
         } else {
