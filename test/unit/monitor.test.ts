@@ -299,19 +299,26 @@ describe('default monitors and destinations', () => {
         const calls = mockApi({
             'GET /api/mainnet/invariants': () => ({ payload: { invariants: [builtin] } }),
             'PATCH /api/mainnet/invariants/b1': (c) => ({ payload: { invariant: { ...builtin, params: c.body.params } } }),
+            'GET /api/mainnet/accounts': () => ({ payload: { accounts: [{ id: 'c5', chainId: 1, chainIds: [1], address: '0x5555555555555555555555555555555555555555', accountType: 'contract', name: null }] } }),
         });
         await monitorCommand(['exclude', 'revert-spike', CONTRACT, '--chain', 'ethereum']);
         expect(calls.find((c) => c.method === 'PATCH')!.body).toEqual({ params: { excluded: ['1:0x5555555555555555555555555555555555555555', `1:${CONTRACT}`] } });
         expect(printed().at(-1)).toBe('Excluded 0x4444…4444 on chain 1 from Revert spike.');
 
+        // no --chain: the chain the workspace watches it on
         await monitorCommand(['include', 'Revert spike', '0x5555555555555555555555555555555555555555']);
         expect(calls.filter((c) => c.method === 'PATCH').at(-1)!.body).toEqual({ params: { excluded: [] } });
     });
 
     it('exclude refuses a custom monitor and reports an already-excluded contract without a write', async () => {
         const rule = { ...builtin, id: 'r1', kind: null, name: 'Floor', params: null, subjects: undefined };
-        const calls = mockApi({ 'GET /api/mainnet/invariants': () => ({ payload: { invariants: [builtin, rule] } }) });
-        await expect(monitorCommand(['exclude', 'Floor', CONTRACT])).rejects.toThrow(/custom monitor/);
+        const calls = mockApi({
+            'GET /api/mainnet/invariants': () => ({ payload: { invariants: [builtin, rule] } }),
+            'GET /api/mainnet/accounts': () => ({ payload: { accounts: [{ id: 'c5', chainId: 1, chainIds: [1], address: '0x5555555555555555555555555555555555555555', accountType: 'contract', name: null }] } }),
+        });
+        await expect(monitorCommand(['exclude', 'Floor', CONTRACT, '--chain', '1'])).rejects.toThrow(/custom monitor/);
+        // not watched and no --chain: asked for, never assumed
+        await expect(monitorCommand(['exclude', 'revert-spike', CONTRACT])).rejects.toThrow(`Say which chain ${CONTRACT} is on`);
         await monitorCommand(['exclude', 'revert-spike', '0x5555555555555555555555555555555555555555']);
         expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
         expect(printed().at(-1)).toMatch(/already excluded/);

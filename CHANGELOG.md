@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 4.0.0 — 2026-10-26
+
+### Changed — the chain is said, never assumed
+- `watch <address>` (one address or several, with or without `--group`) and `block <n>` need `--chain`: an address
+  is on every chain, so Ethereum is no longer assumed. Leaving it out says so before anything is sent.
+- `address`, `source --out`, `track <address>` and `monitor exclude|include` read the chain the workspace watches the
+  address on, and ask for `--chain` when it is watched on no chain or on several (they read Ethereum before).
+  `track <name>` reads the named contract's own chain.
+- `tx <hash>` without `--chain` looks on every chain the CLI names: Ethereum, Arbitrum, Avalanche, Sepolia, Base,
+  Optimism, Polygon, BNB and Monad. `--chain` takes each of those names.
+- `wallet <0x…>` lists the wallet's transactions (`--txs` still works); its token balances went with holdings.
+  `--approvals` is as before.
 
 ### Changed — tables are live, queries are snapshots
 - `contract-dev table create "<name>" --from <data>` with `query`'s own flags makes a LIVE TABLE under Tables, asked
@@ -45,6 +56,7 @@
 ### Fixed
 - `query` and `queries show` print dollar columns as dollars (`$436.8K`), their totals too, as the app does.
 - `query metric help` (and `query <dataset> --help`) prints the help instead of looking for a metric called "help".
+- `monitor add help` (and `-h`, `--help`) prints the help instead of trying to add a monitor.
 - `find` lists event, table and group metrics beside the tracked values, each with the group or contract it covers.
 
 ## 3.0.0 — 2026-10-23

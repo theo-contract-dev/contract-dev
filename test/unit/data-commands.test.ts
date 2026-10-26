@@ -81,7 +81,7 @@ describe('data commands', () => {
                     : { status: 404, payload: { error: 'Transaction not found' } },
         });
         const result: any = await run(['tx', hash]);
-        expect(calls.map((c) => query(c).chainId).sort()).toEqual(['1', '11155111', '42161', '43114']);
+        expect(calls.map((c) => query(c).chainId).sort()).toEqual(['1', '10', '11155111', '137', '143', '42161', '43114', '56', '8453']);
         expect(result.chainId).toBe(43114);
         const out = printed();
         expect(out[0]).toBe(`${hash} · Avalanche · success`);

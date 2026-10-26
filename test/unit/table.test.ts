@@ -34,16 +34,19 @@ describe('table', () => {
     });
 
     test('show passes its options through, and a bare name reads as show', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/describe_table': () => ok({ table: 'Withdrawal rounds', rows: { open: 16, closed: 1646 }, timeline: { by: 'week', columns: ['period', 'opened', 'closed'], rows: [['2026-10-05', 4, 5]] } }) });
+        // a name no live table has is an item table's
+        const noLive = { 'GET /api/mainnet/queries': () => ({ payload: { queries: [] } }) };
+        const calls = mockApi({ ...noLive, 'POST /api/mainnet/tools/describe_table': () => ok({ table: 'Withdrawal rounds', rows: { open: 16, closed: 1646 }, timeline: { by: 'week', columns: ['period', 'opened', 'closed'], rows: [['2026-10-05', 4, 5]] } }) });
         await run(['table', 'show', 'Withdrawal rounds', '--by', 'week', '--among', 'closed', '--limit', '3']);
-        expect(calls[0].body).toEqual({ input: { table: 'Withdrawal rounds', by: 'week', among: 'done', limit: 3 } });
+        expect(calls[0].path).toBe('/api/mainnet/queries?kept=1');
+        expect(calls[1].body).toEqual({ input: { table: 'Withdrawal rounds', by: 'week', among: 'done', limit: 3 } });
         const out = printed();
         expect(out).toContain('Table: Withdrawal rounds');
         expect(out.some((l) => /^ {2}Period {2,}Opened {2,}Closed$/.test(l))).toBe(true);
         expect(out.some((l) => /^ {2}2026-10-05 {2,}4 {2,}5$/.test(l))).toBe(true);
-        const again = mockApi({ 'POST /api/mainnet/tools/describe_table': () => ok({ table: 'Withdrawal rounds' }) });
+        const again = mockApi({ ...noLive, 'POST /api/mainnet/tools/describe_table': () => ok({ table: 'Withdrawal rounds' }) });
         await run(['table', 'Withdrawal rounds']);
-        expect(again[0].body).toEqual({ input: { table: 'Withdrawal rounds' } });
+        expect(again[1].body).toEqual({ input: { table: 'Withdrawal rounds' } });
     });
 
     test('create sends status columns, formulas and the finished rule as the tool takes them', async () => {

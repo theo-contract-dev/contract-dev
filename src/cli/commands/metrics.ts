@@ -277,6 +277,7 @@ export async function trackCommand(args: string[]): Promise<TrackedMetric | void
   if (!kind) throw new Error(`Unknown kind "${kindName}". One of: ${LISTED_KINDS.join(', ')}`);
   // the chain is said, or is the watched contract's own; never assumed (2026-10-23: four values went on Ethereum for Arbitrum contracts)
   const subject = requirePositional(positional, 0, 'address').trim();
+  if (/^0x/i.test(subject) && !isAddress(subject)) throw new Error(`address must be a 0x address or a watched contract's name (got: ${subject})`);
   const stated = chainFlag(flags);
   const chainId = isAddress(subject) ? await chainOf(requireAuth(), subject, stated) : (stated ?? (await resolveContract(requireAuth(), subject)).chainId);
   // a watched contract's name works as well as its address (track stETH totalSupply)

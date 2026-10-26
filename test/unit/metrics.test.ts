@@ -23,7 +23,7 @@ describe('track', () => {
         });
         await trackCommand([VAULT, 'native-balance']);
         expect(calls[0].path).toBe('/api/mainnet/accounts?accountType=contract');
-        expect(calls[1].body).toEqual({ chainId: 1, address: VAULT, kind: 'nativeBalance', label: 'Treasury · Native balance' });
+        expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ chainId: 1, address: VAULT, kind: 'nativeBalance', label: 'Treasury · Native balance' });
         expect(printed()[0]).toMatch(/Tracking Treasury · Native balance on chain 1 \(id: m1\)/);
     });
 
@@ -48,7 +48,7 @@ describe('track', () => {
             'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
             'POST /api/mainnet/tracked-metrics': (c) => ({ status: 200, payload: { trackedMetric: { id: 'm1', chainId: 1, address: c.body.address, kind: c.body.kind, label: c.body.label ?? null, params: null, enabled: true }, created: false } }),
         });
-        await trackCommand([VAULT, 'native-balance', '--label', 'Bal']);
+        await trackCommand([VAULT, 'native-balance', '--chain', '1', '--label', 'Bal']);
         expect(printed()[0]).toMatch(/^Already tracking Bal on chain 1 \(id: m1\)/);
     });
 
@@ -74,8 +74,12 @@ describe('track', () => {
         expect(calls[1].body.label).toBe('0x1111…1111 · Native balance');
         expect(calls[1].body.chainId).toBe(8453);
 
-        await trackCommand([VAULT, 'native-balance', '--label', 'Treasury']);
+        await trackCommand([VAULT, 'native-balance', '--chain', '1', '--label', 'Treasury']);
         expect(calls[2].body).toEqual({ chainId: 1, address: VAULT, kind: 'nativeBalance', label: 'Treasury' }); // no accounts lookup
+
+        // not watched and no --chain: asked for, never assumed (2026-10-23)
+        await expect(trackCommand([VAULT, 'native-balance'])).rejects.toThrow(`Say which chain ${VAULT} is on`);
+        expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2);
     });
 
     it('erc20-balance needs --token', async () => {
@@ -83,8 +87,8 @@ describe('track', () => {
             'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
             'POST /api/mainnet/tracked-metrics': (c) => created(c.body),
         });
-        await expect(trackCommand([VAULT, 'erc20-balance'])).rejects.toThrow(/--token/);
-        await trackCommand([VAULT, 'erc20-balance', '--token', TOKEN]);
+        await expect(trackCommand([VAULT, 'erc20-balance', '--chain', '1'])).rejects.toThrow(/--token/);
+        await trackCommand([VAULT, 'erc20-balance', '--chain', '1', '--token', TOKEN]);
         expect(calls.at(-1)!.body.kind).toBe('tokenBalance');
         expect(calls.at(-1)!.body.params).toEqual({ token: TOKEN });
     });
@@ -98,7 +102,7 @@ describe('track', () => {
         await expect(trackCommand([TOKEN, 'balance-of', '--holder', HOLDER])).rejects.toThrow(/Unknown kind "balance-of"/);
         expect(calls).toHaveLength(0);
         // the same read, spelled as a function call with the holder as its argument
-        await trackCommand([TOKEN, 'function', '--function', 'balanceOf(address) returns (uint256)', '--args', HOLDER]);
+        await trackCommand([TOKEN, 'function', '--chain', '1', '--function', 'balanceOf(address) returns (uint256)', '--args', HOLDER]);
         expect(calls.at(-1)!.body.kind).toBe('functionResult');
         expect(calls.at(-1)!.body.params.calldata).toBe('0x70a08231' + HOLDER.slice(2).toLowerCase().padStart(64, '0'));
     });
@@ -108,7 +112,7 @@ describe('track', () => {
             'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
             'POST /api/mainnet/tracked-metrics': (c) => created(c.body),
         });
-        await trackCommand([VAULT, 'function', '--function', 'convertToAssets(uint256) returns (uint256)', '--args', '1e18', '--decimals', '18']);
+        await trackCommand([VAULT, 'function', '--chain', '1', '--function', 'convertToAssets(uint256) returns (uint256)', '--args', '1e18', '--decimals', '18']);
         const expected = new Interface(['function convertToAssets(uint256)']).encodeFunctionData('convertToAssets', ['1000000000000000000']);
         expect(calls[1].body.params).toEqual({ calldata: expected, signature: 'convertToAssets(uint256) → uint256', decimals: 18 });
         expect(calls[1].body.label).toBe('0x1111…1111.convertToAssets');
@@ -120,13 +124,13 @@ describe('track', () => {
             'POST /api/mainnet/tracked-metrics': (c) => created(c.body),
         });
         const sig = 'getReserves() returns (uint112,uint112,uint32)';
-        await expect(trackCommand([VAULT, 'function', '--function', sig])).rejects.toThrow(/--word/);
-        await trackCommand([VAULT, 'function', '--function', sig, '--word', '1']);
+        await expect(trackCommand([VAULT, 'function', '--chain', '1', '--function', sig])).rejects.toThrow(/--word/);
+        await trackCommand([VAULT, 'function', '--chain', '1', '--function', sig, '--word', '1']);
         expect(calls.at(-1)!.body.params.wordIndex).toBe(1);
         expect(calls.at(-1)!.body.params.signed).toBeUndefined();
         expect(calls.at(-1)!.body.label).toBe('0x1111…1111.getReserves #1');
 
-        await trackCommand([VAULT, 'function', '--function', 'latestAnswer() returns (int256)']);
+        await trackCommand([VAULT, 'function', '--chain', '1', '--function', 'latestAnswer() returns (int256)']);
         expect(calls.at(-1)!.body.params.signed).toBe(true);
     });
 
@@ -135,15 +139,15 @@ describe('track', () => {
             'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
             'POST /api/mainnet/tracked-metrics': (c) => created(c.body),
         });
-        await trackCommand([VAULT, 'function', '--calldata', '0x18160DDD', '--signed']);
+        await trackCommand([VAULT, 'function', '--chain', '1', '--calldata', '0x18160DDD', '--signed']);
         expect(calls[1].body.params).toEqual({ calldata: '0x18160ddd', signed: true });
-        await expect(trackCommand([VAULT, 'function', '--calldata', '0x1234'])).rejects.toThrow(/--calldata/);
-        await expect(trackCommand([VAULT, 'function', '--calldata', '0x18160ddd', '--function', 'x()'])).rejects.toThrow(/not both/);
+        await expect(trackCommand([VAULT, 'function', '--chain', '1', '--calldata', '0x1234'])).rejects.toThrow(/--calldata/);
+        await expect(trackCommand([VAULT, 'function', '--chain', '1', '--calldata', '0x18160ddd', '--function', 'x()'])).rejects.toThrow(/not both/);
     });
 
     it('argument count mismatches are caught before the request', async () => {
         mockApi({ 'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }) });
-        await expect(trackCommand([VAULT, 'function', '--function', 'balanceOf(address)'])).rejects.toThrow(/takes 1 argument, got 0/);
+        await expect(trackCommand([VAULT, 'function', '--chain', '1', '--function', 'balanceOf(address)'])).rejects.toThrow(/takes 1 argument, got 0/);
     });
 
     it('tvl is no longer a kind: refused before anything is sent', async () => {
@@ -154,7 +158,7 @@ describe('track', () => {
 
     it('trace kinds: a signature becomes its selector, windows are validated, callers filter', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tracked-metrics': (c) => created(c.body) });
-        await trackCommand([VAULT, 'calls', '--method', 'transfer(address,uint256)', '--window', '15m', '--except', `${HOLDER},${TOKEN}`]);
+        await trackCommand([VAULT, 'calls', '--chain', '1', '--method', 'transfer(address,uint256)', '--window', '15m', '--except', `${HOLDER},${TOKEN}`]);
         expect(calls[0].body.kind).toBe('callCount');
         expect(calls[0].body.params).toEqual({
             selector: '0xa9059cbb',
@@ -164,12 +168,12 @@ describe('track', () => {
         });
         expect(calls[0].body.label).toBeUndefined();
 
-        await trackCommand([VAULT, 'revert-rate', '--method', '0xA9059CBB']);
+        await trackCommand([VAULT, 'revert-rate', '--chain', '1', '--method', '0xA9059CBB']);
         expect(calls[1].body.kind).toBe('revertRate');
         expect(calls[1].body.params).toEqual({ selector: '0xa9059cbb', windowSec: 3600 });
 
-        await expect(trackCommand([VAULT, 'callers', '--window', '2h'])).rejects.toThrow(/--window must be one of/);
-        await expect(trackCommand([VAULT, 'callers', '--only', HOLDER, '--except', TOKEN])).rejects.toThrow(/not both/);
+        await expect(trackCommand([VAULT, 'callers', '--chain', '1', '--window', '2h'])).rejects.toThrow(/--window must be one of/);
+        await expect(trackCommand([VAULT, 'callers', '--chain', '1', '--only', HOLDER, '--except', TOKEN])).rejects.toThrow(/not both/);
         // gas-p95 was retired 2026-10-14: no longer a kind the CLI knows, so nothing is posted.
         await expect(trackCommand([VAULT, 'gas-p95'])).rejects.toThrow(/Unknown kind "gas-p95"/);
         expect(calls).toHaveLength(2);

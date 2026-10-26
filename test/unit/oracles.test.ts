@@ -77,7 +77,6 @@ describe('dependencies and address with Chainlink feeds', () => {
     it('address prints the feed panel the route carries: what it is, what it reads now, its terms, its addresses', async () => {
         const now = Date.now();
         mockApi({
-            'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
             'GET /api/mainnet/explorer/address': () => ({
                 payload: {
                     address: ETH_USD,
@@ -97,7 +96,7 @@ describe('dependencies and address with Chainlink feeds', () => {
                 },
             }),
         });
-        await run(['address', ETH_USD]);
+        await run(['address', ETH_USD, '--chain', 'ethereum']);
         const out = printed();
         expect(out[0]).toBe(`${ETH_USD} · Ethereum · contract`);
         expect(out.find((l) => l.startsWith('  Chainlink feed'))).toMatch(/^ {2}Chainlink feed\s+ETH \/ USD · price · proxy$/);
