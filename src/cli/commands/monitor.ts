@@ -574,6 +574,10 @@ interface ValueMonitorResult {
 }
 
 async function addMonitor(args: string[]): Promise<unknown> {
+  if (args[0] === 'help' || args[0] === '-h' || args[0] === '--help') {
+    console.log(HELP);
+    return;
+  }
   const flags = parseFlags(args);
   // --on / --event / --silence: a monitor from a sentence, built and saved by the server.
   if (isIntentForm(flags)) return await addMonitorFromIntent(flags);
