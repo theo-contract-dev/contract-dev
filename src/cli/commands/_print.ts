@@ -24,8 +24,24 @@ export function byUnit(v: unknown, unit: string | undefined): unknown {
   if (typeof v !== 'number') return v;
   if (unit === 'time') return new Date(v * 1000).toISOString().slice(0, 16).replace('T', ' ');
   if (unit === 'duration') return fmtSpan(v);
-  if (unit === 'usd') return fmtUsd(v);
+  if (unit === 'usd') return fmtUsdCell(v);
   return v;
+}
+
+/**
+ * A dollar figure in a table's cell (2026-10-28: "$1.1K" and "$0.00" read as rounded away): every dollar and cent
+ * under a million ($1,146.51, $12.37), two decimals past it ($9.96M), two significant figures under a dollar
+ * ($0.0016); $0 a measured zero.
+ */
+export function fmtUsdCell(v: number): string {
+  if (!Number.isFinite(v)) return DASH;
+  const abs = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  if (abs === 0) return '$0';
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`;
+  if (abs >= 1) return `${sign}$${abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${sign}$${abs.toLocaleString('en-US', { maximumSignificantDigits: 2 })}`;
 }
 
 /** A breakdown's column: each row's `breakdown` holds its parts (that column's value, `value`, `rows`). */
@@ -73,13 +89,33 @@ export function columnsTable(columns: string[], rows: unknown[][], indent = ''):
   );
 }
 
-/** Every part of a result, in its own order. `omit` leaves out keys a command already printed. */
+/**
+ * How much of what was asked a result covers, as one line: its window, and when it is not complete, what is
+ * missing and when to ask again. Every read tool answers with `coverage` (the server's lib/agent/coverage):
+ * complete, partial (the figures stand over a shorter window, said), indexing (no figures; ask again) or
+ * unavailable. Null when the result carries none.
+ */
+export function coverageLine(c: unknown): string | null {
+  if (!c || typeof c !== 'object') return null;
+  const o = c as { window?: { from?: string; to?: string } | null; coverage?: string; why?: string; retryInMinutes?: number };
+  if (typeof o.coverage !== 'string') return null;
+  const stamp = (s: string) => s.slice(0, 16).replace('T', ' ');
+  const window = o.window?.from && o.window?.to ? `${stamp(o.window.from)} → ${stamp(o.window.to)}` : null;
+  if (o.coverage === 'complete') return window ? `Covers ${window}` : null;
+  const state = o.coverage === 'partial' ? 'Partial' : o.coverage === 'indexing' ? 'Indexing' : 'Unavailable';
+  const again = o.retryInMinutes ? ` Ask again in about ${o.retryInMinutes} min.` : '';
+  return `${state}${window ? ` (${window})` : ''}${o.why ? `: ${o.why}` : ''}${again}`;
+}
+
+/** Every part of a result, in its own order. `omit` leaves out keys a command already printed. The coverage line comes first. */
 export function printResult(result: unknown, opts: { omit?: string[]; indent?: string } = {}): string[] {
   const out: string[] = [];
   const indent = opts.indent ?? '';
   if (!result || typeof result !== 'object') return [`${indent}${cell(result)}`];
+  const cov = opts.omit?.includes('coverage') ? null : coverageLine((result as Record<string, unknown>).coverage);
+  if (cov) out.push(`${indent}${cov}`);
   for (const [k, v] of Object.entries(result as Record<string, unknown>)) {
-    if (opts.omit?.includes(k) || v === undefined) continue;
+    if (k === 'coverage' || opts.omit?.includes(k) || v === undefined) continue;
     if (isScalar(v) || (Array.isArray(v) && v.every(isScalar))) {
       out.push(`${indent}${human(k)}: ${cell(v)}`);
     } else if (Array.isArray(v)) {

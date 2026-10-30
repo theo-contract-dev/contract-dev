@@ -189,3 +189,56 @@ describe('stated tokens', () => {
     });
 });
 
+
+describe('descriptions', () => {
+    useEnvAuth();
+    const ok = (result: unknown) => ({ payload: { ok: true, result, ms: 7 } });
+    const noItems = { 'POST /api/mainnet/tools/list_tables': () => ok({ rows: [] }) };
+    const live = { id: 'q1', title: 'Integrators', rows: 6, url: 'http://localhost:3000/tables/q1' };
+
+    it('create sends an item table its description', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/create_table': () => ok({ created: true, table: { id: 't1', name: 'Withdrawal rounds' } }) });
+        await run(['table', 'create', 'Withdrawal rounds', '--group', 'Wildcat markets', '--opens', 'WithdrawalBatchCreated', '--description', ' Every withdrawal round, open until paid ']);
+        expect(calls[0].body).toEqual({ input: { name: 'Withdrawal rounds', opens: 'WithdrawalBatchCreated', group: 'Wildcat markets', description: 'Every withdrawal round, open until paid' } });
+    });
+
+    it('create --from keeps the description in the save, out of the question', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/query_data': () => ok({ matched: 1, returned: 1, rows: [{ app: '0x1', volume: 1 }], columns: [{ key: 'app', label: 'app' }, { key: 'volume', label: 'volume' }], saved: { id: 'q1', url: 'u', kept: true, title: 'Integrators' } }) });
+        await run(['table', 'create', 'Integrators', '--from', 'DZap activity', '--description', 'Volume per integrator', '--by', 'app', '--days', '90']);
+        const input = (calls[0].body as { input: Record<string, unknown> }).input;
+        // one kind of kept answer since 2026-10-28: a live table; `as` and `keep` went with the snapshots
+        expect(input.save).toEqual({ title: 'Integrators', description: 'Volume per integrator' });
+        expect(input.description).toBeUndefined();
+        expect(input.data).toBe('DZap activity');
+    });
+
+    it('update describes a live table through its own route, and "" removes it', async () => {
+        const calls = mockApi({
+            ...noItems,
+            'GET /api/mainnet/queries': () => ({ payload: { queries: [live] } }),
+            'PATCH /api/mainnet/queries/q1': () => ({ payload: { query: { ...live, description: 'Volume per integrator' } } }),
+        });
+        await run(['table', 'update', 'Integrators', '--description', 'Volume per integrator']);
+        const patch = calls.find((c) => c.method === 'PATCH');
+        expect(patch?.path).toBe('/api/mainnet/queries/q1');
+        expect(patch?.body).toEqual({ description: 'Volume per integrator' });
+        expect(printed().some((l) => l.includes('Updated live table "Integrators" (q1): Volume per integrator'))).toBe(true);
+        const again = mockApi({ ...noItems, 'GET /api/mainnet/queries': () => ({ payload: { queries: [live] } }), 'PATCH /api/mainnet/queries/q1': () => ({ payload: { query: { ...live, description: null } } }) });
+        await run(['table', 'update', 'Integrators', '--description', '']);
+        expect(again.find((c) => c.method === 'PATCH')?.body).toEqual({ description: '' });
+    });
+
+    it('update describes an item table through update_table', async () => {
+        const calls = mockApi({
+            'POST /api/mainnet/tools/list_tables': () => ok({ rows: [{ id: 't1', name: 'Withdrawal rounds' }] }),
+            'POST /api/mainnet/tools/update_table': () => ok({ table: { id: 't1', name: 'Withdrawal rounds', description: 'Rounds' } }),
+        });
+        await run(['table', 'update', 'Withdrawal rounds', '--description', 'Rounds']);
+        expect(calls.find((c) => c.path.endsWith('/update_table'))?.body).toEqual({ input: { table: 'Withdrawal rounds', description: 'Rounds' } });
+    });
+
+    it('a bare --description is refused', async () => {
+        mockApi({});
+        await expect(run(['table', 'update', 'Withdrawal rounds', '--description'])).rejects.toThrow(/--description takes a sentence/);
+    });
+});

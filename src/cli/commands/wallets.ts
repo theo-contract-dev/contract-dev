@@ -8,13 +8,16 @@ import { parseFlags, flag, requirePositional } from './_args';
 import { requireChain } from '../data';
 import { apiRequest, requireAuth } from '../credentials';
 import { runTool } from '../tools';
+import { aboutFlag, addToBrief, sayBrief, type BriefAdded } from '../about';
 import { describeAccount, findWatchedAccount, parseChainId, renameCommand, unwatchCommand, type WatchedAccount } from './watch';
 
 const HELP = `contract-dev wallets — watch wallets (addresses with no code) beside your contracts
 
 Usage:
-  contract-dev watch wallet <address> [--chain <id|name>] [--name <label>] [--group <name>]
-                                                       Watch a wallet on one chain; --group puts it in a group of wallets
+  contract-dev watch wallet <address> [--chain <id|name>] [--name <label>] [--group <name>] [--about "<role>"]
+                                                       Watch a wallet on one chain; --group puts it in a group of wallets;
+                                                       --about adds a line on its role to the workspace's brief (an agent
+                                                       gives it, or --no-about in a setup)
   contract-dev wallets list [--chain <id>]             List watched wallets
   contract-dev wallets add <address> [flags]           The same as watch wallet
   contract-dev wallets rename <address> <name> [--chain <id>]   Rename a watched wallet (clears with "")
@@ -33,7 +36,7 @@ interface Detection {
   labelName?: string | null;
 }
 
-async function addWallet(args: string[]): Promise<WatchedAccount> {
+async function addWallet(args: string[]): Promise<WatchedAccount & { brief?: BriefAdded }> {
   const flags = parseFlags(args);
   const positional = flags._ as string[];
   const address = requirePositional(positional, 0, 'address');
@@ -42,6 +45,7 @@ async function addWallet(args: string[]): Promise<WatchedAccount> {
   const name = flag(flags, 'name');
   const group = flag(flags, 'group');
   if (group === 'true') throw new Error('--group needs a name');
+  const about = aboutFlag(flags, group !== undefined ? `the ${group} group` : 'this wallet');
 
   const auth = requireAuth();
   const detected = await apiRequest<Detection>(auth, 'POST', '/api/mainnet/accounts/detect', { chainId, address, accountType: 'wallet' });
@@ -51,10 +55,11 @@ async function addWallet(args: string[]): Promise<WatchedAccount> {
   const label = (name && name !== 'true' ? name.trim() : '') || detected.labelName || detected.detectedName || undefined;
   if (group !== undefined) {
     // the tool tags it too, under the one-kind-per-group rule
-    const r = await runTool<{ account?: WatchedAccount; created?: boolean }>(auth, 'watch_wallet', { chainId, address, ...(label ? { name: label } : {}), group });
+    const r = await runTool<{ account?: WatchedAccount; created?: boolean; brief?: BriefAdded }>(auth, 'watch_wallet', { chainId, address, ...(label ? { name: label } : {}), group, ...(about ? { about } : {}) });
     const account = r.account!;
     console.log(`${r.created ? 'Watching' : 'Updated'} ${describeAccount(account)} on chain ${account.chainId} · in ${group}`);
-    return account;
+    sayBrief(r.brief);
+    return r.brief ? { ...account, brief: r.brief } : account;
   }
   const payload = await apiRequest<{ account: WatchedAccount; created: boolean }>(auth, 'POST', '/api/mainnet/accounts', {
     chainId,
@@ -63,7 +68,8 @@ async function addWallet(args: string[]): Promise<WatchedAccount> {
     ...(label ? { name: label } : {}),
   });
   console.log(`${payload.created ? 'Watching' : 'Updated'} ${describeAccount(payload.account)} on chain ${payload.account.chainId}`);
-  return payload.account;
+  const brief = await addToBrief(auth, [payload.account.name || address], about);
+  return brief ? { ...payload.account, brief } : payload.account;
 }
 
 async function listWallets(args: string[]): Promise<WatchedAccount[]> {

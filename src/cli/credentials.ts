@@ -100,7 +100,7 @@ export function requireAuth(): ResolvedAuth {
 // A request that hangs must not hang the CLI: every call carries a deadline. Reads retry
 // once (a socket that died, a 5xx); writes never do — a POST may have reached the server
 // before the failure, and retrying it could create a second monitor or metric.
-export const REQUEST_TIMEOUT_MS = 30_000;
+export const REQUEST_TIMEOUT_MS = 60_000;
 const RETRY_DELAY_MS = 500;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

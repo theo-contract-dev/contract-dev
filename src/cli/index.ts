@@ -14,8 +14,6 @@ import { txCommand, addressCommand, blockCommand, walletCommand, sourceCommand }
 import { findCommand, describeCommand } from './commands/ask';
 import { whoCommand, readCommand } from './commands/questions';
 import { queryCommand } from './commands/query';
-import { dataCommand } from './commands/data';
-import { queriesCommand } from './commands/queries';
 import { groupCommand, factoryCommand } from './commands/group';
 import { walletsCommand } from './commands/wallets';
 import { tableCommand } from './commands/table';
@@ -29,7 +27,8 @@ const HELP = `contract.dev — your contracts, from the command line
 Account:
   contract-dev login                      Connect the CLI to your contract.dev account (try: login help)
   contract-dev whoami                     Show which account + workspace the CLI acts as
-  contract-dev workspace <sub>            Show or switch the workspace the CLI acts on (try: workspace help)
+  contract-dev workspace [<sub>]          The workspace the CLI acts on: its brief on the protocol and what it holds;
+                                          brief writes the brief, use switches workspace (try: workspace help)
   contract-dev logout                     Revoke the key and delete the saved credentials
   contract-dev status                     The workspace at a glance: contracts, transactions, alerts
 
@@ -52,11 +51,17 @@ Groups:
   contract-dev group column add <group> --label "…" --read "totalAssets()"   A column on its table, read on every member
   contract-dev group monitor add <group> --name "…" --column <key> --when "value < <n>"   One monitor on every member
 
-Tables (the things inside contracts: withdrawal rounds, loans, requests):
-  contract-dev table list                 Every item table, hidden ones too (try: table help)
-  contract-dev table show <table>         Openings and closings per period, how long rows stay open, the biggest rows
+Tables (rows kept current, and the things inside contracts: withdrawal rounds, loans, requests):
+  contract-dev table list                 Every table: the live tables, then the item tables, hidden ones too (try: table help)
+  contract-dev table create "<name>" --from events --group <g> --event <Event> [--field "vol=usd(…)"] [--by … --measure …]
+                                          A live table straight from events, one step: the events kept underneath, the
+                                          question asked of them and asked again while the table is open
+  contract-dev table create "<name>" --from "<table>"|transactions|transfers|wallets|contracts [the query's flags]
+                                          A live table over rows the workspace already keeps: another table's rows (its
+                                          own --where carried in), a metric's records, the ledger
+  contract-dev table show <table>         A live table's rows now; an item table's openings and closings, how long rows stay open
   contract-dev table create "<name>" --opens <Event> [--closes <Event>] [--group <g>] [--count <Event>] [--hidden]
-                                          A table from the contracts' events, its whole history read
+                                          An item table from the contracts' events, its whole history read
 
 Metrics:
   contract-dev metrics                    List tracked metrics (try: metrics help)
@@ -79,12 +84,9 @@ Ask (questions over the workspace; scope is --group <name>, --contract <ref> or 
                                           tokens), groups, metrics, monitors, reports, destinations
   contract-dev describe <contract>        What a contract is: kinds, standards, owner, its events and write
                                           functions
-  contract-dev query <contracts|table|metric|data|transactions|transfers|wallets|monitors|alerts|reports> …
+  contract-dev query <contracts|table|metric|transactions|transfers|wallets|monitors|alerts|reports> …
                                           One dataset, asked in the table language: --where, --show, --sort, --by with
-                                          --sum, --count or several --measure, --having, --breakdown, --total; --save keeps
-                                          the answer at a page, --keep as a table (try: query help)
-  contract-dev data <list|define>         The rows the workspace keeps, by name: event data and tables (try: data help)
-  contract-dev queries [show|csv|refresh|rename|as|delete <id|title>]   The answers kept at a page: charts and tables
+                                          --sum, --count or several --measure, --having, --breakdown, --total (try: query help)
   contract-dev who <address|ENS|name>     Who it is
   contract-dev read <contract> <function> [<arg>…]   Call a view function, now or --at a past time (try: read help)
 
@@ -218,10 +220,6 @@ export async function run(args: string[]): Promise<unknown> {
       return await whoCommand(rest);
     case 'query':
       return await queryCommand(rest);
-    case 'data':
-      return await dataCommand(rest);
-    case 'queries':
-      return await queriesCommand(rest);
     case 'read':
       return await readCommand(rest);
     case 'skills':
@@ -252,7 +250,10 @@ async function main() {
   const raw = process.argv.slice(2);
   // --json anywhere on the line: the command runs silently and its result prints as JSON.
   const json = raw.includes('--json');
-  const args = extractTargetFlags(raw.filter((a) => a !== '--json'));
+  const noJson = raw.filter((a) => a !== '--json');
+  // `channels add slack --workspace <name>` names a SLACK workspace (commands/monitor addSlack), not the staff
+  // override, which stripped it before the command saw it (2026-10-28)
+  const args = noJson[0] === 'channels' ? noJson : extractTargetFlags(noJson);
   const realLog = console.log;
   if (json) console.log = () => {};
   // after an upgrade, the agent skill this CLI installed is brought up to its version (a line on stderr)

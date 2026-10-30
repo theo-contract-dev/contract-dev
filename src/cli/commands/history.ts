@@ -1,9 +1,8 @@
-// Every firing of some events over a contract's whole life, through the platform's event_history
-// tool: how many and when (by day, week or month), how big (a formula's value), who (top wallets, repeat
+// Every firing of some events over the plan's history of a contract (90 days on Team), through the platform's
+// event_history tool: how many and when (by day, week or month), how big (a formula's value), who (top wallets, repeat
 // wallets), the weekday and hour shape, and examples. A read too long for one answer comes back
 // with `resume`; the command asks again (up to two more times) so the terminal gets the whole story.
 import { parseFlags, flag, flagAll, type ParsedFlags } from './_args';
-import { saveFromFlags, savedLine } from './_save';
 import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag, limitFlag } from '../data';
@@ -26,7 +25,6 @@ changes, like asset() or token0()), the token named in it (\`contract-dev descri
 token as checked against the contract's transactions). Then the spread of those values (total, quartiles, dollar
 buckets when the formula prices them, each firing at its own day's price), and each contract's and wallet's total.
 --who counts by an address field of the event (account, owner); by default the transaction's signer. A long history is read over up to three calls (--once stops after one).
---save [bars|table] saves the timeline as a snapshot under Queries (a chart) and prints its link; --of contracts or --of wallets saves that table instead; --title names the page.
 --address reads a contract nobody watches (a position manager, a factory) straight from the chain's log history,
 narrowed: --wallet with --who naming an indexed address field (--who to --wallet 0x…) is applied by the log index
 itself, or --window is 30d at most. With no verified ABI, write the event as its full signature.
@@ -81,12 +79,7 @@ export async function historyCommand(args: string[]): Promise<unknown> {
   if (!args.length || HELP_WORDS.includes(args[0])) return void console.log(HELP);
   const flags = parseFlags(args);
   const input = historyInput(flags);
-  const save = saveFromFlags(flags);
-  if (save) {
-    const of = flag(flags, 'of');
-    if (of !== undefined && !['timeline', 'contracts', 'wallets'].includes(of)) throw new Error('--of takes timeline, contracts or wallets');
-    input.save = of ? { ...save, of } : save;
-  }
+  if (['save', 'title', 'of'].some((k) => flag(flags, k) !== undefined)) throw new Error('--save is gone: a history is read where asked; a table of events kept under Tables is contract-dev table create "<name>" --from events ….');
   const auth = requireAuth();
   let result = await runTool<Record<string, unknown>>(auth, 'event_history', input);
   // a read that stopped short and can go further: ask again, it continues where it stopped
@@ -95,7 +88,5 @@ export async function historyCommand(args: string[]): Promise<unknown> {
     result = await runTool<Record<string, unknown>>(auth, 'event_history', input);
   }
   for (const line of printResult(result, { omit: ['definition', 'saved'] })) console.log(line);
-  const saved = savedLine(result);
-  if (saved) console.log(saved);
   return result;
 }

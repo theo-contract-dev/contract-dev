@@ -22,7 +22,7 @@ describe('whoami', () => {
         };
         mockApi({ 'GET /api/cli/whoami': () => ({ payload: { email: 'theo@contract.dev', org: { id: 'o1', name: 'Personal' }, plan } }) });
         await whoamiCommand();
-        expect(printed()[1]).toBe('Plan: Free · 7 days of history · contracts and wallets 11/25 · monitors 29/50 · reports 3/3 · tables 0/2 · tracked values 4');
+        expect(printed()[1]).toBe('Plan: Free · 7 days of history · contracts and wallets 11/25 · monitors 29/50 · reports 3/3 · item tables 0/2 · tracked values 4');
         expect(planLine({ ...plan, label: 'Team', historyDays: 365, trialEndsAt: '2026-11-03T00:00:00.000Z' })).toMatch(/^Team \(trial until 2026-11-03\) · 365 days of history/);
         (console.log as jest.Mock).mockClear();
         mockApi({ 'GET /api/cli/whoami': () => ({ payload: { email: 'theo@contract.dev', org: { id: 'o1', name: 'Personal' } } }) });

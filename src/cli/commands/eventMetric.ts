@@ -31,7 +31,7 @@ export const EVENT_METRIC_HELP = `Event metrics — a number added up from event
                                                       Its total, the largest contracts, a series, and the records behind
                                                       it with their parameters, reads and fields
   contract-dev metric update <name> [--name "<new>"] [any define flag]   Replace those parts; the history is read again
-  contract-dev metric delete <name>
+  contract-dev metric delete <name>                   Remove an event metric, or a tracked value by label or id (as untrack)
   contract-dev metric pin <name> | unpin <name>       Show the metric in the overview's header, after Contracts and Activity
                                                       (five at most, in the order pinned), or take it off
   contract-dev metric table "<name>" --table "<table>" [--column "<label>"] [--among active|done|all]

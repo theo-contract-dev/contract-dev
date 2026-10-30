@@ -81,7 +81,7 @@ export function planLine(p: PlanPayload): string {
     of(p.watchedAccounts, 'contracts and wallets'),
     of(p.monitors, 'monitors'),
     of(p.reports, 'reports'),
-    of(p.tables, 'tables'),
+    of(p.tables, 'item tables'),
     of(p.trackedValues, 'tracked values'),
   ];
   return parts.filter((x): x is string => !!x).join(' · ');

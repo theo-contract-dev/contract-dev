@@ -1,6 +1,74 @@
 # Changelog
 
+## 4.1.0 — 2026-10-30
+
+### Changed
+- `factory … --watch --limit <n>` watches the newest n children not yet watched and says how many more exist: a setup's
+  default on a factory with thousands of children (the newest ten), the rest named by the person.
+- `table create --from events` is one call: the server keeps the rows and makes the table together, and a question it
+  refuses leaves nothing behind (a failed column once left the rows under the name). A table may share a name with a
+  metric. `describe <address> --chain <id>` answers for any address, watched or not: its ABI, events and functions.
+- The skill is two files: `SKILL.md`, what every agent reads (how to work, a one-line index of the commands, the setup
+  flow, the rules and the routing table), and `reference.md` beside it, opened when needed (every command's syntax and
+  examples, the worked examples, the rules for making monitors, metrics, reports and tables, the packs by kind).
+  Well under half the size an agent read before every task (41 KB, was 102). `skills install` writes the server's guide into both.
+- A setup is a plan the person confirms, then the data (contracts, groups, tracked values, metrics, tables, the brief),
+  ending "Indexing started."; alerts and reports are asked for later.
+- Requests wait up to 60 s (was 30), and a tool or query up to three minutes (was one): a view read at every step of a
+  90-day series, or a 7-day hourly one, finishes in one call.
+- `history` reads the plan's history of a watched contract (90 days on Team) from the store; its help no longer says a
+  contract's whole life.
+- Every read answer begins with its coverage line: `Covers <from> → <to>` when whole over a window, `Partial …` or
+  `Indexing …` with the reason and when to ask again, nothing when whole with no window. A contract nobody watches is
+  refused by `events` and `history` with the offer to watch it; nothing is read live for it.
+
 ## 4.0.0 — 2026-10-26
+
+### Removed — snapshots under Queries (2026-10-28)
+- There is one kind of kept answer: a live table under Tables, made by `contract-dev table create`. Snapshots (an
+  answer kept as it was, drawn as a chart or a table under Queries) are gone: `--save`, `--title` and `--draw` on
+  `query`, `--save` on `events` and `--save`, `--title`, `--of` on `history` now say so and point at `table create`;
+  `contract-dev queries` is gone for good. A snapshot made before this keeps its rows but its page no longer opens.
+
+### Added — the workspace's brief on its protocol (2026-10-28)
+- `contract-dev workspace` now prints, after the workspace and its plan, the workspace's brief on its protocol (what it
+  is, each group's role, its mechanism, its tokens, what the metrics mean) and what it holds. It is the first command of
+  a session: every answer is given in the protocol's terms.
+- `contract-dev workspace brief "<text>" | --file <path> [--append]` writes the brief: whole at the end of a setup, or a
+  paragraph added under it. No text prints it. It says who wrote it and names what it does not cover: contracts watched
+  since it was written whole that it names nowhere and that sit in no group it knows, and groups it does not know.
+- `watch`, `watch wallet` and `group rule add` take `--about "<role>"`: one or two sentences on what was added, read from
+  its source, put under the brief after the names (or the group's). An agent's watch (Claude Code's mark in the
+  environment, or no terminal on stdout) is refused without `--about` or an explicit `--no-about`, which a setup uses
+  since it ends by writing the whole brief. A person typing at a terminal is asked nothing.
+
+### Changed — one noun: tables (2026-10-27)
+- `contract-dev data` is gone (`data define`, `data list`, `data query`). Rows the workspace keeps are tables: a live table
+  straight from events keeps its rows underneath (`table create "<name>" --from events …`), and a second table over the
+  same rows is built on the first by name, `table create "<name>" --from "<table>"` with the query's flags: the first
+  table's own `--where` carries in, and a table that folds its rows (`--by`, `--measure`, `--breakdown`) cannot be built on.
+- `contract-dev query table "<name>"` asks any table: a live table (the rows it reads), an item table's rows (`--among`),
+  or a metric's records (`--days`). `query data` is no longer a noun.
+
+### Added — a table's columns, categories and lines (2026-10-27)
+
+- `table create --from events` and `query table|data|metric` take `--column <name>` (repeat it): a listing shows only
+  the columns named, in that order. Made with none, a live table shows its `--field` columns alone. No more Time, Day,
+  Chain, Contract, Event and Wallet on every event table, and a parameter a formula reads is no longer a column by itself.
+- A field worked out with `amount(raw, token)` prints in whole tokens with the token's symbol; its header reads as words
+  (`amountIn` → Amount in). Tx is a link to the chain's explorer.
+- `--status "<Label>: <Opt>=<rule>; <Opt>"` on any query sets a category drawn as a pill on each row, usable by name in
+  the clauses; a table has no pills unless one is set. The same syntax as an item table's.
+- `--detail <name>` (repeat it) names the columns each row opens onto, one line per item of a list field: a batch swap's
+  swaps under the batch. A field that is one value on one event and a list on another is one list field, the single
+  value a list of one, so single and batch swaps sit in one table.
+- `table show` and `query` on a table still indexing print that it is, and none of the rows so far.
+
+### Added — table descriptions (2026-10-27)
+- Every table takes `--description "<sentence>"`: a sentence or two saying what it shows, beside it on the Tables page
+  and at the top of its page. On `table create` for all three kinds (`--from events`, `--from <data>`, `--opens`), and on
+  `table update <table>` for live tables and item tables alike (`--description ""` removes it). `table update` on a
+  live table also renames it with `--name`. `table list` and `table show` print it.
 
 ### Changed — the chain is said, never assumed
 - `watch <address>` (one address or several, with or without `--group`) and `block <n>` need `--chain`: an address
@@ -25,6 +93,17 @@
 - `contract-dev queries` lists the snapshots alone; `queries keep` and `queries unkeep` are gone (a snapshot stays a
   snapshot: make a live table from the same question, or with Make live table on its page).
 - After a save the CLI says which it made: `Snapshot under Queries, drawn as a table · …` or `Live table under Tables · …`.
+- 2026-10-27: `contract-dev queries` is off for now (the command and its help line; Queries is off the app's drawer too).
+  `--save` still keeps a snapshot, reachable by the link it prints. The agent skill no longer tells agents to save snapshots.
+- 2026-10-27: a live table straight from events is one step: `contract-dev table create "<name>" --from events --group <g>
+  --event <E> [--field "<name>=<expr>[ on <Event>]"]… [--pair "<Event> on <field>"]… [--keep <param>…] [--days <n>]` with the
+  query's flags. The events are kept as rows underneath (off the Metrics page, named after the table, deleted with it) and the
+  question is asked of them. `data define` then `table create --from "<data>"` is no longer needed for a table; `data define`
+  stays for rows several tables share.
+- 2026-10-27: `table show` on a live table says its window (`last 30 days`) and when its rows are still filling, and prints the
+  question's own columns first (the dollar column a `--where` is on, not the ninth column); `table list` labels the item tables'
+  counts under the live tables; a question over data still reading its history prints "No rows yet" instead of "0 rows matched".
+  The help's integrators example now carries every DZap swap and bridge event and prices the native coin's placeholder.
 
 ### Added
 - `contract-dev metric pin <name>` / `metric unpin <name>`: the metric in the overview's header, after Contracts and

@@ -118,7 +118,12 @@ function readMarker(path: string): string | null {
  */
 export interface Guide {
   version: string;
+  /** The whole guide in one (what servers before 2026-10-30 send, and what an older CLI writes into SKILL.md). */
   markdown: string;
+  /** What every agent reads every time: the rules, the routing table, the starter (into SKILL.md). */
+  skill?: string;
+  /** Opened when needed: the worked examples, the rules for making things, the packs by kind (into reference.md). */
+  reference?: string;
 }
 
 const GUIDE_START = /<!-- contract-dev:guide:start[^>]*-->/;
@@ -136,18 +141,29 @@ export async function fetchGuide(timeoutMs = 3_000): Promise<Guide | null> {
   }
 }
 
-/** SKILL.md with its guide block replaced by this guide; unchanged when the file has no block. */
-export function withGuide(skill: string, guide: Guide): string {
-  const start = GUIDE_START.exec(skill);
-  const end = skill.indexOf(GUIDE_END);
-  if (!start || end < start.index) return skill;
-  const head = skill.slice(0, start.index);
-  const tail = skill.slice(end + GUIDE_END.length);
-  const comment = "<!-- Written by `contract-dev skills install` from the server: the same guide the Slack and Telegram assistant reads. Edit it in the server's lib/agent/guide.ts, not here. -->";
-  return `${head}<!-- contract-dev:guide:start version=${guide.version} -->\n${comment}\n\n${guide.markdown.trim()}\n\n${GUIDE_END}${tail}`;
+const REFERENCE_START = /<!-- contract-dev:reference:start[^>]*-->/;
+const REFERENCE_END = '<!-- contract-dev:reference:end -->';
+const WRITTEN_BY = "<!-- Written by `contract-dev skills install` from the server: the same guide the Slack and Telegram assistant reads. Edit it in the server's lib/agent/guide.ts, not here. -->";
+
+/** A file with the block between `start` and `end` replaced by `body`; unchanged when the file has no block. */
+function withBlock(file: string, start: RegExp, end: string, name: string, version: string, body: string): string {
+  const s = start.exec(file);
+  const e = file.indexOf(end);
+  if (!s || e < s.index) return file;
+  return `${file.slice(0, s.index)}<!-- contract-dev:${name}:start version=${version} -->\n${WRITTEN_BY}\n\n${body.trim()}\n\n${end}${file.slice(e + end.length)}`;
 }
 
-/** Write the guide (when there is one) and, when the server was asked, stamp the check. */
+/** SKILL.md with its guide block replaced by this guide (the lean half when the server sends one); unchanged when the file has no block. */
+export function withGuide(skill: string, guide: Guide): string {
+  return withBlock(skill, GUIDE_START, GUIDE_END, 'guide', guide.version, guide.skill ?? guide.markdown);
+}
+
+/** reference.md with its block replaced by the guide's reference half; unchanged without one, or when the file has no block. */
+export function withReference(reference: string, guide: Guide): string {
+  return guide.reference ? withBlock(reference, REFERENCE_START, REFERENCE_END, 'reference', guide.version, guide.reference) : reference;
+}
+
+/** Write the guide (when there is one) into SKILL.md and reference.md and, when the server was asked, stamp the check. */
 function writeGuide(path: string, guide: Guide | null, now: string, asked = guide != null): void {
   const file = join(path, 'SKILL.md');
   if (guide) {
@@ -155,6 +171,14 @@ function writeGuide(path: string, guide: Guide | null, now: string, asked = guid
       writeFileSync(file, withGuide(readFileSync(file, 'utf8'), guide));
     } catch {
       // a skill without the file keeps what it had
+    }
+    const ref = join(path, 'reference.md');
+    if (guide.reference && existsSync(ref)) {
+      try {
+        writeFileSync(ref, withReference(readFileSync(ref, 'utf8'), guide));
+      } catch {
+        // the reference keeps what it had
+      }
     }
   }
   const marker = readMarkerFile(path);

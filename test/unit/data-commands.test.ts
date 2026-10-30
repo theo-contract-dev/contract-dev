@@ -1,4 +1,5 @@
 import { run } from '../../src/cli/index';
+import { CHAIN_NAMES } from '../../src/cli/commands/watch';
 import { mockApi, useEnvAuth, printed, RecordedCall } from './_mockApi';
 
 // The data commands read the routes the dashboard pages read. These tests pin what each one
@@ -81,7 +82,8 @@ describe('data commands', () => {
                     : { status: 404, payload: { error: 'Transaction not found' } },
         });
         const result: any = await run(['tx', hash]);
-        expect(calls.map((c) => query(c).chainId).sort()).toEqual(['1', '10', '11155111', '137', '143', '42161', '43114', '56', '8453']);
+        // every chain the CLI knows, from the one list the explorer commands read (28 chains joined on 2026-10-27; a hand-kept list here drifted)
+        expect(calls.map((c) => query(c).chainId).sort()).toEqual(Array.from(new Set(Object.values(CHAIN_NAMES))).map(String).sort());
         expect(result.chainId).toBe(43114);
         const out = printed();
         expect(out[0]).toBe(`${hash} · Avalanche · success`);

@@ -17,6 +17,7 @@ Usage:
                                                           A monitor on a tracked value
   contract-dev monitor add --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]… [--name "…"]
   contract-dev monitor add --on <contract> --silence --event <Name> [--for 24h] [--to <dest>]…
+  contract-dev monitor add --on <contract> --failures [--rows "<where>"] [--by <column>] [--when "<rule>"] [--for 1h] [--to <dest>]…
                                                           An event monitor, or a contract going quiet; saved at once
   contract-dev monitor show <id|name> [--range]           Rule, inputs, destinations, recent episodes; a silence monitor's
                                                           sightings, how long it has been quiet, and the quiet stretches
@@ -74,7 +75,17 @@ From a sentence (an event monitor, or a silence monitor):
   --silence                Alert when the contract goes quiet: no call for --for; with --method, no call to that
                            method; with --event, no emission of it
   --method <name>          The method whose silence matters (silence only)
-  --for <duration>         How long quiet counts: 90m, 24h, 3d (silence only; default 24h)
+  --failures               Alert when the contract's transactions start failing: over --for, the failed ones against
+                           every one that counts, judged each minute from the activity ledger
+  --rows "<where>"         (failures) Which transactions count: a where over their columns — status, method, wallet,
+                           via, value, revert — and the call's arguments as {args.<path>}: --rows '{method} == "swap"'.
+                           Every direct call without it
+  --by <column>            (failures) Judge per value of a column, an episode each: --by args.swapExecutionData[0].dex
+                           judges each swap provider on its own; an expression over the columns when the call has two
+                           shapes: --by 'if({args.x.dex} == null, {args.x[0].dex}, {args.x.dex})'
+  --when "<rule>"          (failures) Over the window's counts failed, total and share (failed over total, 0 to 1):
+                           --when "failed >= 5 and share > 0.5" (the default)
+  --for <duration>         How long quiet counts (silence; default 24h), or the failures' window (default 1h): 90m, 24h, 3d
   --name "<text>"          The monitor's name (one is made from the event or method otherwise)
   --to <dest>              Destinations by id, label or kind; repeat or comma-separate. Optional here: without
                            one the monitor records alerts on its page and pages nobody.
@@ -82,6 +93,7 @@ add saves at once and replays nothing; a monitor that turns out noisy is removed
   contract-dev monitor add --on steth --event Transfer --when "amount(value, emitter()) >= 1000" --to "#alerts"
   contract-dev monitor add --on pool --event Swap --when "usd(abs(amount0), token0()) > 1000000" --name "Big swaps"
   contract-dev monitor add --on steth --silence --event Submitted --for 6h
+  contract-dev monitor add --on router --failures --rows '{method} == "swap"' --by args.swapExecutionData[0].dex --when "failed >= 5 and share > 0.5" --for 1h
 
 Default monitors — control-change, dependency-failure, revert-spike — take pause / resume /
 snooze / unsnooze / set --to / exclude / include by that slug or by name; they have no
@@ -115,9 +127,9 @@ that channel as a destination and the bot posts a note there; without it, it lis
 it can add. A private channel appears once the bot is invited to it (/invite @contract.dev).
 Write the channel without its # (or quote it): an unquoted # starts a comment in most shells.
 
-Discord is connected in the app under Settings → Message destinations. Connecting Telegram or
-Slack, test, enable, disable and remove need an owner or admin, as in the app; adding a channel
-of a connected Slack workspace needs write access.
+Discord and webhook destinations can no longer be added; existing ones are listed, tested and removed here.
+Connecting Telegram or Slack, adding a channel and test need write access; enable, disable and remove
+need an owner or admin, as in the app.
 `;
 
 export interface AlertChannel {
@@ -447,7 +459,7 @@ export function resolveChannelIds(allChannels: AlertChannel[], refs: string[]): 
       continue;
     }
     const disabled = allChannels.find((c) => !c.enabled && matches(c));
-    if (disabled) throw new Error(`"${ref}" is a disabled destination — re-enable it under Monitoring → Destinations first.`);
+    if (disabled) throw new Error(`"${ref}" is a disabled destination — re-enable it under Settings → Message destinations first.`);
     const byKind = channels.filter((c) => c.kind.toLowerCase() === lower || c.kind.toLowerCase().replace(/_bot$/, '') === lower);
     if (byKind.length === 1) {
       ids.add(byKind[0].id);
@@ -558,7 +570,7 @@ export async function monitorCommand(args: string[]): Promise<unknown> {
 const VALUE_FLAGS = ['when', 'warn', 'to', 'name', 'max-age'] as const;
 const SET_FLAGS = ['when', 'warn', 'no-warn', 'to', 'max-age', 'no-max-age', 'name'] as const;
 /** The flags an event or silence monitor takes. */
-const INTENT_FLAGS = ['on', 'group', 'chain', 'event', 'silence', 'method', 'for', 'when', 'name', 'to', 'yes'] as const;
+const INTENT_FLAGS = ['on', 'group', 'chain', 'event', 'silence', 'failures', 'rows', 'by', 'method', 'for', 'when', 'name', 'to', 'yes'] as const;
 
 /** A --when / --warn formula as given; a bare number is refused, as it says nothing about which way. */
 function formulaFlag(flags: ParsedFlags, key: 'when' | 'warn', example: string): string | undefined {
@@ -657,7 +669,7 @@ async function setMonitor(args: string[]): Promise<Invariant | ValueMonitorResul
 // will print, the conditions in the field's units — and saves it at once.
 
 export interface MonitorIntent {
-  mode: 'event' | 'silence';
+  mode: 'event' | 'silence' | 'failures';
   /** One contract, or `group` for one monitor on each contract of a group. */
   contract?: string;
   group?: string;
@@ -667,6 +679,9 @@ export interface MonitorIntent {
   /** When it alerts, one formula: amount(value, emitter()) >= 1000 and to != 0x…, usd(abs(amount0), token0()) > 1000000. */
   when?: string;
   windowSec?: number;
+  /** failures: which transactions count (a where over the transactions' columns and {args.<path>}), and the column to judge per value of. */
+  rows?: string;
+  by?: string;
   name?: string;
   destinations?: string[];
 }
@@ -711,7 +726,7 @@ export function parseDuration(raw: string, label = '--for'): number {
   return sec;
 }
 
-const isIntentForm = (flags: ParsedFlags): boolean => flag(flags, 'on') !== undefined || flag(flags, 'group') !== undefined || flag(flags, 'event') !== undefined || flag(flags, 'silence') !== undefined;
+const isIntentForm = (flags: ParsedFlags): boolean => flag(flags, 'on') !== undefined || flag(flags, 'group') !== undefined || flag(flags, 'event') !== undefined || flag(flags, 'silence') !== undefined || flag(flags, 'failures') !== undefined;
 
 /** The flags → the intent create_monitor takes. */
 export function buildIntent(flags: ParsedFlags, command = 'monitor add'): MonitorIntent {
@@ -724,6 +739,9 @@ export function buildIntent(flags: ParsedFlags, command = 'monitor add'): Monito
   if (on === undefined && group === undefined) throw new Error('Say where: --on <contract> (a watched contract, by address or name) or --group <group> (each contract of a group).');
   const silence = flag(flags, 'silence') !== undefined;
   if (flag(flags, 'silence') !== undefined && flag(flags, 'silence') !== 'true') throw new Error('--silence takes no value; name the method with --method <name>.');
+  const failures = flag(flags, 'failures') !== undefined;
+  if (failures && flag(flags, 'failures') !== 'true') throw new Error('--failures takes no value; say which transactions count with --rows "<where>".');
+  if (failures && silence) throw new Error('Pick --failures or --silence, not both.');
   const event = flag(flags, 'event');
   const method = flag(flags, 'method');
   const forRaw = flag(flags, 'for');
@@ -731,9 +749,15 @@ export function buildIntent(flags: ParsedFlags, command = 'monitor add'): Monito
   if (event === 'true') throw new Error('--event needs the event\'s name');
   if (method === 'true') throw new Error('--method needs the method\'s name');
   if (name === 'true') throw new Error('--name needs a value');
-  if (!silence && event === undefined) throw new Error('Say what to watch: --event <Name> (when it is emitted) or --silence (when the contract goes quiet).');
+  if (!silence && !failures && event === undefined) throw new Error('Say what to watch: --event <Name> (when it is emitted), --silence (when the contract goes quiet) or --failures (when its transactions start failing).');
   if (!silence && method !== undefined) throw new Error('--method is for a silence monitor: add --silence.');
-  if (!silence && forRaw !== undefined) throw new Error('--for is for a silence monitor: add --silence.');
+  if (!silence && !failures && forRaw !== undefined) throw new Error('--for is for a silence or failures monitor: add --silence or --failures.');
+  if (failures && (event !== undefined || method !== undefined)) throw new Error('A failures monitor takes --rows and --by, not --event or --method.');
+  const rows = flag(flags, 'rows');
+  const by = flag(flags, 'by');
+  if ((rows !== undefined || by !== undefined) && !failures) throw new Error('--rows and --by are for a failures monitor: add --failures.');
+  if (rows === 'true') throw new Error('--rows needs the where: --rows \'{method} == "swap"\'.');
+  if (by === 'true') throw new Error('--by needs a column: --by args.swapExecutionData[0].dex');
   if (silence && event !== undefined && method !== undefined) throw new Error('A silence monitor watches an event or a method, not both.');
   const destinations = flagAll(flags, 'to')
     .filter((v) => v !== 'true')
@@ -741,14 +765,17 @@ export function buildIntent(flags: ParsedFlags, command = 'monitor add'): Monito
     .map((v) => v.trim())
     .filter(Boolean);
   const chainId = chainFlag(flags);
-  const intent: MonitorIntent = on !== undefined ? { mode: silence ? 'silence' : 'event', contract: on } : { mode: silence ? 'silence' : 'event', group };
+  const mode = failures ? 'failures' : silence ? 'silence' : 'event';
+  const intent: MonitorIntent = on !== undefined ? { mode, contract: on } : { mode, group };
+  if (rows !== undefined) intent.rows = rows;
+  if (by !== undefined) intent.by = by;
   if (chainId !== undefined) intent.chainId = chainId;
   if (event !== undefined) intent.event = event;
   if (method !== undefined) intent.method = method;
   const when = flag(flags, 'when');
   if (when !== undefined) {
-    if (silence) throw new Error('--when is for an event monitor; a silence monitor takes --for.');
-    if (when === 'true' || !when.trim()) throw new Error('--when needs the formula: --when "amount(value, emitter()) >= 1000".');
+    if (silence) throw new Error('--when is for an event or failures monitor; a silence monitor takes --for.');
+    if (when === 'true' || !when.trim()) throw new Error(failures ? '--when needs the rule over the window\'s counts: --when "failed >= 5 and share > 0.5".' : '--when needs the formula: --when "amount(value, emitter()) >= 1000".');
     intent.when = when;
   }
   if (forRaw !== undefined) intent.windowSec = parseDuration(forRaw);

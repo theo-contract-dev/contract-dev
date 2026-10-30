@@ -7,6 +7,7 @@ module.exports = {
             diagnostics: { ignoreCodes: [2322, 2339, 2554, 2769, 7006] },
         }],
     },
+    setupFiles: ['<rootDir>/test/unit/_person.ts'],
     testTimeout: 600000,
     clearMocks: true,
     forceExit: true,

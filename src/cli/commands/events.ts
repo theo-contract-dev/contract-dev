@@ -1,5 +1,4 @@
 import { parseFlags, flag, flagAll, type ParsedFlags } from './_args';
-import { saveFromFlags, savedLine } from './_save';
 import { parseRead } from './eventMetric';
 import { runTool } from '../tools';
 import { printResult } from './_print';
@@ -15,7 +14,7 @@ Usage:
                                                the events its ABI declares that never fired too
 
 Flags:
-  --range 24h|7d|30d|90d   Window (default 24h; Free workspaces keep 24h)
+  --range 24h|7d|30d|90d   Window (default 24h; Free workspaces keep 24h); --window reads the same
   --chain <id|name>        One chain
   --limit <n>              Rows to print (default 25)
 
@@ -27,7 +26,7 @@ Query (with --event): the events themselves, worked through formulas, in the lan
                       [--read "<name>=<call> [on <target>] [with <arg>, …]"]… [--fixed <read>]…
                       [--show "<name>=<expr>"]… [--where "<expr>"] [--sort "<expr>" [--asc]]
                       [--by contract|day|week|sender|<name>]… [--sum|--avg|--min|--max "<expr>" | --count]
-                      [--window 1h|24h|7d|30d|90d|365d] [--limit <n>]
+                      [--window 1h|24h|7d|30d|90d|365d] [--limit <n>]   (--range reads the same)
   --sort ranks the events, largest first (newest first without it); --by groups them and --sum, --avg,
   --min, --max or --count adds each group up (without --by, the whole window: one total). Tokens are named in the formula: usd(raw, token),
   amount(raw, token), the token an address, a read or a parameter (\`contract-dev describe <contract>\` shows each
@@ -39,7 +38,6 @@ Query (with --event): the events themselves, worked through formulas, in the lan
   log history, narrowed: a --where equality on an indexed field (to == 0x…) is applied by the log index itself,
   or --window is 7d at most. With no verified ABI, write the event as its full signature.
 
-  --save [bars|stacked|diverging|line|table]  Keep the answer at a page in the app (a chart or a table) and print its link; --title names the page
 
 Examples:
   contract-dev events 0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640 --event Swap --read "t0=token0()" --fixed t0 \\
@@ -170,7 +168,8 @@ export function queryInput(flags: ParsedFlags): Record<string, unknown> {
   const measures = [...AGGS.flatMap((fn) => flagAll(flags, fn).map((expr) => ({ fn, expr }))), ...(flag(flags, 'count') === 'true' ? [{ fn: 'count' as const }] : [])];
   if (measures.length > 1) throw new Error('One measure per query: --sum, --avg, --min, --max or --count.');
   if (measures.length === 1) input.measure = measures[0];
-  const window = flag(flags, 'window');
+  // --range reads as --window here, as --window reads as --range on the summary (2026-10-28: an agent took one for the other)
+  const window = flag(flags, 'window') ?? flag(flags, 'range');
   // a year reads as 1y too
   if (window !== undefined) input.window = /^(1y|1yr|1year|12m)$/i.test(String(window).trim()) ? '365d' : window;
   if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 20, 100);
@@ -192,14 +191,15 @@ interface EventRow {
   contractCount: number;
 }
 
+/** The Events tab's answer: names and counts from the activity ledger; the fuller figures (transactions, the previous period, a shape) only when the server has them. */
 export interface EventsPayload {
   range: string;
-  rows: EventRow[];
-  totals: { fired: number; events: number; txs: number; contracts: number };
-  buckets: number[];
-  prevTotals: { fired: number } | null;
-  abiResolved: boolean;
-  unavailable?: 'store' | 'chain';
+  rows: Partial<EventRow>[];
+  totals?: { fired: number; events: number; txs?: number; contracts?: number };
+  buckets?: number[];
+  prevTotals?: { fired: number } | null;
+  abiResolved?: boolean;
+  unavailable?: 'store' | 'chain' | null;
 }
 
 export async function eventsCommand(args: string[]): Promise<EventsPayload | void> {
@@ -210,14 +210,12 @@ export async function eventsCommand(args: string[]): Promise<EventsPayload | voi
   const flags = parseFlags(args);
   // with --event: the events themselves, through formulas (query_events)
   if (flagAll(flags, 'event').some((e) => e !== 'true')) {
-    const save = saveFromFlags(flags);
-    const r = await runTool<QueryResult>(requireAuth(), 'query_events', { ...queryInput(flags), ...(save ? { save } : {}) });
+    if (flag(flags, 'save') !== undefined) throw new Error('--save is gone: a table of events kept under Tables is contract-dev table create "<name>" --from events … (contract-dev table help).');
+    const r = await runTool<QueryResult>(requireAuth(), 'query_events', queryInput(flags));
     for (const line of queryLines(r)) console.log(line);
-    const saved = savedLine(r as unknown as Record<string, unknown>);
-    if (saved) console.log(saved);
     return r as unknown as EventsPayload;
   }
-  const range = parseRange(flags, RANGES, '24h');
+  const range = parseRange(flag(flags, 'range') === undefined && flag(flags, 'window') !== undefined ? { ...flags, range: flag(flags, 'window') } : flags, RANGES, '24h');
   const chainId = chainFlag(flags);
   const limit = limitFlag(flags, 25);
   const auth = requireAuth();
@@ -237,37 +235,47 @@ export async function eventsCommand(args: string[]): Promise<EventsPayload | voi
     console.log(payload.unavailable === 'chain' ? 'Chain not collected: events are recorded for Ethereum, Arbitrum, Avalanche and Sepolia.' : 'Data unavailable. Retry in a moment.');
     return payload;
   }
-  const t = payload.totals;
-  console.log(
-    `${plural(t.fired, 'event')} fired (${fmtChange(t.fired, payload.prevTotals?.fired)} on the previous ${payload.range ?? range}) · ${plural(t.events, 'kind')} · in ${plural(t.txs, 'transaction')}${contract ? '' : ` · ${plural(t.contracts, 'contract')}`}`,
-  );
+  // the totals as given, else from the rows (2026-10-27: the route answers names and counts, nothing else, and the
+  // summary read a field that was not there)
+  const all = payload.rows ?? [];
+  const t = payload.totals ?? { fired: all.reduce((n, r) => n + (r.fired ?? 0), 0), events: all.filter((r) => (r.fired ?? 0) > 0).length };
+  const change = payload.prevTotals ? ` (${fmtChange(t.fired, payload.prevTotals.fired)} on the previous ${payload.range ?? range})` : '';
+  const txs = t.txs != null ? ` · in ${plural(t.txs, 'transaction')}` : '';
+  const contracts = !contract && t.contracts != null ? ` · ${plural(t.contracts, 'contract')}` : '';
+  console.log(`${plural(t.fired, 'event')} fired${change} · ${plural(t.events, 'kind')}${txs}${contracts}`);
   if (payload.buckets?.length) console.log(`Fired  ${sparkline(payload.buckets)}`);
-  if (!payload.abiResolved) console.log('No ABI for this contract: events are named by their topic.');
+  if (payload.abiResolved === false) console.log('No ABI for this contract: events are named by their topic.');
 
-  const fired = (payload.rows ?? []).filter((r) => !r.dormant);
-  const dormant = (payload.rows ?? []).filter((r) => r.dormant);
+  const fired = all.filter((r) => !r.dormant && (r.fired ?? 0) > 0);
+  const dormant = all.filter((r) => r.dormant);
+  // the columns the rows carry: a ledger answer has a name and a count; the Events tab's fuller rows the rest
+  const rich = fired.some((r) => r.txs != null || r.prev != null || r.spark != null || r.lastAt != null);
   console.log('');
   if (!fired.length) console.log('Nothing fired in the window.');
   else {
     const rows = fired.slice(0, limit);
-    const names = contract ? new Map<string, string>() : await lookupNames(auth, rows.flatMap((r) => (r.contracts ?? []).slice(0, 1)));
-    const owner = (r: EventRow) =>
-      r.contractCount === 1 && r.contracts?.[0] ? nameOr(names.get(nameKey(r.contracts[0].chainId, r.contracts[0].address)), r.contracts[0].address) : plural(r.contractCount, 'contract');
-    for (const line of table(rows, [
-      { header: 'Event', value: (r) => r.signature ?? r.name ?? shortAddr(r.topic0), max: 48 },
-      ...(contract ? [] : [{ header: 'Contract', value: owner, max: 28 }]),
+    const names = contract || !rich ? new Map<string, string>() : await lookupNames(auth, rows.flatMap((r) => (r.contracts ?? []).slice(0, 1)));
+    const owner = (r: Partial<EventRow>) =>
+      r.contractCount === 1 && r.contracts?.[0] ? nameOr(names.get(nameKey(r.contracts[0].chainId, r.contracts[0].address)), r.contracts[0].address) : plural(r.contractCount ?? 0, 'contract');
+    const columns: Column<Partial<EventRow>>[] = [
+      { header: 'Event', value: (r) => r.signature ?? r.name ?? (r.topic0 ? shortAddr(r.topic0) : DASH), max: 48 },
+      ...(contract || !rich ? [] : [{ header: 'Contract', value: owner, max: 28 } as Column<Partial<EventRow>>]),
       { header: 'Fired', value: (r) => fmtInt(r.fired), align: 'right' },
-      { header: 'Change', value: (r) => fmtChange(r.fired, r.prev?.fired), align: 'right' },
-      { header: 'Transactions', value: (r) => fmtInt(r.txs), align: 'right' },
-      { header: 'Last', value: (r) => fmtAge(r.lastAt), align: 'right' },
-      { header: 'Shape', value: (r) => sparkline(r.spark ?? [], { width: 24 }) },
-    ])) {
+    ];
+    if (rich)
+      columns.push(
+        { header: 'Change', value: (r) => fmtChange(r.fired ?? 0, r.prev?.fired), align: 'right' },
+        { header: 'Transactions', value: (r) => fmtInt(r.txs), align: 'right' },
+        { header: 'Last', value: (r) => fmtAge(r.lastAt), align: 'right' },
+        { header: 'Shape', value: (r) => sparkline(r.spark ?? [], { width: 24 }) },
+      );
+    for (const line of table(rows, columns)) {
       console.log(line);
     }
     if (fired.length > rows.length) console.log(`… ${fmtInt(fired.length - rows.length)} more (--limit, or --json for all)`);
   }
   if (dormant.length) {
-    const shown = dormant.slice(0, 12).map((r) => r.name ?? shortAddr(r.topic0));
+    const shown = dormant.slice(0, 12).map((r) => r.name ?? (r.topic0 ? shortAddr(r.topic0) : DASH));
     console.log(`\nDeclared but not fired: ${shown.join(', ')}${dormant.length > shown.length ? `, … ${fmtInt(dormant.length - shown.length)} more` : ''}`);
   }
   return payload;

@@ -4,6 +4,7 @@ import { parseFlags, flag, requirePositional, type ParsedFlags } from './_args';
 import { requireChain } from '../data';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { runTool } from '../tools';
+import { aboutFlag, addToBrief, sayBrief, type BriefAdded } from '../about';
 import { fmtInt, plural } from '../view';
 import { watchWalletCommand } from './wallets';
 
@@ -11,9 +12,9 @@ const HELP = `contract-dev watch — watch mainnet contracts (and wallets) on yo
 
 Usage:
   contract-dev watch <address> [flags]                 Watch a contract
-  contract-dev watch wallet <address> [--chain <id>] [--name <label>] [--group <name>]
+  contract-dev watch wallet <address> [--chain <id>] [--name <label>] [--group <name>] [--about "<role>"]
                                                        Watch a wallet — an address with no code (try: wallets help)
-  contract-dev watch <address>[=<name>]… [--chain <id>] [--group <name>]
+  contract-dev watch <address>[=<name>]… [--chain <id>] [--group <name>] [--about "<role>"]
                                                        Watch several at once, each named, tagged into a group when one is named
   contract-dev watch list [--chain <id>]               List watched contracts: chain, address, name
   contract-dev rename <address> <name> [--chain <id>]  Rename a watched contract (clears with "")
@@ -24,6 +25,10 @@ Usage:
 Flags (watch <address>):
   --chain <id>     Chain the contract lives on, always said: an address is on every chain.
                    Names work: ethereum, arbitrum, base, optimism, polygon, bnb, monad, …
+  --about "<role>" One or two sentences on what it does in the protocol, read from its source;
+                   added to the workspace's brief (contract-dev workspace) under its name, or
+                   the group's. An agent gives it, or --no-about in a setup that ends by
+                   writing the whole brief; a person at a terminal may leave both out.
   --name <label>   Display name. Omit to use the app's name for the address, else the
                    token's name(), else its verified name; change it later with rename.
   --abi <file>     ABI for a contract the explorer holds no verified source for: a JSON
@@ -88,6 +93,38 @@ export const CHAIN_NAMES: Record<string, number> = {
   polygon: 137, matic: 137,
   bnb: 56, bsc: 56,
   monad: 143,
+  hyperevm: 999, hyperliquid: 999, hype: 999,
+  plasma: 9745,
+  arc: 5042,
+  robinhood: 4663,
+  unichain: 130,
+  megaeth: 4326,
+  linea: 59144,
+  fraxtal: 252,
+  blast: 81457,
+  sei: 1329,
+  celo: 42220,
+  sonic: 146,
+  stable: 988,
+  mantle: 5000,
+  gnosis: 100, xdai: 100,
+  worldchain: 480, world: 480,
+  berachain: 80094, bera: 80094,
+  abstract: 2741,
+  katana: 747474,
+  ink: 57073,
+  scroll: 534352,
+  morph: 2818,
+  soneium: 1868,
+  zksync: 324, era: 324,
+  flare: 14,
+  tempo: 4217,
+  boba: 288,
+  rootstock: 30, rsk: 30,
+  opbnb: 204,
+  mode: 34443,
+  citrea: 4114,
+  zetachain: 7000, zeta: 7000,
 };
 
 export function parseChainId(raw: string, label: string): number {
@@ -242,6 +279,8 @@ export interface WatchContractsResult {
   failed: Array<{ address: string; error: string }>;
   group: string | null;
   chainId: number;
+  /** Given --about: whether its line went under the workspace's brief. */
+  brief?: BriefAdded;
 }
 
 // Past this many addresses in one go, the tool wants it said twice.
@@ -265,7 +304,7 @@ export function splitNamed(arg: string): { address: string; name: string } {
   return m ? { address: m[1], name: m[2].trim() } : { address: arg.trim(), name: '' };
 }
 
-async function watchMany(flags: ParsedFlags, args: string[], group: string | undefined): Promise<WatchContractsResult> {
+async function watchMany(flags: ParsedFlags, args: string[], group: string | undefined, about: string | undefined): Promise<WatchContractsResult> {
   const chainId = requireChain(flags, args.length === 1 ? splitNamed(args[0]).address : 'each of these contracts');
   const name = flag(flags, 'name');
   const named = args.map(splitNamed);
@@ -281,20 +320,25 @@ async function watchMany(flags: ParsedFlags, args: string[], group: string | und
     ...(names.some(Boolean) ? { names } : {}),
     ...(group !== undefined ? { group } : {}),
     ...(addresses.length > MANY ? { confirmMany: true } : {}),
+    // the tool adds the line under the brief itself, naming the group or each contract watched
+    ...(about ? { about } : {}),
   });
   for (const line of watchSummaryLines(r)) console.log(line);
+  sayBrief(r.brief);
   return r;
 }
 
 // The modal's flow: detect first (type + name), then add with the result as hints so the
 // server classifies once. A wallet is refused here, before any row exists.
-async function addSubcommand(args: string[]): Promise<WatchedAccount | WatchContractsResult> {
+async function addSubcommand(args: string[]): Promise<(WatchedAccount & { brief?: BriefAdded }) | WatchContractsResult> {
   const flags = parseFlags(args);
   const positional = flags._ as string[];
   requirePositional(positional, 0, 'address');
   const group = flag(flags, 'group');
   if (group === 'true') throw new Error('--group needs a name');
-  if (positional.length > 1 || group !== undefined) return await watchMany(flags, positional, group);
+  // an agent says what it is watching (or that it is skipping) before anything is watched
+  const about = aboutFlag(flags, positional.length > 1 ? 'these contracts' : group !== undefined ? `the ${group} group` : 'this contract');
+  if (positional.length > 1 || group !== undefined) return await watchMany(flags, positional, group, about);
   const { address, name: inline } = splitNamed(positional[0]);
   // a contract is watched per chain, and an address is on every chain: the chain is always said (2026-10-23)
   const chainId = requireChain(flags, address);
@@ -309,7 +353,7 @@ async function addSubcommand(args: string[]): Promise<WatchedAccount | WatchCont
   }
   if (detected.hasAbi === false && !abi) {
     console.log(
-      `No verified ABI on the explorer for ${address}. Pass --abi <artifact.json> to name its methods, events and reverts, or add it later with \`contract-dev contracts set-abi ${address} --abi <artifact.json>\`.`,
+      `No ABI found for ${address}. Pass --abi <artifact.json> to read its events and build tables and metrics on it, or add it later with \`contract-dev contracts set-abi ${address} --chain ${chainId} --abi <artifact.json>\`.`,
     );
   }
 
@@ -325,7 +369,8 @@ async function addSubcommand(args: string[]): Promise<WatchedAccount | WatchCont
 
   const account = payload.account;
   console.log(`${payload.created ? 'Watching' : 'Updated'} ${describeAccount(account)} on chain ${account.chainId}`);
-  return account;
+  const brief = await addToBrief(auth, [account.name || address], about);
+  return brief ? { ...account, brief } : account;
 }
 
 async function listSubcommand(args: string[]): Promise<WatchedAccount[]> {
@@ -425,6 +470,8 @@ export async function unwatchCommand(args: string[]): Promise<{ ok: true; id: st
     const r = await runTool<{ unwatched: { name: string; chainId: number; address: string; monitors: number; trackedValues: number }[]; failed: { contract: string; error: string }[] }>(auth, 'unwatch_contracts', {
       contracts: refs,
       ...(chainId !== undefined ? { chainId } : {}),
+      // the person typed every name: past 25, the server asks whether they mean it, and they do (2026-10-28)
+      confirmMany: true,
     });
     for (const u of r.unwatched) console.log(`Stopped watching ${u.name} (${u.address} on chain ${u.chainId})${u.monitors || u.trackedValues ? ` · removed ${plural(u.monitors, 'monitor')} and ${plural(u.trackedValues, 'tracked value')}` : ''}.`);
     for (const f of r.failed) console.log(`${f.contract}: ${f.error}`);

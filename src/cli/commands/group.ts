@@ -6,6 +6,7 @@ import { parseFlags, flag, flagAll, onlyFlags, requireFlag, requirePositional, t
 import { parseFormulaCall } from './eventMetric';
 import { apiRequest, requireAuth } from '../credentials';
 import { runTool } from '../tools';
+import { aboutFlag, sayBrief, type BriefAdded } from '../about';
 import { chainFlag, limitFlag } from '../data';
 import { watchSummaryLines, type WatchContractsResult } from './watch';
 import { DASH, chainLabel, fmtCompact, fmtInt, fmtTime, fmtUsd, plural, shortAddr, table } from '../view';
@@ -20,7 +21,7 @@ Usage:
   contract-dev group remove <group> <address|name>… [--chain <id|name>]
                                                       Take them out of the group; they stay watched (unwatch removes them)
   contract-dev group rule add <group> --factory <address> --event <Name> --field <arg> [--chain <id|name>]
-                              [--name-pattern "…"] [--recent]
+                              [--name-pattern "…"] [--recent] [--about "<role>"]
                                                       Every contract the factory has ever deployed joins the group, in
                                                       the background (thousands take a while), then each new one;
                                                       --recent: only the last few weeks and what comes next
@@ -79,8 +80,10 @@ const FACTORY_HELP = `contract-dev factory — the contracts a factory deployed
 Usage:
   contract-dev factory <address> --event <Name> --field <arg> [--chain <id|name>] [--limit <n>]
                                                       How many, the newest with their dates, which are watched
-  contract-dev factory <address> --event <Name> --field <arg> --watch --group <name>
-                                                      Then watch the ones not yet watched, tagged into the group
+  contract-dev factory <address> --event <Name> --field <arg> --watch --group <name> [--limit <n>]
+                                                      Then watch the ones not yet watched, tagged into the group:
+                                                      the newest n with --limit (a setup's default on a big factory),
+                                                      up to 150 without
 
 --event is the factory's event that announces a new contract (PoolCreated, MarketDeployed…) and --field its address
 argument that IS the new contract (pool, market…). Both are required: nothing is picked from names. Without them
@@ -651,8 +654,11 @@ async function addRule(args: string[]): Promise<RuleResult | void> {
   const pattern = flag(flags, 'name-pattern');
   if (pattern === 'true') throw new Error('--name-pattern needs the pattern, in quotes');
   const chainId = chainFlag(flags);
+  // the group's line for the workspace's brief: what its contracts are, read from one of them
+  const about = aboutFlag(flags, `the ${group} group`);
 
   const input: Record<string, unknown> = { group };
+  if (about) input.about = about;
   if (chainId !== undefined) input.chainId = chainId;
   if (factory !== undefined) {
     input.factory = factory;
@@ -666,8 +672,9 @@ async function addRule(args: string[]): Promise<RuleResult | void> {
   // a factory rule reads the whole history by default; --recent keeps it to the last few weeks and what comes next
   if (flag(flags, 'recent') === 'true') input.history = false;
 
-  const r = await runTool<RuleResult>(requireAuth(), 'create_watch_rule', input);
+  const r = await runTool<RuleResult & { brief?: BriefAdded }>(requireAuth(), 'create_watch_rule', input);
   for (const line of ruleLines(r)) console.log(line);
+  sayBrief(r.brief);
   return r;
 }
 
@@ -879,7 +886,11 @@ export async function factoryCommand(args: string[]): Promise<FactoryResult | (F
   for (const line of factoryLines(r)) console.log(line);
   if (!watch) return r;
 
-  const addresses = r.notWatchedAddresses ?? [];
+  // --watch --limit <n>: the newest n not yet watched, the setup's default for a factory with many children (2026-10-30,
+  // Theo: "add the newest X, say X added, name more to add the rest"); without --limit, up to 150 as before
+  const limitAsked = flag(flags, 'limit') !== undefined ? limitFlag(flags, 20, 500) : null;
+  const pending = r.notWatchedAddresses ?? [];
+  const addresses = limitAsked != null ? pending.slice(0, limitAsked) : pending;
   console.log('');
   if (!addresses.length) {
     console.log('Every contract it deployed is watched already.');
@@ -894,5 +905,8 @@ export async function factoryCommand(args: string[]): Promise<FactoryResult | (F
     ...(addresses.length > MANY ? { confirmMany: true } : {}),
   });
   for (const line of watchSummaryLines(watched)) console.log(line);
+  // --limit cut the list: say so, and that the rest are a name away (the not-yet-watched ones listed, plus older ones a short read did not reach)
+  if (limitAsked != null && pending.length > addresses.length)
+    console.log(`Watched the newest ${addresses.length}; ${(pending.length - addresses.length).toLocaleString('en-US')} more are not watched${r.complete === false ? ', and older ones beyond those' : ''}. Name the ones you want, by pair or address, and they join the group.`);
   return { ...r, watch: watched };
 }

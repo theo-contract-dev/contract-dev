@@ -44,8 +44,9 @@ export async function listTools(auth: ResolvedAuth): Promise<ToolCatalogueEntry[
   return tools ?? [];
 }
 
-// A tool may read the store, rank every contract or backtest a monitor; the route allows itself a minute.
-const TOOL_TIMEOUT_MS = 60_000;
+// A tool may read the store, read a view at every step of a 90-day series, rank every contract or backtest a monitor;
+// the route allows itself three minutes (4.1.0: a 169-point series outran the old minute).
+const TOOL_TIMEOUT_MS = 180_000;
 
 /** Run one tool; the envelope back, or a ToolRunError in the server's words. */
 export async function callTool<T = unknown>(auth: ResolvedAuth, name: string, input: Record<string, unknown> = {}): Promise<ToolEnvelope<T>> {

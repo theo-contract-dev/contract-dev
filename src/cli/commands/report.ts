@@ -13,13 +13,14 @@ const HELP = `contract-dev report — a table of your metrics, sent on a schedul
 Usage:
   contract-dev report list                                List reports (scope, cadence, destinations, next send, last run)
   contract-dev report create [--template daily|weekly] [--name "…"] [--scope <scope>] [--row <kind>[:<param>]]…
+                             [--table "<table> | sort <col> | top <n> | days <n>"]…
                              [--columns 24h,7d,30d] [--to <dest>…] [--at <hour>] [--on <weekday>] [--tz <zone>]
   contract-dev report create --every 1m|10m|1h|6h --name "…" --row <kind>[:<param>][ | nocompare]… [--columns 1h,24h]
                              [--snapshot] [--only-when "<expr>"] [--scope <scope>] [--to <dest>…]
                                                           A table every N minutes on the UTC clock; --snapshot prints
                                                           the figures alone (no change column); --only-when sends only
                                                           when the condition over the rows holds ({Breached markets} > 0)
-  contract-dev report update <id|name> [--name "…"] [--row …]… [--add-row …]… [--remove-row <kind|label>]…
+  contract-dev report update <id|name> [--name "…"] [--row …]… [--add-row …]… [--remove-row <kind|label>]… [--table …]… [--no-tables]
                              [--every …] [--columns …] [--snapshot | --compare] [--only-when "<expr>" | --always]
                              [--at <hour>] [--on <weekday>] [--tz <zone>] [--scope <scope>] [--to <dest>…]
   contract-dev report create --each --metric "<event metric>" --when "<condition>" --message "<text>" [--name "…"] [--to <dest>…]
@@ -46,7 +47,16 @@ Flags (create):
                             alertsOpened · eventCount:<event name> · trackedMetric:<id or label> ·
                             customMetric:<event or item metric name> ·
                             "formula:<Label>=<expr>[; call <name>=<call>]…[; token <t>][; show usd]" (the read grammar on
-                            every contract in the scope, summed: calls as \`track formula\` takes them, dollars through a token)
+                            every contract in the scope, summed: calls as \`track formula\` takes them, dollars through a token;
+                            ago(<call>, window) is each column's own window: "what it earned" per column)
+  --table "<table>[ | …]"   A table sent under the rows, asked again on every run; repeat for up to 3. The table is
+                            one of this workspace's (\`contract-dev table list\`), by name or id; then, each after a |:
+                            sort <col>[ asc] (rank by a column, measure or expression, largest first) · top <n> (rows
+                            sent, 1–25, default 10) · where <expr> (keep rows, on top of the table's own) · days <n>
+                            (how far back a table over transactions, transfers or events reaches: 1 for today) ·
+                            columns <a>,<b> (which, in order; at most 5) · among active|done|all (an item table) ·
+                            label <text>. A report may be tables alone. On update, --table replaces the tables whole;
+                            --no-tables drops them.
   --columns <w>,<w>…        The columns, as windows in order (1m, 15m, 1h, 24h, 7d, 2w, 1y; 1m at the least): every row
                             prints each, and the change against the window before follows the first. Default: 24h,7d,30d
                             daily · 7d,30d,90d weekly · 24h with --every. A column past the plan's history is refused.
@@ -88,6 +98,9 @@ Examples:
   contract-dev report create --template daily --to "#alerts"
   contract-dev report create --template weekly --scope tag:pools --on friday --at 17 --to telegram
   contract-dev report create --name "Swaps" --scope steth --row transactions --row eventCount:Swap --to "#alerts"
+  contract-dev report create --name "Morning tables" --table "Swaps | sort {Amount} | top 5 | days 1" \\
+    --table "Integrators | sort volume | top 10 | days 7" --at 9 --to "#ops"
+  contract-dev report update "Daily report" --table "Failures by contract at fault | sort failed | top 5 | days 1"
 
 The columns are windows you choose, in order, written like a monitor's durations (15m, 1h, 24h,
 7d, 2w, 1y; 1m at the least): every row prints each, and the change column follows the first.
@@ -95,6 +108,21 @@ Left out, a daily report prints 24h, 7d and 30d; a weekly one 7d, 30d and 90d; a
 its 24h. A column past the plan's history is refused. A report is named by its id or, when
 unambiguous, its name.
 `;
+
+/** A table a report sends: the table's id (a name on the way in) and the clauses each run asks it with. */
+export interface ReportTableSpec {
+  table: string;
+  /** The table's name when the report was saved, for showing it. */
+  name?: string;
+  label?: string | null;
+  sort?: string | null;
+  asc?: boolean;
+  limit?: number | null;
+  where?: string | null;
+  days?: number | null;
+  among?: 'active' | 'done' | 'all' | null;
+  columns?: string[] | null;
+}
 
 export type ReportScope = { kind: 'workspace' } | { kind: 'tag'; tag: string } | { kind: 'contract'; chainId: number; address: string };
 
@@ -134,6 +162,8 @@ export interface ReportView {
   compare?: boolean;
   onlyWhen?: string | null;
   rows: ReportRowSpec[];
+  /** Tables sent under the rows, by table id, each asked again on every run (2026-10-30). */
+  tables?: ReportTableSpec[];
   origin: string;
   nextRunAt: string | null;
   lastRunAt: string | null;
@@ -268,7 +298,63 @@ export function parseColumns(raw: string): string[] {
 
 const at = (iso: string | null | undefined): number | null => (iso ? Date.parse(iso) : null);
 
-// ── scope and rows, from what a person types ──
+// ── scope, rows and tables, from what a person types ──
+
+/** \`--table "Swaps | sort {Amount} | top 5 | days 1"\`: the table by name or id, then its clauses, each after a |. */
+export function parseTableFlag(raw: string): ReportTableSpec {
+  const [head, ...parts] = raw.split('|').map((p) => p.trim());
+  if (!head) throw new Error('--table names a table: --table "Swaps | sort {Amount} | top 5" (see `contract-dev table list`)');
+  const spec: ReportTableSpec = { table: head };
+  for (const part of parts) {
+    const m = /^(\S+)\s*(.*)$/.exec(part);
+    const word = (m?.[1] ?? '').toLowerCase();
+    const rest = (m?.[2] ?? '').trim();
+    if (word === 'sort' || word === 'by') {
+      const asc = /\s+asc$/i.test(rest);
+      const desc = /\s+desc$/i.test(rest);
+      const what = rest.replace(/\s+(asc|desc)$/i, '').trim();
+      if (!what) throw new Error(`--table ${raw}: sort needs a column, like sort {Amount} or sort volume asc`);
+      spec.sort = what;
+      if (asc) spec.asc = true;
+      else if (desc) spec.asc = false;
+    } else if (word === 'top' || word === 'limit') {
+      const n = Number(rest);
+      if (!Number.isInteger(n) || n < 1 || n > 25) throw new Error(`--table ${raw}: top is the rows sent, 1 to 25`);
+      spec.limit = n;
+    } else if (word === 'where') {
+      if (!rest) throw new Error(`--table ${raw}: where needs a condition, like where {Amount} > 10000`);
+      spec.where = rest;
+    } else if (word === 'days') {
+      const n = Number(rest);
+      if (!Number.isInteger(n) || n < 1) throw new Error(`--table ${raw}: days is a whole number of days back, like days 1`);
+      spec.days = n;
+    } else if (word === 'columns') {
+      const cols = rest.split(',').map((c) => c.trim()).filter(Boolean);
+      if (!cols.length) throw new Error(`--table ${raw}: columns lists them, like columns Wallet,Volume`);
+      spec.columns = cols;
+    } else if (word === 'among') {
+      const a = rest.toLowerCase();
+      if (a !== 'active' && a !== 'done' && a !== 'all') throw new Error(`--table ${raw}: among is active, done or all`);
+      spec.among = a;
+    } else if (word === 'label') {
+      if (!rest) throw new Error(`--table ${raw}: label needs a name`);
+      spec.label = rest;
+    } else throw new Error(`--table ${raw}: after a | come sort, top, where, days, columns, among or label (got "${part}")`);
+  }
+  return spec;
+}
+
+/** A sent table in words: "Swaps · sort {Amount} · top 5 · last 1 day". */
+export function tableLabel(t: ReportTableSpec): string {
+  const parts = [t.label || t.name || t.table];
+  if (t.sort) parts.push(`sort ${t.sort}${t.asc ? ' asc' : ''}`);
+  parts.push(`top ${t.limit ?? 10}`);
+  if (t.where) parts.push(`where ${t.where}`);
+  if (t.days) parts.push(`last ${t.days} day${t.days === 1 ? '' : 's'}`);
+  if (t.among) parts.push(t.among);
+  if (t.columns?.length) parts.push(`columns ${t.columns.join(', ')}`);
+  return parts.join(' · ');
+}
 
 /** The scope as the list shows it: Workspace · tag:pools · the contract's name, else its chain and address. */
 export function scopeLabel(scope: ReportScope, contracts: WatchedAccount[] = []): string {
@@ -342,7 +428,7 @@ async function parseRowBase(auth: ResolvedAuth, raw: string, kindRaw: string, pa
   return { kind };
 }
 
-const FORMULA_ROW_HELP = 'formula takes Label=expression, then its calls: --row "formula:Headroom=held - debt; call held=totalAssets(); call debt=totalDebt() on 0xRisk…; token asset(); show usd"';
+const FORMULA_ROW_HELP = 'formula takes Label=expression, then its calls: --row "formula:Headroom=held - debt; call held=totalAssets(); call debt=totalDebt() on 0xRisk…; token asset(); show usd"; ago(<call>, window) in the expression is each column\'s own window: --row "formula:Earned=sh * (rate - ago(rate, window)); call sh=balanceOf(address) on 0xVault… with self decimals 18; call rate=convertToAssets(uint256) on 0xVault… with 1e18 decimals 18"';
 
 /** `formula:<Label>=<expr>; call <name>=<call>…; token <t>; show usd` (the read grammar, as a group column or a table formula takes it). */
 function formulaRow(param: string): ReportRowSpec {
@@ -445,7 +531,8 @@ export function settingsLines(r: ReportView, catalogue: Record<string, Catalogue
     `  schedule:   ${scheduleWords(r)}`,
     ...(r.onlyWhen ? [`  only when:  ${r.onlyWhen}`] : []),
     `  columns:    ${(r.columns?.length ? r.columns : defaultColumns(r.cadence)).join(', ')}${r.compare === false ? '' : ' (with the change against the window before)'}`,
-    `  rows:       ${r.rows.map((row) => rowLabel(row, catalogue, metricNames)).join(' · ')}`,
+    ...(r.rows.length ? [`  rows:       ${r.rows.map((row) => rowLabel(row, catalogue, metricNames)).join(' · ')}`] : []),
+    ...(r.tables ?? []).map((t, i) => `  ${i === 0 ? 'tables:    ' : '           '} ${tableLabel(t)}`),
     `  sends to:   ${r.channels.length ? r.channels.map(describeChannel).join(', ') : 'nobody'}`,
     `  next send:  ${r.enabled ? fmtLocalTime(at(r.nextRunAt)) : 'paused'}`,
   ];
@@ -585,6 +672,7 @@ interface Draft {
   compare?: boolean;
   onlyWhen?: string;
   rows: ReportRowSpec[];
+  tables?: ReportTableSpec[];
 }
 
 /** --every, --columns, --snapshot/--compare and --only-when/--always, as a create or an update body takes them. */
@@ -647,10 +735,12 @@ async function buildDraft(auth: ResolvedAuth, flags: ReturnType<typeof parseFlag
   if (!rows.length) rows.push(...(template?.rows ?? []));
   // --add-row keeps the template's (or --row's) rows and appends: the daily template plus a protocol's own number
   for (const ref of flagAll(flags, 'add-row')) rows.push(await parseRow(auth, ref, payload.catalogue));
-  if (!rows.length) throw new Error('Pick rows with --row <kind>[:<param>], or start from --template daily|weekly.');
+  const tables = flagAll(flags, 'table').filter((t) => t !== 'true').map(parseTableFlag);
+  if (tables.length > 3) throw new Error('A report sends at most 3 tables.');
+  if (!rows.length && !tables.length) throw new Error('Pick rows with --row <kind>[:<param>], tables with --table "<table> | sort <col> | top <n>", or start from --template daily|weekly.');
 
   const shaped = Object.fromEntries(Object.entries(shape).filter(([, v]) => v !== undefined && v !== null)) as Pick<Draft, 'everyMinutes' | 'columns' | 'compare' | 'onlyWhen'>;
-  return { ...(name ? { name } : {}), scope, cadence, ...(weekday !== undefined ? { weekday } : {}), hour, timezone, ...shaped, rows };
+  return { ...(name ? { name } : {}), scope, cadence, ...(weekday !== undefined ? { weekday } : {}), hour, timezone, ...shaped, rows, ...(tables.length ? { tables } : {}) };
 }
 
 const toRefs = (flags: ReturnType<typeof parseFlags>): string[] =>
@@ -811,9 +901,13 @@ async function updateReport(args: string[]): Promise<ReportView> {
     for (const r of addRefs) added.push(await parseRow(auth, r, payload.catalogue));
     body.rows = [...kept, ...added.filter((a) => !kept.some((k) => k.kind === a.kind && (k.params?.id ?? null) === (a.params?.id ?? null) && (k.params?.name ?? null) === (a.params?.name ?? null)))];
   }
+  const tableRefs = flagAll(flags, 'table').filter((t) => t !== 'true');
+  if (tableRefs.length && flag(flags, 'no-tables') !== undefined) throw new Error('Pass --table (the new list) or --no-tables, not both.');
+  if (tableRefs.length) body.tables = tableRefs.map(parseTableFlag);
+  if (flag(flags, 'no-tables') !== undefined) body.tables = [];
   const refs = toRefs(flags);
   if (refs.length) body.channelIds = resolveChannelIds(await listChannels(auth), refs);
-  if (Object.keys(body).length === 0) throw new Error('Nothing to change: pass --name, --row/--add-row/--remove-row, --every, --columns, --snapshot/--compare, --only-when/--always, --at, --on, --tz, --scope or --to.');
+  if (Object.keys(body).length === 0) throw new Error('Nothing to change: pass --name, --row/--add-row/--remove-row, --table/--no-tables, --every, --columns, --snapshot/--compare, --only-when/--always, --at, --on, --tz, --scope or --to.');
   const { report } = await apiRequest<{ report: ReportView }>(auth, 'PATCH', `/api/mainnet/reports/${existing.id}`, body);
   const metricNames = await metricNamesFor(auth, report.rows);
   const contracts = report.scope.kind === 'contract' ? await workspaceContracts(auth).catch(() => [] as WatchedAccount[]) : [];
@@ -829,7 +923,7 @@ async function updateEachReport(auth: ResolvedAuth, existing: ReportView, flags:
     const v = flag(flags, k);
     return v === undefined ? undefined : v === 'true' ? '' : v.trim();
   };
-  for (const k of ['row', 'add-row', 'remove-row', 'every', 'columns', 'window', 'snapshot', 'compare', 'only-when', 'always', 'at', 'tz', 'scope'])
+  for (const k of ['row', 'add-row', 'remove-row', 'table', 'no-tables', 'every', 'columns', 'window', 'snapshot', 'compare', 'only-when', 'always', 'at', 'tz', 'scope'])
     if (flag(flags, k) !== undefined) throw new Error(`"${existing.name}" sends each time something happens; --${k} is for a scheduled report. Change --when, --message, --digest, --on, --name or --to.`);
   const name = get('name');
   if (name !== undefined) {

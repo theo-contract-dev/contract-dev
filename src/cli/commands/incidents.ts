@@ -11,7 +11,7 @@ Usage:
   contract-dev alerts unack <id>                  Hand it back — reminders resume
 
 Acking silences repeat pages without silencing the recovery, which pausing the monitor
-would. A window past the plan's history (7 days on Free, a year on Team) is clamped by the server.
+would. A window past the plan's history (7 days on Free, 90 days on Team) is clamped by the server.
 `;
 
 interface IncidentRow {

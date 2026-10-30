@@ -7,8 +7,8 @@ import { parseFlags, flag, flagAll, type ParsedFlags } from './_args';
 import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
 import { chainFlag, limitFlag } from '../data';
-import { columnsTable, byUnit, partCells, type BreakdownColumn } from './_print';
-import { SAVE_HELP, saveFromFlags, savedLine } from './_save';
+import { cell, columnsTable, byUnit, partCells, type BreakdownColumn, coverageLine } from './_print';
+import { statusesFrom } from './_status';
 import { parseRead } from './eventMetric';
 
 const HELP = `contract-dev query — ask one dataset a question, in the table language
@@ -20,15 +20,20 @@ Usage:
                                                                …one of several outputs, with arguments: --read n="getConnectedGardens(uint256,uint256).total with 0, 1"
       [--read <name>=<expression>]…                            …or an expression over earlier reads and the group's columns
       [--series <from>[..<to>] [--every 1h|6h|1d|1w]]           Every read at each step over a window: one row per time per contract
-  contract-dev query table "<name>" [--among active|done|all]                             One table's rows (active by default)
+  contract-dev query table "<name>" [--days <n>] [--among active|done|all]                 A table's rows (contract-dev table list names them): a live table
+                                                               (the rows it reads, its own --where carried in), an item table's rows
+                                                               (active by default), or a metric's records (one row per event)
   contract-dev query metric "<name>" [--days <n>]                                         What is behind a metric: its records or readings
-  contract-dev query data "<name>" [--days <n>] [--among active|done|all]                  Any named data: event data (one row per event: data define,
-                                                               or a metric's records) or a table's rows (contract-dev data list names it)
   contract-dev query metrics --metric "<name>"… [--split contract|<param>] [--days <n>]     Metrics split the same way, side by side: one row per
                                                                split value (an integrator, a sender, a contract), one column per metric's total
   contract-dev query monitors · query alerts [--days <n>] · query reports
   contract-dev query transactions [--group <g> | --contract <c>] [--days <n>] [--signer <0x>] [--failed] [--direct | --routed] [--method <name>]
                                                                                           The transactions that reached the contracts (or a watched wallet sent and received), newest first
+                                                               Columns: time, day, contract, chain, wallet, who, via, method, status, value, events, revert (why a
+                                                               failed direct call failed, in the failing contract's own words, from its trace; paid plans),
+                                                               revertBy (the contract whose failure it was), and a direct call's arguments as {args.<path>}
+                                                               by the ABI's names, [index] for a list item: {args.swapExecutionData[0].dex}, usable in --where,
+                                                               --by, --column and --sort
   contract-dev query transfers [--group <g> | --contract <c>] [--days <n>] [--in | --out] [--token <symbol|0x|native>] [--counterparty <0x>] [--signer <0x>]
                                                                                           What moved in and out of them, each leg priced on its day
   contract-dev query wallets [--group <g> | --contract <c>] [--days <n>] [--signer <0x>]    The wallets behind them: new or returning, first and last seen, dollars in and out
@@ -54,8 +59,15 @@ Clauses (any dataset; columns by label in braces or by key):
   --breakdown <column>          With --by: split each group again, its parts listed under it and counted:
                                 --by wallet --sum "{Value}" --breakdown chain  (each wallet's total and chains, then per chain)
   --total <a,b>                 Add these columns up over every matching row
+  --column <name>               Event rows (a table, a metric's records) listed, not folded: a column to show, in order
+                                (repeat it); only those show. A field, a parameter, or the row's own time, day, tx, chain,
+                                contract, event or wallet (the wallet that signed it)
+  --detail <name>               Event rows listed: a column each row opens onto, one line per item of a list field (a
+                                batch swap's swaps; a single swap is one line), repeat it; printed under the row
+  --status "<Label>: <Opt>=<rule>; <Opt>"   A category on each row (a pill on the page): its options in order, each with
+                                the rule (as --where) that puts a row in it, the last without one the rest; usable by
+                                name in the clauses: --status 'Type: Batch={Event} == "DZapBatchTokenSwapped"; Single'
   --limit <n>                   Rows or groups to print (default 25; the answer says how many matched)
-${SAVE_HELP}
   --json                        The tool's own result
 
 Examples:
@@ -67,18 +79,19 @@ Examples:
   contract-dev query contracts --group Vaults --read sp="convertToAssets(1000000000000000000)" --series 2026-09-01..2026-10-01 --by day --avg sp
   contract-dev query table "Withdrawal rounds" --where '{Stage} == "Paying" and age > 7d' --sort "{Outstanding}"
   contract-dev query metric Deposits --days 30 --by day --sum "{value}"
-  contract-dev query data "DZap activity" --days 90 --by integrator --measure swaps='count where {Event} != "BridgeStarted"' --measure bridges='count where {Event} == "BridgeStarted"' --measure volume="sum({Value})" --save table
-  contract-dev query data "DZap swaps" --days 90 --by wallet --measure volume="sum(vol)" --measure swaps=count --having "volume > 10000" --breakdown chain
-  contract-dev query metrics --metric "DZap bridges" --metric "DZap swaps" --metric "DZap swap volume" --split integrator --save --title "Integrators"
-  contract-dev query metric "DZap swap volume" --where "{Value} > 10000" --sort "{Value}" --save --title "Swaps over 10K USD"
+  contract-dev query table "DZap activity" --days 90 --by integrator --measure swaps='count where {Event} != "BridgeStarted"' --measure bridges='count where {Event} == "BridgeStarted"' --measure volume="sum({Value})"
+  contract-dev query table "DZap activity" --days 90 --by wallet --measure volume="sum(vol)" --measure swaps=count --having "volume > 10000" --breakdown chain
+  contract-dev query metrics --metric "DZap bridges" --metric "DZap swaps" --metric "DZap swap volume" --split integrator
+  contract-dev query metric "DZap swap volume" --where "{Value} > 10000" --sort "{Value}"
   contract-dev query monitors --where '{State} == "breached"'
   contract-dev query alerts --days 30 --by monitor --count
   contract-dev query transactions --group "Wildcat markets" --days 30 --by day --count
   contract-dev query transactions --signer 0x1234…abcd --days 90
+  contract-dev query transactions --group "DZap Routers" --days 7 --failed --by "args.swapExecutionData[0].dex" --measure failed=count --measure reason='last({revert})'
   contract-dev query transfers --contract Treasury --out --days 30 --by counterparty --sum "{USD}"
   contract-dev query transfers --group "Wildcat markets" --out --by counterparty --sum "{USD}" --limit 10
   contract-dev query wallets --group "Wildcat markets" --days 7 --where '{Status} == "new"'
-  contract-dev query transfers --group DZap --days 30 --by day,token --sum "{USD}" --save stacked --title "Volume by token"
+  contract-dev query transfers --group DZap --days 30 --by day,token --sum "{USD}"
 `;
 
 const DATASETS = ['contracts', 'table', 'metric', 'metrics', 'data', 'monitors', 'alerts', 'reports', 'transactions', 'transfers', 'wallets'] as const;
@@ -133,9 +146,34 @@ const COLUMNS_SHOWN = 8;
 
 
 /** The rows as one table: the time first for a series, then the name, then the columns the clauses name, then the rest, at most eight across. */
-function printRows(rows: Record<string, unknown>[], columns: { key: string; label: string; unit?: string }[], named: string[], first: string[] = [], split?: BreakdownColumn): void {
+type PrintColumn = { key: string; label: string; unit?: string; symbolKey?: string };
+
+/** A token amount with its symbol after the figure (the row's symbolKey, 2026-10-27); every other cell as it is. */
+function withSymbols(rows: Record<string, unknown>[], columns: PrintColumn[]): Record<string, unknown>[] {
+  const amounts = columns.filter((c) => c.symbolKey);
+  if (amounts.length === 0) return rows;
+  return rows.map((r) => {
+    const out = { ...r };
+    for (const c of amounts) {
+      const v = r[c.key];
+      const sym = r[c.symbolKey as string];
+      if (typeof v === 'number') out[c.key] = `${v.toLocaleString('en-US', { maximumFractionDigits: Math.abs(v) >= 1 ? 4 : 8 })}${typeof sym === 'string' ? ` ${sym}` : ''}`;
+      // a token column: its symbol, then the short address (the page draws the logo and symbol)
+      else if (typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v) && typeof sym === 'string') out[c.key] = `${sym} ${v.slice(0, 6)}…${v.slice(-4)}`;
+    }
+    return out;
+  });
+}
+
+/**
+ * A table whose columns were named (--column, 2026-10-27) prints them all, in their order. A row that opens onto
+ * lines (--detail: a batch swap's swaps) prints them under it, indented, under the lines' own header.
+ */
+export function printRows(rows: Record<string, unknown>[], columns: PrintColumn[], named: string[], first: string[] = [], split?: BreakdownColumn, chosen = false, detail?: PrintColumn[]): void {
   if (rows.length === 0) return;
+  rows = withSymbols(rows, columns);
   const keys = columns.map((c) => c.key);
+  if (chosen) first = keys;
   const wanted = (ref: string): string | null => {
     const r = ref.trim().replace(/^\{|\}$/g, '').toLowerCase();
     return columns.find((c) => c.key === r)?.key ?? columns.find((c) => c.label.toLowerCase() === r)?.key ?? null;
@@ -148,10 +186,25 @@ function printRows(rows: Record<string, unknown>[], columns: { key: string; labe
   push(columns.find((c) => c.key === 'name')?.key ?? null);
   for (const n of named) for (const m of n.match(/\{[^}]+\}|[A-Za-z_][A-Za-z0-9_]*/g) ?? []) push(wanted(m));
   for (const k of keys) push(k);
-  const shown = order.slice(0, COLUMNS_SHOWN);
+  const shown = chosen ? order : order.slice(0, COLUMNS_SHOWN);
   const header = shown.map((k) => columns.find((c) => c.key === k)?.label ?? k);
   const unitOf = new Map(columns.map((c) => [c.key, c.unit]));
-  for (const line of columnsTable(header, partCells(rows, shown, unitOf, split))) console.log(line);
+  const lines = columnsTable(header, partCells(rows, shown, unitOf, split));
+  const opens = detail && !split && rows.some((r) => Array.isArray(r.lines));
+  if (!opens) for (const line of lines) console.log(line);
+  else {
+    // one printed line per row (no parts without a split): each row, then its lines under it
+    const dKeys = detail.map((c) => c.key);
+    const dHeader = detail.map((c) => c.label);
+    const dUnit = new Map(detail.map((c) => [c.key, c.unit]));
+    console.log(lines[0]);
+    rows.forEach((r, i) => {
+      console.log(lines[i + 1]);
+      const ls = Array.isArray(r.lines) ? withSymbols(r.lines as Record<string, unknown>[], detail) : [];
+      if (ls.length === 0) return;
+      for (const l of columnsTable(dHeader, ls.map((x) => dKeys.map((k) => cell(byUnit(x[k], dUnit.get(k))))), '    ')) console.log(l);
+    });
+  }
   if (keys.length > shown.length) console.log(`(${keys.length - shown.length} more column${keys.length - shown.length === 1 ? '' : 's'}: --json for all)`);
 }
 
@@ -170,6 +223,8 @@ export function clausesFromFlags(flags: ParsedFlags): Record<string, unknown> {
   const input: Record<string, unknown> = {};
   const where = wordFlag(flags, 'where');
   if (where) input.where = where;
+  const statuses = statusesFrom(flags);
+  if (statuses.length > 0) input.status = statuses;
   const shows = flagAll(flags, 'show');
   if (shows.length > 0) {
     input.show = shows.map((s) => {
@@ -213,20 +268,21 @@ export function clausesFromFlags(flags: ParsedFlags): Record<string, unknown> {
   return input;
 }
 
-/** `live`: the question kept as a live table under Tables with this name (`table create "<name>" --from …`), not a snapshot. */
-export async function queryCommand(args: string[], opts: { live?: string } = {}): Promise<unknown> {
+/** `live`: the question kept as a live table under Tables with this name (`table create "<name>" --from …`), not a snapshot; `description`: what it shows. */
+export async function queryCommand(args: string[], opts: { live?: string; description?: string } = {}): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0]) || args.includes('--help') || args.includes('-h')) return void console.log(HELP);
   const flags = parseFlags(args);
   const positional = flags._ as string[];
   // `query metric help`: help after the dataset is help, never a table or metric called "help"
   if (positional.length === 2 && positional[1] === 'help') return void console.log(HELP);
   const noun = positional[0] as Dataset | undefined;
-  if (!noun || !(DATASETS as readonly string[]).includes(noun)) throw new Error(`Say which dataset: ${DATASETS.join(', ')} (try: contract-dev query help).`);
+  if (!noun || !(DATASETS as readonly string[]).includes(noun)) throw new Error(`Say which dataset: ${DATASETS.filter((d) => d !== 'data').join(', ')} (try: contract-dev query help).`);
   const input = clausesFromFlags(flags);
   const name = positional.slice(1).join(' ').trim();
   if (noun === 'table' || noun === 'metric' || noun === 'data') {
-    if (!name) throw new Error(`Name the ${noun}: contract-dev query ${noun} "<name>"${noun === 'data' ? ' (contract-dev data list names it)' : ''}.`);
-    input[noun] = name;
+    if (!name) throw new Error(`Name the ${noun}: contract-dev query ${noun} "<name>"${noun === 'table' ? ' (contract-dev table list names them)' : ''}.`);
+    // `query table` asks any table (query_data resolves a live table, an item table or a metric's records); `data` stays as its quiet alias
+    input[noun === 'table' ? 'data' : noun] = name;
   } else if (name) throw new Error(`query ${noun} takes no name; scope it with the flags (try: contract-dev query help).`);
   if (noun === 'contracts') {
     const group = wordFlag(flags, 'group');
@@ -260,6 +316,13 @@ export async function queryCommand(args: string[], opts: { live?: string } = {})
   if (noun === 'table' || noun === 'data') {
     const among = wordFlag(flags, 'among');
     if (among) input.among = among;
+  }
+  // the columns a listing of event rows shows, in order, and no others (2026-10-27): repeated, or a comma list
+  if (noun === 'table' || noun === 'data' || noun === 'metric') {
+    const columns = flagAll(flags, 'column').flatMap((c) => String(c).split(',')).map((c) => c.trim()).filter(Boolean);
+    if (columns.length > 0) input.columns = columns;
+    const detail = flagAll(flags, 'detail').flatMap((c) => String(c).split(',')).map((c) => c.trim()).filter(Boolean);
+    if (detail.length > 0) input.detail = detail;
   }
   if (noun === 'metrics') {
     const metrics = flagAll(flags, 'metric').map((m) => String(m).trim()).filter(Boolean);
@@ -298,7 +361,7 @@ export async function queryCommand(args: string[], opts: { live?: string } = {})
       if (counterparty) input.counterparty = counterparty;
     }
   }
-  if (noun === 'metric' || noun === 'metrics' || noun === 'data' || noun === 'alerts' || ACTIVITY.includes(noun)) {
+  if (noun === 'metric' || noun === 'metrics' || noun === 'data' || noun === 'table' || noun === 'alerts' || ACTIVITY.includes(noun)) {
     const days = wordFlag(flags, 'days');
     if (days !== undefined) {
       const n = Number(days);
@@ -306,21 +369,32 @@ export async function queryCommand(args: string[], opts: { live?: string } = {})
       input.days = n;
     }
   }
-  if (opts.live && ['save', 'title', 'draw'].some((k) => flag(flags, k) !== undefined)) throw new Error('A live table is a table named by table create: leave out --save, --title and --draw (a snapshot is contract-dev query … --save).');
-  const save = opts.live ? { as: 'table' as const, title: opts.live, keep: true } : saveFromFlags(flags);
-  if (save) input.save = save;
-  const r = (await runTool(requireAuth(), `query_${noun}`, input)) as Record<string, unknown>;
+  // a question is answered where asked; a table kept under Tables is `table create` (--save, the snapshot under Queries, went 2026-10-28)
+  if (['save', 'title', 'draw', 'keep'].some((k) => flag(flags, k) !== undefined)) throw new Error('--save is gone: a table kept under Tables is contract-dev table create "<name>" --from <rows> with the same flags (contract-dev table help).');
+  if (opts.live) input.save = { title: opts.live, ...(opts.description ? { description: opts.description } : {}) };
+  const r = (await runTool(requireAuth(), noun === 'table' ? 'query_data' : `query_${noun}`, input)) as Record<string, unknown>;
   const matched = Number(r.matched ?? 0);
   const returned = Number(r.returned ?? 0);
   const grouped = r.grouped as { by: string[]; measure: string } | undefined;
   const head = grouped ? `${matched} group${matched === 1 ? '' : 's'} by ${grouped.by.join(', ')} · ${grouped.measure}` : `${matched} row${matched === 1 ? '' : 's'} matched`;
+  // data still reading its history answers from the rows so far, which are not the answer: it says it is indexing and
+  // prints none of them (Theo, 2026-10-27: never incomplete rows)
+  if (r.filling === true) {
+    // table create says it in its own words, with the command that shows the rows; the table's link still prints
+    if (!opts.live) console.log('Indexing: the rows show once every one is in.');
+    const cov = coverageLine(r.coverage);
+    if (cov) console.log(cov);
+    const saved = savedLine(r);
+    if (saved) console.log(saved);
+    return r;
+  }
   console.log(`${head}${returned < matched ? ` · showing ${returned}` : ''}`);
   const { rows, columns, totals, ...rest } = r as { rows?: Record<string, unknown>[]; columns?: { key: string; label: string; unit?: string }[]; totals?: Record<string, number | null> } & Record<string, unknown>;
   const named = [...((input.reads as { name: string }[] | undefined)?.map((r) => r.name) ?? []), input.sort, input.where, ...((input.show as { name: string; expr: string }[] | undefined)?.flatMap((x) => [x.name, x.expr]) ?? []), ...((input.by as string[] | undefined) ?? []), ...((input.total as string[] | undefined) ?? [])].filter((x): x is string => typeof x === 'string');
   const series = rest.series as { from: string; to: string; every: string; points: number; chosen: 'auto' | 'asked' } | undefined;
   if (series) console.log(`Series: every ${series.every}${series.chosen === 'auto' ? ' (chosen to fit)' : ''} · ${series.points} point${series.points === 1 ? '' : 's'} · ${byUnit(Date.parse(series.from) / 1000, 'time')} → ${byUnit(Date.parse(series.to) / 1000, 'time')}`);
   // a fold prints its groups' own columns first, so a breakdown's parts sit under them
-  printRows(rows ?? [], columns ?? [], named, series ? ['time'] : (grouped?.by ?? []), rest.breakdown as BreakdownColumn | undefined);
+  printRows(rows ?? [], columns ?? [], named, series ? ['time'] : (grouped?.by ?? []), rest.breakdown as BreakdownColumn | undefined, (Array.isArray(input.columns) || rest.chosen === true) && !grouped, (rest.detail as { columns: PrintColumn[] } | undefined)?.columns);
   const readAt = rest.readAt as Record<string, { at: string; blocks: { chainId: number; block: number; time: string }[] }> | undefined;
   for (const [name, r] of Object.entries(readAt ?? {})) console.log(`${name}: as of ${byUnit(Date.parse(r.at) / 1000, 'time')} (${r.blocks.map((b) => `block ${b.block.toLocaleString('en-US')}${r.blocks.length > 1 ? ` on chain ${b.chainId}` : ''}`).join(', ')})`);
   if (totals) {
@@ -332,12 +406,21 @@ export async function queryCommand(args: string[], opts: { live?: string } = {})
   if (counts && fresh) console.log(`Active ${counts.now} (the window before: ${counts.before}) · New ${fresh.now} (before: ${fresh.before})`);
   const note = ['readFrom', 'readings', 'among'].map((k) => rest[k]).filter(Boolean);
   if (note.length > 0) console.log(note.join(' · '));
+  // how much of the window the rows cover, under them: the figures above stand over what it says, and no further
+  const cov = coverageLine(rest.coverage);
+  if (cov) console.log(cov);
   for (const n of (rest.notes as string[] | undefined) ?? []) console.log(n);
   const next = rest.next as { before?: string } | undefined;
   if (next?.before) console.log(`More: --before ${next.before}`);
   const saved = savedLine(r);
   if (saved) console.log(saved);
   return r;
+}
+
+/** The line under an answer kept as a live table (table create prints it too). */
+export function savedLine(result: Record<string, unknown> | null | undefined): string | null {
+  const saved = result?.saved as { url?: string; title?: string } | undefined;
+  return saved?.url ? `Live table under Tables${saved.title ? ` · ${saved.title}` : ''}: ${saved.url}` : null;
 }
 
 export default queryCommand;
