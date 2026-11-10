@@ -1,4 +1,5 @@
 import { parseFlags, flag, flagAll, onlyFlags, requirePositional, type ParsedFlags } from './_args';
+import { ALERT_TYPE_WORD, monitorTrigger, monitorTriggerWord } from './_alertWords';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { openBrowser } from '../browser';
 import { runTool } from '../tools';
@@ -9,102 +10,9 @@ import { DASH, chainLabel, fmtAge, fmtInt, fmtTime, plural, shortAddr, sparkline
 import { fmtSpan } from './oracles';
 import { parseUntil, type InvariantExpr } from '../monitor-expr';
 
-const HELP = `contract-dev monitor — alert when a tracked value crosses a line, an event is emitted, or a contract goes quiet
-
-Usage:
-  contract-dev monitors                                   List monitors (status, rule, open alert, where each sends)
-  contract-dev monitor add <value> --when "<formula>" [--warn "<formula>"] [--to <dest,…>] [--name "…"] [--max-age <sec>]
-                                                          A monitor on a tracked value
-  contract-dev monitor add --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]… [--name "…"]
-  contract-dev monitor add --on <contract> --silence --event <Name> [--for 24h] [--to <dest>]…
-  contract-dev monitor add --on <contract> --failures [--rows "<where>"] [--by <column>] [--when "<rule>"] [--for 1h] [--to <dest>]…
-                                                          An event monitor, or a contract going quiet; saved at once
-  contract-dev monitor show <id|name> [--range]           Rule, inputs, destinations, recent episodes; a silence monitor's
-                                                          sightings, how long it has been quiet, and the quiet stretches
-  contract-dev monitor sightings <id|name> [--range] [--limit]   Every sighting a silence monitor counts, newest first
-  contract-dev monitor set <id|name> [--when "<formula>"] [--warn "<formula>" | --no-warn] [--to <dest,…>]
-                              [--max-age <sec> | --no-max-age] [--name "…"]
-  contract-dev monitor rename <id|name> "<name>"
-  contract-dev monitor pause <id|name> / resume <id|name>
-  contract-dev monitor snooze <id|name> <30m|2h|1d|iso>   Mute pages until then (still evaluates)
-  contract-dev monitor unsnooze <id|name>
-  contract-dev monitor delete <id|name>…                 Delete one or several (ids from --json, or names); one that
-                                                          matches nothing is named after the rest are deleted
-  contract-dev monitor exclude <default> <address> [--chain <id>]   Leave a contract out of a default monitor
-  contract-dev monitor include <default> <address> [--chain <id>]   Put it back
-  contract-dev channels                                   Alert destinations — what --to accepts
-
-A tracked value's rule, one formula in the language of metrics and tables, naming the value as value:
-  --when "value < 25000"                   below a line (> for above)
-  --when "value > {Vault reserves} * 1.05" against another tracked value, by its label in braces
-  --when "value < previous * 0.99"         against its own reading before: never falls more than 1% in a step
-  --when "value < ago(24h) * 0.8"          against itself a while ago (a minute to 90 days): down more than 20%
-                                           on a day ago; no verdict until it has been tracked that long
-  --warn "<formula>"       A warning tier: the same comparison nearer the healthy side, --warn "value < 30000"
-                           beside --when "value < 25000"
-  monitor set --when replaces the rule, and its warning unless --warn gives one; --warn alone sets the warning
-  on the rule it has; --no-warn drops it. The monitor keeps its value, destinations and history.
-
-Destinations:
-  --to <dest,…>            Channel ids, labels ("#alerts") or kinds (telegram) from \`contract-dev channels\`.
-                           Optional: without one the monitor records alerts on its page until a destination
-                           is linked in the app.
-
-<value> is a tracked value's id or label (\`contract-dev metrics\`). Examples:
-  contract-dev monitor add "Treasury · Native balance" --when "value < 25000" --warn "value < 30000" --to telegram
-  contract-dev monitor add "Vault liabilities" --when "value > {Vault reserves}" --warn "value > {Vault reserves} * 0.95" --to "#alerts"
-  contract-dev monitor add "stETH share rate" --when "value < previous"
-  contract-dev monitor set "Treasury · Native balance" --when "value < ago(24h) * 0.8"
-
-From a sentence (an event monitor, or a silence monitor):
-  --on <contract>          The watched contract, by address or name; --chain picks between chains
-  --group <group>          Instead of --on: one monitor on each contract of the group that has the event
-                           (every upgrade, every pause).
-  --event <Name>           Alert when the event is emitted (with --silence: when it stops being emitted). Repeat
-                           for several events in one go: --event Upgraded --event Paused --event AdminChanged
-  --when "<formula>"       When it alerts, one formula in the language of metrics and tables: comparisons of the
-                           event's fields joined by and (amount0 > 0, to != 0x…), one field's values joined by or
-                           (to == 0xA or to == 0xB); a token amount as amount(field, token) >= 50 and a dollar line
-                           as usd(abs(field), token) > 1000000 (turned into the token at today's price, once), the
-                           token a 0x address, emitter() for the contract itself, or a view like token0(). A dollar
-                           line's token may also be one of the event's own address fields, usd(amount, reserve) >
-                           25000000: every event is then priced in its own token on its day, through an event metric
-                           add makes (or reuses) and names, one monitor on it for the contract or the whole group. A
-                           field compared without amount() or usd() is in base units. Without --when every emission
-                           alerts
-  --silence                Alert when the contract goes quiet: no call for --for; with --method, no call to that
-                           method; with --event, no emission of it
-  --method <name>          The method whose silence matters (silence only)
-  --failures               Alert when the contract's transactions start failing: over --for, the failed ones against
-                           every one that counts, judged each minute from the activity ledger
-  --rows "<where>"         (failures) Which transactions count: a where over their columns — status, method, wallet,
-                           via, value, revert — and the call's arguments as {args.<path>}: --rows '{method} == "swap"'.
-                           Every direct call without it
-  --by <column>            (failures) Judge per value of a column, an episode each: --by args.swapExecutionData[0].dex
-                           judges each swap provider on its own; an expression over the columns when the call has two
-                           shapes: --by 'if({args.x.dex} == null, {args.x[0].dex}, {args.x.dex})'
-  --when "<rule>"          (failures) Over the window's counts failed, total and share (failed over total, 0 to 1):
-                           --when "failed >= 5 and share > 0.5" (the default)
-  --for <duration>         How long quiet counts (silence; default 24h), or the failures' window (default 1h): 90m, 24h, 3d
-  --name "<text>"          The monitor's name (one is made from the event or method otherwise)
-  --to <dest>              Destinations by id, label or kind; repeat or comma-separate. Optional here: without
-                           one the monitor records alerts on its page and pages nobody.
-add saves at once and replays nothing; a monitor that turns out noisy is removed with \`monitor delete\`.
-  contract-dev monitor add --on steth --event Transfer --when "amount(value, emitter()) >= 1000" --to "#alerts"
-  contract-dev monitor add --on pool --event Swap --when "usd(abs(amount0), token0()) > 1000000" --name "Big swaps"
-  contract-dev monitor add --on steth --silence --event Submitted --for 6h
-  contract-dev monitor add --on router --failures --rows '{method} == "swap"' --by args.swapExecutionData[0].dex --when "failed >= 5 and share > 0.5" --for 1h
-
-Default monitors — control-change, dependency-failure, revert-spike — take pause / resume /
-snooze / unsnooze / set --to / exclude / include by that slug or by name; they have no
-thresholds to edit and cannot be deleted.
-
-A silence monitor (made in the app: "no call to this method, or no emission of this event,
-for longer than a window") judges how long since the thing last happened, so show and
-sightings read the happenings themselves from the chain's record: --range 24h|7d|30d
-(default 24h). The window ends where the record does, so a stretch nobody has collected yet
-never reads as quiet.
-`;
+// The flags this module takes are written once, in `notify help` (./notify): `monitor` is no longer a
+// command of its own (4.4.0, 2026-11-08), only what `notify` hands an alert on a condition to.
+const HELP = `Alerts are notifications: contract-dev notify help (contract-dev notify add alert …).`;
 
 const CHANNELS_HELP = `contract-dev channels — the workspace's alert destinations
 
@@ -207,6 +115,8 @@ export interface Invariant {
   warnExprText: string | null;
   /** the rule the way it alerts, per tier ("Below 25,000", "TVL < TVL 1h ago × 0.95", "Emitted"); an older server sends none */
   alertsWhen?: { critical: string | null; warning: string | null } | null;
+  /** what it tracks, in words ("ETH balance of Treasury", "A count of Transfer events from stETH"), on show; an older server sends none */
+  tracks?: string | null;
   maxInputAgeSec: number | null;
   enabled: boolean;
   snoozedUntil: string | null;
@@ -490,7 +400,7 @@ export async function resolveMonitor(auth: ResolvedAuth, ref: string): Promise<I
   const byName = all.filter((m) => m.name.toLowerCase() === lower || slugOf(m.name) === lower);
   if (byName.length === 1) return byName[0];
   if (byName.length > 1) throw new Error(`${byName.length} monitors are named "${ref}" — use an id: ${byName.map((m) => m.id).join(', ')}`);
-  throw new Error(`No monitor matches "${ref}" (run \`contract-dev monitors\` to list them).`);
+  throw new Error(`No monitor matches "${ref}" (run \`contract-dev notify --type alert\` to list them).`);
 }
 
 function parseMaxAge(flags: ReturnType<typeof parseFlags>): number | undefined {
@@ -509,7 +419,7 @@ export async function monitorsCommand(args: string[] = []): Promise<Invariant[] 
   const auth = requireAuth();
   const { invariants } = await apiRequest<{ invariants: Invariant[] }>(auth, 'GET', '/api/mainnet/invariants');
   if (!invariants?.length) {
-    console.log('No monitors. Create one with `contract-dev monitor add <value> --when "value < 25000" --to <dest>`.');
+    console.log('No monitors. Create one with `contract-dev notify add alert --on metric:"<metric>" --when "value < 25000"`.');
     return [];
   }
   // the destinations by name, so routing can be checked from the list; a count when they cannot be read
@@ -567,10 +477,10 @@ export async function monitorCommand(args: string[]): Promise<unknown> {
 }
 
 /** The flags a monitor on a tracked value takes, and the ones `monitor set` takes. */
-const VALUE_FLAGS = ['when', 'warn', 'to', 'name', 'max-age'] as const;
+const VALUE_FLAGS = ['when', 'warn', 'to', 'name', 'max-age', 'per'] as const;
 const SET_FLAGS = ['when', 'warn', 'no-warn', 'to', 'max-age', 'no-max-age', 'name'] as const;
 /** The flags an event or silence monitor takes. */
-const INTENT_FLAGS = ['on', 'group', 'chain', 'event', 'silence', 'failures', 'rows', 'by', 'method', 'for', 'when', 'name', 'to', 'yes'] as const;
+const INTENT_FLAGS = ['on', 'group', 'chain', 'event', 'silence', 'failures', 'overdue', 'answer', 'match', 'rows', 'by', 'method', 'for', 'when', 'name', 'to', 'yes'] as const;
 
 /** A --when / --warn formula as given; a bare number is refused, as it says nothing about which way. */
 function formulaFlag(flags: ParsedFlags, key: 'when' | 'warn', example: string): string | undefined {
@@ -593,7 +503,7 @@ async function addMonitor(args: string[]): Promise<unknown> {
   const flags = parseFlags(args);
   // --on / --event / --silence: a monitor from a sentence, built and saved by the server.
   if (isIntentForm(flags)) return await addMonitorFromIntent(flags);
-  onlyFlags(flags, 'monitor add', VALUE_FLAGS);
+  onlyFlags(flags, 'notify add alert', VALUE_FLAGS);
   const ref = requirePositional(flags._ as string[], 0, 'tracked value (id or label)');
   // one formula in the shared grammar, judged by the server (add_value_monitor)
   const when = formulaFlag(flags, 'when', 'value < 25000');
@@ -608,6 +518,12 @@ async function addMonitor(args: string[]): Promise<unknown> {
   if (toRaw) input.to = toRaw.split(',').map((x) => x.trim()).filter(Boolean);
   const maxAge = parseMaxAge(flags);
   if (maxAge !== undefined) input.maxAgeSec = maxAge;
+  // a window over an event, table or group metric split by contract: judged as a whole or each on its own
+  const per = flag(flags, 'per');
+  if (per !== undefined) {
+    if (per !== 'total' && per !== 'each') throw new Error('--per takes total (the metric as a whole) or each (every contract on its own).');
+    input.per = per;
+  }
   const r = await runTool<ValueMonitorResult>(requireAuth(), 'add_value_monitor', input);
   // the rule as written, the way it alerts: the stored one is the healthy side the monitor checks, which reads backwards
   console.log(`Created monitor "${r.monitor.name}" (${r.monitor.id}): alerts when ${when}${warn !== undefined ? `, warns when ${warn}` : ''}`);
@@ -617,7 +533,7 @@ async function addMonitor(args: string[]): Promise<unknown> {
 
 async function setMonitor(args: string[]): Promise<Invariant | ValueMonitorResult> {
   const flags = parseFlags(args);
-  onlyFlags(flags, 'monitor set', SET_FLAGS);
+  onlyFlags(flags, 'notify set', SET_FLAGS);
   const ref = requirePositional(flags._ as string[], 0, 'monitor (id or name)');
   const auth = requireAuth();
   const existing = await resolveMonitor(auth, ref);
@@ -669,7 +585,7 @@ async function setMonitor(args: string[]): Promise<Invariant | ValueMonitorResul
 // will print, the conditions in the field's units — and saves it at once.
 
 export interface MonitorIntent {
-  mode: 'event' | 'silence' | 'failures';
+  mode: 'silence' | 'failures' | 'overdue';
   /** One contract, or `group` for one monitor on each contract of a group. */
   contract?: string;
   group?: string;
@@ -682,6 +598,9 @@ export interface MonitorIntent {
   /** failures: which transactions count (a where over the transactions' columns and {args.<path>}), and the column to judge per value of. */
   rows?: string;
   by?: string;
+  /** overdue: the events that answer the open, and the fields they share (requestId, or requestId=_requestId). */
+  answer?: string[];
+  match?: string[];
   name?: string;
   destinations?: string[];
 }
@@ -700,21 +619,8 @@ export interface CreatedFromIntent {
   monitor: Invariant;
   sentence: string;
   backtest: Backtest | null;
-  /** A dollar line priced in a token the event names: the event metric the monitor is judged on. */
-  metric?: MonitorMetric;
+  notes?: string[];
 }
-
-/** The event metric a monitor with a per-event dollar line reads: made for it, or one the workspace had (made false). */
-export interface MonitorMetric {
-  id: string;
-  name: string;
-  url?: string;
-  made: boolean;
-}
-
-/** The monitor made on its metric, in one line. */
-export const onMetricLine = (monitor: { id: string; name: string }, metric: MonitorMetric): string =>
-  `Created monitor "${monitor.name}" (${monitor.id}) on the ${metric.made ? '' : 'existing '}metric "${metric.name}".`;
 
 /** 90m · 24h · 3d (also 3600s, 1w) → seconds, from a minute to 30 days. */
 export function parseDuration(raw: string, label = '--for'): number {
@@ -726,10 +632,10 @@ export function parseDuration(raw: string, label = '--for'): number {
   return sec;
 }
 
-const isIntentForm = (flags: ParsedFlags): boolean => flag(flags, 'on') !== undefined || flag(flags, 'group') !== undefined || flag(flags, 'event') !== undefined || flag(flags, 'silence') !== undefined || flag(flags, 'failures') !== undefined;
+const isIntentForm = (flags: ParsedFlags): boolean => ['on', 'group', 'event', 'silence', 'failures', 'overdue'].some((k) => flag(flags, k) !== undefined);
 
 /** The flags → the intent create_monitor takes. */
-export function buildIntent(flags: ParsedFlags, command = 'monitor add'): MonitorIntent {
+export function buildIntent(flags: ParsedFlags, command = 'notify add alert'): MonitorIntent {
   onlyFlags(flags, command, INTENT_FLAGS);
   const on = flag(flags, 'on');
   const group = flag(flags, 'group');
@@ -737,11 +643,15 @@ export function buildIntent(flags: ParsedFlags, command = 'monitor add'): Monito
   if (group === 'true') throw new Error('--group needs a group name.');
   if (on !== undefined && group !== undefined) throw new Error('Pick --on <contract> or --group <group>, not both.');
   if (on === undefined && group === undefined) throw new Error('Say where: --on <contract> (a watched contract, by address or name) or --group <group> (each contract of a group).');
-  const silence = flag(flags, 'silence') !== undefined;
-  if (flag(flags, 'silence') !== undefined && flag(flags, 'silence') !== 'true') throw new Error('--silence takes no value; name the method with --method <name>.');
-  const failures = flag(flags, 'failures') !== undefined;
-  if (failures && flag(flags, 'failures') !== 'true') throw new Error('--failures takes no value; say which transactions count with --rows "<where>".');
-  if (failures && silence) throw new Error('Pick --failures or --silence, not both.');
+  const bare = (k: string, hint: string): boolean => {
+    const v = flag(flags, k);
+    if (v !== undefined && v !== 'true') throw new Error(`--${k} takes no value; ${hint}.`);
+    return v !== undefined;
+  };
+  const silence = bare('silence', 'name the method with --method <name>');
+  const failures = bare('failures', 'say which transactions count with --rows "<where>"');
+  const overdue = bare('overdue', 'name the open with --event <Name> and the answer with --answer <Name>');
+  if ([silence, failures, overdue].filter(Boolean).length > 1) throw new Error('Pick one of --silence, --failures or --overdue.');
   const event = flag(flags, 'event');
   const method = flag(flags, 'method');
   const forRaw = flag(flags, 'for');
@@ -749,24 +659,41 @@ export function buildIntent(flags: ParsedFlags, command = 'monitor add'): Monito
   if (event === 'true') throw new Error('--event needs the event\'s name');
   if (method === 'true') throw new Error('--method needs the method\'s name');
   if (name === 'true') throw new Error('--name needs a value');
-  if (!silence && !failures && event === undefined) throw new Error('Say what to watch: --event <Name> (when it is emitted), --silence (when the contract goes quiet) or --failures (when its transactions start failing).');
-  if (!silence && method !== undefined) throw new Error('--method is for a silence monitor: add --silence.');
-  if (!silence && !failures && forRaw !== undefined) throw new Error('--for is for a silence or failures monitor: add --silence or --failures.');
-  if (failures && (event !== undefined || method !== undefined)) throw new Error('A failures monitor takes --rows and --by, not --event or --method.');
+  if (!silence && !failures && !overdue)
+    throw new Error(
+      event !== undefined
+        ? 'An event each time it is emitted is an alert on something happening: `contract-dev notify add alert … --on <contract> --event <Name> --message "…"`. On a condition: --silence (it stops), --failures (its calls fail) or --overdue --answer <Name> (it is not answered in time).'
+        : 'Say what to watch: --silence (the contract goes quiet), --failures (its transactions start failing) or --overdue --event <Open> --answer <Close> (something opened is not answered in time).',
+    );
+  // calls are not collected (2026-11-08): a silence is of an event, and there is no alert on a function call
+  if (method !== undefined) throw new Error('A silence on a method is not available: calls are not collected. Watch an event the method emits: --silence --event <Name>.');
+  if (silence && event === undefined) throw new Error('--silence needs the event whose absence matters: --silence --event <Name> (calls are not collected, so "no calls at all" cannot be watched).');
+  if (failures && (event !== undefined || method !== undefined)) throw new Error('A failures alert takes --rows and --by, not --event or --method.');
+  const answers = flagAll(flags, 'answer').filter((v) => v !== 'true').flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean);
+  const matches = flagAll(flags, 'match').filter((v) => v !== 'true').flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean);
+  if (!overdue && (answers.length > 0 || matches.length > 0 || flag(flags, 'answer') !== undefined || flag(flags, 'match') !== undefined)) throw new Error('--answer and --match are for an overdue alert: add --overdue.');
+  if (overdue) {
+    if (event === undefined) throw new Error('--overdue needs the event that opens something: --event WithdrawalRequested.');
+    if (answers.length === 0) throw new Error('--overdue needs the event that answers it: --answer WithdrawalClaimed (repeat for several).');
+    if (forRaw === undefined) throw new Error('--overdue needs how long an answer may take: --for 3d.');
+    if (method !== undefined) throw new Error('An overdue alert pairs two events: --event and --answer, not --method.');
+  }
   const rows = flag(flags, 'rows');
   const by = flag(flags, 'by');
-  if ((rows !== undefined || by !== undefined) && !failures) throw new Error('--rows and --by are for a failures monitor: add --failures.');
+  if ((rows !== undefined || by !== undefined) && !failures) throw new Error('--rows and --by are for a failures alert: add --failures.');
   if (rows === 'true') throw new Error('--rows needs the where: --rows \'{method} == "swap"\'.');
   if (by === 'true') throw new Error('--by needs a column: --by args.swapExecutionData[0].dex');
-  if (silence && event !== undefined && method !== undefined) throw new Error('A silence monitor watches an event or a method, not both.');
+  if (silence && event !== undefined && method !== undefined) throw new Error('A silence alert watches an event or a method, not both.');
   const destinations = flagAll(flags, 'to')
     .filter((v) => v !== 'true')
     .flatMap((v) => v.split(','))
     .map((v) => v.trim())
     .filter(Boolean);
   const chainId = chainFlag(flags);
-  const mode = failures ? 'failures' : silence ? 'silence' : 'event';
+  const mode = failures ? 'failures' : overdue ? 'overdue' : 'silence';
   const intent: MonitorIntent = on !== undefined ? { mode, contract: on } : { mode, group };
+  if (answers.length > 0) intent.answer = answers;
+  if (matches.length > 0) intent.match = matches;
   if (rows !== undefined) intent.rows = rows;
   if (by !== undefined) intent.by = by;
   if (chainId !== undefined) intent.chainId = chainId;
@@ -774,8 +701,8 @@ export function buildIntent(flags: ParsedFlags, command = 'monitor add'): Monito
   if (method !== undefined) intent.method = method;
   const when = flag(flags, 'when');
   if (when !== undefined) {
-    if (silence) throw new Error('--when is for an event or failures monitor; a silence monitor takes --for.');
-    if (when === 'true' || !when.trim()) throw new Error(failures ? '--when needs the rule over the window\'s counts: --when "failed >= 5 and share > 0.5".' : '--when needs the formula: --when "amount(value, emitter()) >= 1000".');
+    if (!failures) throw new Error(`--when is for a failures alert; ${overdue ? 'an overdue' : 'a silence'} alert takes --for.`);
+    if (when === 'true' || !when.trim()) throw new Error('--when needs the rule over the window\'s counts: --when "failed >= 5 and share > 0.5".');
     intent.when = when;
   }
   if (forRaw !== undefined) intent.windowSec = parseDuration(forRaw);
@@ -814,9 +741,6 @@ export interface GroupSet {
   created?: Array<{ id: string; name: string; contract: string }>;
   failed?: Array<{ contract: string; error: string }>;
   notes?: string[];
-  /** A dollar line priced in a token the event names: one monitor over the whole group, on this event metric. */
-  monitor?: { id: string; name: string };
-  metric?: MonitorMetric;
 }
 
 /** A group's monitors in a few lines: the sentence, how many, and what was left out or failed. */
@@ -854,13 +778,8 @@ async function addSeveralEvents(flags: ParsedFlags, events: string[]): Promise<A
     throw new Error(reasons.length === 1 ? String(reasons[0]) : outcomes.map((o) => `${o.event}: ${o.error}`).join('\n'));
   }
   for (const o of outcomes) {
-    const metric = (o.result as CreatedFromIntent | GroupSet | undefined)?.metric;
     if (o.error) console.log(`${o.event}: not created — ${o.error}`);
-    else if (metric) {
-      // a dollar line priced per event: one monitor on its event metric, for the contract or the whole group
-      const one = o.result as CreatedFromIntent;
-      console.log(`${o.event}: created "${one.monitor.name}" (${one.monitor.id}) on the ${metric.made ? '' : 'existing '}metric "${metric.name}" — ${one.sentence}`);
-    } else if (base.group) {
+    else if (base.group) {
       const set = o.result as GroupSet;
       const extra = groupSetLines(set, base.group).slice(2);
       console.log(`${o.event}: ${plural(set.created?.length ?? 0, 'monitor')}${set.skippedCount ? ` · left out ${fmtInt(set.skippedCount)}` : ''}`);
@@ -880,12 +799,6 @@ async function addMonitorFromIntent(flags: ParsedFlags): Promise<CreatedFromInte
   if (intent.group) {
     // the CLI acts on purpose: the server's many-at-once check is for chat, so it is passed here
     const set = await runTool<GroupSet>(requireAuth(), 'create_monitor', { ...intent, confirmMany: true });
-    if (set.metric && set.monitor) {
-      // a dollar line priced per event: one monitor over the whole group, on an event metric, not one per contract
-      console.log(set.sentence ?? DASH);
-      console.log(onMetricLine(set.monitor, set.metric));
-      return set;
-    }
     for (const line of groupSetLines(set, intent.group)) console.log(line);
     return set;
   }
@@ -893,7 +806,8 @@ async function addMonitorFromIntent(flags: ParsedFlags): Promise<CreatedFromInte
   console.log(created.sentence);
   // saving replays nothing; an older server may still send a backtest, shown when it does
   if (created.backtest) for (const line of backtestLines(created.backtest)) console.log(line);
-  console.log(created.metric ? onMetricLine(created.monitor, created.metric) : `Created monitor "${created.monitor.name}" (${created.monitor.id}).`);
+  for (const note of created.notes ?? []) console.log(note);
+  console.log(`Created alert "${created.monitor.name}" (${created.monitor.id}).`);
   return created;
 }
 
@@ -1068,6 +982,10 @@ async function showMonitor(args: string[]): Promise<Invariant> {
   const sightings = watch ? await loadSightings(auth, invariant.id, range).catch(() => null) : null;
 
   console.log(`${invariant.name}  (${invariant.id})`);
+  console.log(`  type:   ${ALERT_TYPE_WORD[monitorTrigger(invariant)]}`);
+  console.log(`  trigger: ${monitorTriggerWord(invariant)}`);
+  // what it measures, before the condition, the app rail's Tracks line (2026-11-09)
+  if (invariant.tracks) console.log(`  tracks: ${invariant.tracks}`);
   console.log(`  status: ${invariant.status}${invariant.statusSince ? ` since ${invariant.statusSince}` : ''}${invariant.enabled ? '' : '  (paused)'}`);
   // the rule the way it alerts; the stored text (the healthy side it checks) only when the server words none
   const words = invariant.alertsWhen;
@@ -1220,6 +1138,6 @@ async function deleteMonitor(args: string[]): Promise<{ ok: true; id: string; id
     console.log(`Deleted monitor "${m.name}" (${m.id}) and its episode history.`);
     ids.push(m.id);
   }
-  if (missed.length > 0) throw new Error(`${ids.length > 0 ? `Deleted ${plural(ids.length, 'monitor')}; not deleted: ` : 'Nothing was deleted: '}${missed.join('; ')} (run \`contract-dev monitors\` to list them).`);
+  if (missed.length > 0) throw new Error(`${ids.length > 0 ? `Deleted ${plural(ids.length, 'monitor')}; not deleted: ` : 'Nothing was deleted: '}${missed.join('; ')} (run \`contract-dev notify --type alert\` to list them).`);
   return { ok: true, id: ids[0], ids };
 }

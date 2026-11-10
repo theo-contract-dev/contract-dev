@@ -4,9 +4,9 @@ import { loginCommand, logoutCommand, whoamiCommand } from './commands/login';
 import { workspaceCommand } from './commands/workspace';
 import { watchCommand, unwatchCommand, renameCommand, contractsCommand } from './commands/watch';
 import { metricsCommand, trackCommand, untrackCommand } from './commands/metrics';
-import { monitorCommand, monitorsCommand, channelsCommand } from './commands/monitor';
+import { channelsCommand } from './commands/monitor';
 import { incidentsCommand } from './commands/incidents';
-import { reportCommand } from './commands/report';
+import { notifyCommand } from './commands/notify';
 import { statusCommand } from './commands/status';
 import { eventsCommand } from './commands/events';
 import { holdersCommand } from './commands/holders';
@@ -21,6 +21,8 @@ import { historyCommand } from './commands/history';
 import { toolCommand } from './commands/tool';
 import { refreshGuideIfStale, refreshInstalledSkills, skillsCommand } from './commands/skills';
 import { extractTargetFlags } from './target';
+import { sendCommandReport } from './telemetry';
+import { DEFAULT_API_URL, resolveAuth } from './credentials';
 
 const HELP = `contract.dev — your contracts, from the command line
 
@@ -68,7 +70,6 @@ Metrics:
   contract-dev metric define "<name>" …   A metric added up from events, each read at its own transaction (try: metrics help)
   contract-dev metric group "<name>" --group <g> --column <key>   A group's column rolled up into one metric across its contracts
   contract-dev metrics export <id|label>  A metric's history as CSV or JSON
-  contract-dev metric pin <name>          Show a metric in the overview's header, after Contracts and Activity (five at most; unpin takes it off)
   contract-dev track <address> <kind>     Track a balance, supply, call result or method telemetry (try: track help)
   contract-dev untrack <id|label>         Stop tracking
 
@@ -81,7 +82,7 @@ Data (<contract> is an address or a watched contract's name):
 
 Ask (questions over the workspace; scope is --group <name>, --contract <ref> or --chain <id>, else everything):
   contract-dev find <query>               What a name points at: contracts (by name, address or kind: pools, vaults,
-                                          tokens), groups, metrics, monitors, reports, destinations
+                                          tokens), groups, metrics, notifications, destinations
   contract-dev describe <contract>        What a contract is: kinds, standards, owner, its events and write
                                           functions
   contract-dev query <contracts|table|metric|transactions|transfers|wallets|monitors|alerts|reports> …
@@ -97,24 +98,20 @@ Explorer (any address on a supported chain):
   contract-dev wallet <0x…>               Tokens; --approvals, --txs
   contract-dev source <contract>          Verified source; --out <dir> writes the files
 
-Monitoring:
-  contract-dev monitors                   List monitors
-  contract-dev monitor add <value> --when "<formula>"   Alert when a tracked value crosses a line (try: monitor help)
-  contract-dev monitor set <id|name> --when "<formula>"  Change its rule; --warn "<formula>" or --no-warn its warning
-  contract-dev monitor add --on <contract> --event <Name> [--when "<formula>"] [--to <dest>]
-                                          An event monitor from a sentence; --silence --event <Name> [--for 24h]
-                                          for a contract going quiet
-  contract-dev monitor show <id|name>     Rule, inputs, episodes; a silence monitor's sightings and quiet stretches
-  contract-dev monitor sightings <id|name> Every sighting a silence monitor counts, newest first
-  contract-dev monitor exclude <default> <address>   Leave a contract out of a default monitor
-  contract-dev alerts                     What fired (try: alerts help)
-  contract-dev channels                   Alert destinations (try: channels help)
-
-Reports:
-  contract-dev report list                Scheduled reports: scope, cadence, destinations, next send, last run
-  contract-dev report create …            A table of your metrics, sent on a schedule: --template daily|weekly --to <dest> (try: report help)
-  contract-dev report show <id|name>      Settings, the latest table, every run and where it went
-  contract-dev report run <id|name>       Send it now · report pause / resume / delete <id|name>
+Notifications (two types: a report, an alert — try: notify help):
+  contract-dev notify                     Every notification: type, name, when it sends, status
+  contract-dev notify add report ["<name>"] --template daily|weekly | --every 1h --row <kind>…   A table of figures on a schedule
+                                          --row metric:"<name>" any metric; --row "metric:<name>=<clauses>" one made for it
+  contract-dev notify add alert ["<name>"] --on <contract> --event <Name> --message "<text>" [--when …]
+                                          A message when something happens (once per block)
+  contract-dev notify add alert ["<name>"] --on metric:"<metric>" --when "value < 25000" [--remind]
+                                          A message when a condition is met, and the all-clear; --on <contract> --silence
+                                          for one going quiet, --failures for its calls failing, --overdue --event <Open>
+                                          --answer <Close> for one left unanswered; --on table:"<table>" --column <label>
+                                          for every open row. alert add … is the same command.
+  contract-dev notify show <name>         Its settings and history · set · rename · pause · resume · delete · run (a report) · ack
+  contract-dev alerts                     What alerts opened (try: alerts help)
+  contract-dev channels                   Destinations: where notifications go (try: channels help)
 
 Agents:
   contract-dev tool list                  The platform's tools, the ones an agent calls: name, scope, title
@@ -123,7 +120,7 @@ Agents:
   contract-dev skills install             Teach Claude Code, Codex, Cursor and other agents this CLI (try: skills help)
   contract-dev skills status              Where the agent skill is installed, and its version
 
-Nouns work too: contracts list|add|rename|remove · wallets list|add|rename|remove · metrics track|untrack · monitor list · alerts list · reports.
+Nouns work too: contracts list|add|rename|remove · wallets list|add|rename|remove · metrics track|untrack · alerts list.
 
 Global flags:
   --json                                  Print the command's result as JSON instead of text
@@ -133,6 +130,31 @@ Global flags:
 `;
 
 export { cliVersion };
+
+/**
+ * `report …` and `monitor …`, retired in 4.4.0 (2026-11-08): everything the workspace sends is a
+ * notification, made and changed with `notify`. The old line is answered with the notify one.
+ */
+const NOTIFY_FOR: Record<string, string> = {
+  list: 'notify --type <report|alert>',
+  ls: 'notify --type <report|alert>',
+  create: 'notify add report … (a schedule) or notify add alert … (something happening, a condition)',
+  add: 'notify add alert …',
+  update: 'notify set <name> …',
+  set: 'notify set <name> …',
+  show: 'notify show <name>',
+  run: 'notify run <name>',
+  pause: 'notify pause <name>',
+  resume: 'notify resume <name>',
+  delete: 'notify delete <name>',
+  rename: 'notify rename <name> "<new name>"',
+};
+
+function retired(cmd: string, rest: string[]): never {
+  const sub = rest[0] && !rest[0].startsWith('-') ? rest[0] : 'list';
+  const instead = NOTIFY_FOR[sub] ?? 'notify help';
+  throw new Error(`\`contract-dev ${cmd}\` is now \`contract-dev notify\`: reports and alerts are one list of notifications. Use \`contract-dev ${instead}\` (try: contract-dev notify help).`);
+}
 
 // Dispatch one invocation; returns whatever the command returns (what --json prints).
 export async function run(args: string[]): Promise<unknown> {
@@ -168,12 +190,18 @@ export async function run(args: string[]): Promise<unknown> {
       return await trackCommand(rest);
     case 'untrack':
       return await untrackCommand(rest);
+    // one noun for everything the workspace sends since 4.4.0 (2026-11-08): report and monitor are notify
     case 'monitors':
-      return await monitorsCommand(rest);
     case 'monitor':
-      return await monitorCommand(rest);
+    case 'report':
+    case 'reports':
+      return retired(cmd, rest);
     case 'alerts':
     case 'alert':
+      // alert add|list are the alerts set up (notify); the rest is what they opened (incidents)
+      if (['add', 'create', 'new'].includes(rest[0])) return await notifyCommand(['add', 'alert', ...rest.slice(1)]);
+      if (['list', 'ls'].includes(rest[0])) return await notifyCommand(['list', '--type', 'alert', ...rest.slice(1)]);
+      return await incidentsCommand(rest);
     // the old name, kept for scripts
     case 'incidents':
     case 'incident':
@@ -181,9 +209,10 @@ export async function run(args: string[]): Promise<unknown> {
     case 'channels':
     case 'channel':
       return await channelsCommand(rest);
-    case 'report':
-    case 'reports':
-      return await reportCommand(rest);
+    case 'notify':
+    case 'notification':
+    case 'notifications':
+      return await notifyCommand(rest);
     case 'events':
     case 'event':
       return await eventsCommand(rest);
@@ -266,21 +295,32 @@ async function main() {
       // never in the way of the command
     }
   }
+  // after the output, the command's outcome goes to the server for the command centre (./telemetry)
+  const startedAt = Date.now();
   try {
     const result = await run(args);
     if (json) {
       console.log = realLog;
       console.log(JSON.stringify(result ?? { ok: true }, null, 2));
     }
+    await sendCommandReport(args, raw, { ok: true, ms: Date.now() - startedAt });
   } catch (err) {
     console.log = realLog;
     const message = err instanceof Error ? err.message : String(err);
     // A tool's refusal carries a code (NOT_WATCHED, AMBIGUOUS, …) that a script can branch on.
-    const code = (err as { code?: unknown } | null)?.code;
+    const code = (err as { code?: unknown } | null)?.code ?? (err as { payload?: { code?: unknown } } | null)?.payload?.code;
     if (json) console.log(JSON.stringify({ error: message, ...(typeof code === 'string' ? { code } : {}) }, null, 2));
     console.error(`Error: ${message}`);
+    // past the plan's limit: where to raise it, under the server's sentence (on stderr, so --json stays whole)
+    if (code === 'UPGRADE_REQUIRED') console.error(upgradeLine(resolveAuth()?.apiUrl ?? DEFAULT_API_URL));
+    await sendCommandReport(args, raw, { ok: false, error: message, code: typeof code === 'string' ? code : undefined, ms: Date.now() - startedAt });
     process.exit(1);
   }
+}
+
+/** What a refusal past the plan's limit adds: a bigger plan in Settings, or the team for more than any plan offers. */
+export function upgradeLine(apiUrl: string): string {
+  return `Upgrade at ${apiUrl.replace(/\/+$/, '')}/settings, or contact the team for more than your plan allows.`;
 }
 
 if (require.main === module) {

@@ -1,6 +1,5 @@
 import { monitorCommand, parseDuration, buildIntent, backtestLines } from '../../src/cli/commands/monitor';
 import { parseFlags } from '../../src/cli/commands/_args';
-import { run } from '../../src/cli/index';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
 
 // A monitor from a sentence: the flags become the intent compile_monitor / create_monitor take,
@@ -43,8 +42,15 @@ describe('monitor compile', () => {
     });
 
     it('buildIntent carries only what was given; backtestLines caps the firings at three', () => {
-        expect(buildIntent(parseFlags(['--on', 'steth', '--event', 'Transfer']))).toEqual({ mode: 'event', contract: 'steth', event: 'Transfer' });
-        expect(buildIntent(parseFlags(['--on', 'steth', '--silence', '--to', 'ch1', '--name', ' Quiet ']))).toEqual({ mode: 'silence', contract: 'steth', name: 'Quiet', destinations: ['ch1'] });
+        expect(() => buildIntent(parseFlags(['--on', 'steth', '--event', 'Transfer']))).toThrow(/alert on something happening/);
+        expect(buildIntent(parseFlags(['--on', 'wq', '--overdue', '--event', 'WithdrawalRequested', '--answer', 'WithdrawalClaimed', '--match', 'requestId', '--for', '7d']))).toEqual({ mode: 'overdue', contract: 'wq', event: 'WithdrawalRequested', answer: ['WithdrawalClaimed'], match: ['requestId'], windowSec: 604_800 });
+        expect(() => buildIntent(parseFlags(['--on', 'wq', '--overdue', '--event', 'WithdrawalRequested', '--for', '7d']))).toThrow('--overdue needs the event that answers it');
+        expect(() => buildIntent(parseFlags(['--on', 'wq', '--overdue', '--event', 'WithdrawalRequested', '--answer', 'WithdrawalClaimed']))).toThrow('--overdue needs how long an answer may take');
+        expect(() => buildIntent(parseFlags(['--on', 'wq', '--silence', '--event', 'E', '--answer', 'X']))).toThrow('--answer and --match are for an overdue alert');
+        expect(buildIntent(parseFlags(['--on', 'steth', '--silence', '--event', 'Submitted', '--to', 'ch1', '--name', ' Quiet ']))).toEqual({ mode: 'silence', contract: 'steth', event: 'Submitted', name: 'Quiet', destinations: ['ch1'] });
+        // calls are not collected: a silence is of an event, never of a method or of any call
+        expect(() => buildIntent(parseFlags(['--on', 'steth', '--silence']))).toThrow('--silence needs the event');
+        expect(() => buildIntent(parseFlags(['--on', 'steth', '--silence', '--method', 'submit']))).toThrow('calls are not collected');
         const many = { window: '7d', matches: 1, recent: [firing('a', '2026-10-12T03:19:00.000Z', '1'), firing('b', '2026-10-12T03:19:00.000Z', '2'), firing('c', '2026-10-12T03:19:00.000Z', '3'), firing('d', '2026-10-12T03:19:00.000Z', '4')] };
         expect(backtestLines(many)).toHaveLength(4);
         expect(backtestLines(many)[0]).toBe('  backtest:    Would have fired 1 time in 7 days');
@@ -56,14 +62,13 @@ describe('monitor compile', () => {
 describe('monitor add from a sentence', () => {
     useEnvAuth();
 
-    it('--event calls create_monitor with the intent and prints the sentence and the id: saving replays nothing', async () => {
-        const created = { monitor: { id: 'inv9', name: 'Big transfers', kind: 'eventFired', status: 'warming' }, sentence: compiled.sentence, backtest: null };
+    it('--overdue calls create_monitor with the intent and prints the sentence, its notes and the id: saving replays nothing', async () => {
+        const created = { monitor: { id: 'inv9', name: 'Withdrawal unclaimed', kind: 'unanswered', status: 'warming' }, sentence: 'WithdrawalRequested not followed by WithdrawalClaimed within 7 days, matched on requestId', backtest: null, notes: [] };
         const calls = mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok(created) });
-        const result = await monitorCommand(['add', '--on', 'steth', '--event', 'Transfer', '--when', 'amount(value, emitter()) >= 1000', '--to', '#alerts', '--name', 'Big transfers']);
+        const result = await monitorCommand(['add', '--on', 'wq', '--overdue', '--event', 'WithdrawalRequested', '--answer', 'WithdrawalClaimed', '--match', 'requestId', '--for', '7d', '--to', '#alerts', '--name', 'Withdrawal unclaimed']);
         expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tools/create_monitor']);
-        expect(calls[0].body).toEqual({ input: { mode: 'event', contract: 'steth', event: 'Transfer', when: 'amount(value, emitter()) >= 1000', name: 'Big transfers', destinations: ['#alerts'] } });
-        const out = printed();
-        expect(out).toEqual([compiled.sentence, 'Created monitor "Big transfers" (inv9).']);
+        expect(calls[0].body).toEqual({ input: { mode: 'overdue', contract: 'wq', event: 'WithdrawalRequested', answer: ['WithdrawalClaimed'], match: ['requestId'], windowSec: 604_800, name: 'Withdrawal unclaimed', destinations: ['#alerts'] } });
+        expect(printed()).toEqual([created.sentence, 'Created alert "Withdrawal unclaimed" (inv9).']);
         expect(result).toEqual(created);
     });
 
@@ -72,13 +77,13 @@ describe('monitor add from a sentence', () => {
     });
 
     it('--silence saves a silence monitor; the plan cap comes back in the server\'s words', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok({ monitor: { id: 'inv10', name: 'No submit on Lido: stETH' }, sentence: 'submit has not been seen for 6 hours', backtest: { window: '7d', occurrences: 3, lastSeenAt: null } }) });
-        await run(['monitor', 'add', '--on', 'steth', '--silence', '--method', 'submit', '--for', '6h', '--to', 'telegram']);
-        expect(calls[0].body).toEqual({ input: { mode: 'silence', contract: 'steth', method: 'submit', windowSec: 21_600, destinations: ['telegram'] } });
-        expect(printed()).toEqual(['submit has not been seen for 6 hours', '  backtest:    Seen 3 times in 7 days', 'Created monitor "No submit on Lido: stETH" (inv10).']);
+        const calls = mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok({ monitor: { id: 'inv10', name: 'No Submitted on Lido: stETH' }, sentence: 'Submitted has not been seen for 6 hours', backtest: { window: '7d', occurrences: 3, lastSeenAt: null } }) });
+        await monitorCommand(['add', '--on', 'steth', '--silence', '--event', 'Submitted', '--for', '6h', '--to', 'telegram']);
+        expect(calls[0].body).toEqual({ input: { mode: 'silence', contract: 'steth', event: 'Submitted', windowSec: 21_600, destinations: ['telegram'] } });
+        expect(printed()).toEqual(['Submitted has not been seen for 6 hours', '  backtest:    Seen 3 times in 7 days', 'Created alert "No Submitted on Lido: stETH" (inv10).']);
 
         mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ({ status: 403, payload: { ok: false, error: 'This workspace has used all of its monitors.', code: 'UPGRADE_REQUIRED' } }) });
-        await expect(monitorCommand(['add', '--on', 'steth', '--event', 'Transfer'])).rejects.toThrow('This workspace has used all of its monitors.');
+        await expect(monitorCommand(['add', '--on', 'steth', '--silence', '--event', 'Transfer'])).rejects.toThrow('This workspace has used all of its monitors.');
     });
 });
 
@@ -100,15 +105,15 @@ describe('monitor add --group and delete several', () => {
             skipped: [{ contract: 'GateSeal', reason: 'no ABI known' }],
         };
         const calls = mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok(set) });
-        const result = await monitorCommand(['add', '--group', 'Lido', '--event', 'Upgraded', '--name', 'Upgrade', '--yes']);
-        expect(calls[0].body).toEqual({ input: { mode: 'event', group: 'Lido', event: 'Upgraded', name: 'Upgrade', confirmMany: true } });
+        const result = await monitorCommand(['add', '--group', 'Lido', '--silence', '--event', 'Upgraded', '--name', 'Upgrade', '--yes']);
+        expect(calls[0].body).toEqual({ input: { mode: 'silence', group: 'Lido', event: 'Upgraded', name: 'Upgrade', confirmMany: true } });
         expect(printed()).toEqual(['Upgraded is emitted', 'Created 3 monitors in Lido, one on each contract that has it.', 'Left out 2 contracts that do not have it.', '  no ABI known: GateSeal']);
         expect(result).toEqual(set);
     });
 
     it('without --yes the server\'s many-at-once refusal comes back in its words', async () => {
         mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ({ status: 409, payload: { ok: false, error: 'That is up to 91 monitors, one per contract of Lido. Nothing was saved.', code: 'CONFIRM_MANY' } }) });
-        await expect(monitorCommand(['add', '--group', 'Lido', '--event', 'Paused'])).rejects.toThrow(/up to 91 monitors/);
+        await expect(monitorCommand(['add', '--group', 'Lido', '--silence', '--event', 'Paused'])).rejects.toThrow(/up to 91 monitors/);
     });
 
     it('delete takes several ids or names; the ones that match go, and the rest are named with a failing exit', async () => {
@@ -119,7 +124,7 @@ describe('monitor add --group and delete several', () => {
         expect(r.ids).toEqual(['a1', 'a2']);
         expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual(['/api/mainnet/invariants/a1', '/api/mainnet/invariants/a2']);
         const again = mockApi(handlers);
-        await expect(monitorCommand(['delete', 'a1', 'nope', 'twin'])).rejects.toThrow('Deleted 1 monitor; not deleted: no monitor matches "nope"; 2 monitors are named "twin", use an id: a3, a4 (run `contract-dev monitors` to list them).');
+        await expect(monitorCommand(['delete', 'a1', 'nope', 'twin'])).rejects.toThrow('Deleted 1 monitor; not deleted: no monitor matches "nope"; 2 monitors are named "twin", use an id: a3, a4 (run `contract-dev notify --type alert` to list them).');
         expect(again.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual(['/api/mainnet/invariants/a1']);
         mockApi(handlers);
         await expect(monitorCommand(['delete', 'nope'])).rejects.toThrow(/^Nothing was deleted: no monitor matches "nope"/);
@@ -127,7 +132,7 @@ describe('monitor add --group and delete several', () => {
 });
 
 
-describe('monitor add: several events, dollars', () => {
+describe('monitor add: several events', () => {
     useEnvAuth();
     const ok = (result: unknown) => ({ payload: { ok: true, result, ms: 7 } });
 
@@ -138,46 +143,21 @@ describe('monitor add: several events, dollars', () => {
                     ? { status: 404, payload: { ok: false, error: 'No contract in Lido can take this monitor.', code: 'NONE_FIT' } }
                     : ok({ monitors: 2, sentence: `${c.body.input.event} is emitted`, created: [{ id: 'a', name: 'x', contract: 'A' }, { id: 'b', name: 'y', contract: 'B' }], failed: [], skippedCount: 5, skipped: [] }),
         });
-        const out: any = await monitorCommand(['add', '--group', 'Lido', '--event', 'Upgraded', '--event', 'Paused', '--event', 'Nope', '--name', 'Control']);
+        const out: any = await monitorCommand(['add', '--group', 'Lido', '--silence', '--event', 'Upgraded', '--event', 'Paused', '--event', 'Nope', '--name', 'Control']);
         expect(calls.map((c) => c.body.input.event).sort()).toEqual(['Nope', 'Paused', 'Upgraded']);
-        expect(calls.find((c) => c.body.input.event === 'Paused')!.body.input).toEqual({ mode: 'event', group: 'Lido', event: 'Paused', name: 'Control · Paused', confirmMany: true });
+        expect(calls.find((c) => c.body.input.event === 'Paused')!.body.input).toEqual({ mode: 'silence', group: 'Lido', event: 'Paused', name: 'Control · Paused', confirmMany: true });
         expect(printed()).toEqual(['Upgraded: 2 monitors · left out 5', 'Paused: 2 monitors · left out 5', 'Nope: not created — No contract in Lido can take this monitor.']);
         expect(out).toHaveLength(3);
     });
 
-    it('a dollar line is a usd() formula in --when, sent as written', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok({ monitor: { id: 'm1', name: 'Big swaps' }, sentence: 'Swap worth more than $1,000,000', backtest: null }) });
-        await monitorCommand(['add', '--on', 'pool', '--event', 'Swap', '--when', 'usd(abs(amount0), token0()) > 1000000', '--name', 'Big swaps']);
-        expect(calls[0].body.input).toEqual({ mode: 'event', contract: 'pool', event: 'Swap', when: 'usd(abs(amount0), token0()) > 1000000', name: 'Big swaps' });
-    });
-
     it('when every event fails, each reason is said once, as the error', async () => {
         mockApi({ 'POST /api/mainnet/tools/create_monitor': (c) => ({ status: 400, payload: { ok: false, error: `No contract in Uniswap v3 can take this monitor: no ${c.body.input.event} event.`, code: 'NONE_FIT' } }) });
-        await expect(monitorCommand(['add', '--group', 'Uniswap v3', '--event', 'Upgraded', '--event', 'Paused'])).rejects.toThrow(
+        await expect(monitorCommand(['add', '--group', 'Uniswap v3', '--silence', '--event', 'Upgraded', '--event', 'Paused'])).rejects.toThrow(
             'Upgraded: No contract in Uniswap v3 can take this monitor: no Upgraded event.\nPaused: No contract in Uniswap v3 can take this monitor: no Paused event.',
         );
         expect(printed()).toEqual([]);
         mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ({ status: 403, payload: { ok: false, error: 'This workspace has used all of its monitors.', code: 'UPGRADE_REQUIRED' } }) });
-        await expect(monitorCommand(['add', '--on', 'pool', '--event', 'Mint', '--event', 'Burn'])).rejects.toThrow(/^This workspace has used all of its monitors\.$/);
-    });
-
-    it('a dollar line in a token the event names is one monitor on an event metric, for a contract or a whole group', async () => {
-        const metric = { id: 'cm1', name: 'Withdraw in USD · Aave V3', url: 'https://app/metrics/cm1', made: true };
-        const result = (made: boolean) => ({ monitor: { id: 'm7', name: 'Aave withdraw > $25M' }, created: [{ id: 'm7', name: 'Aave withdraw > $25M', contract: 'Aave V3' }], failed: [], sentence: 'Each Withdraw worth more than $25,000,000 on its day', sendsTo: 0, notes: [], metric: { ...metric, made } });
-        mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok(result(true)) });
-        await monitorCommand(['add', '--group', 'Aave V3', '--event', 'Withdraw', '--when', 'usd(amount, reserve) > 25000000', '--name', 'Aave withdraw > $25M']);
-        expect(printed()).toEqual(['Each Withdraw worth more than $25,000,000 on its day', 'Created monitor "Aave withdraw > $25M" (m7) on the metric "Withdraw in USD · Aave V3".']);
-        (console.log as jest.Mock).mockClear();
-        mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok(result(false)) });
-        await monitorCommand(['add', '--on', 'Pool', '--event', 'Withdraw', '--when', 'usd(amount, reserve) > 25000000']);
-        expect(printed()).toEqual(['Each Withdraw worth more than $25,000,000 on its day', 'Created monitor "Aave withdraw > $25M" (m7) on the existing metric "Withdraw in USD · Aave V3".']);
-        (console.log as jest.Mock).mockClear();
-        mockApi({ 'POST /api/mainnet/tools/create_monitor': () => ok(result(true)) });
-        await monitorCommand(['add', '--group', 'Aave V3', '--event', 'Withdraw', '--event', 'Borrow', '--when', 'usd(amount, reserve) > 25000000']);
-        expect(printed()).toEqual([
-            'Withdraw: created "Aave withdraw > $25M" (m7) on the metric "Withdraw in USD · Aave V3" — Each Withdraw worth more than $25,000,000 on its day',
-            'Borrow: created "Aave withdraw > $25M" (m7) on the metric "Withdraw in USD · Aave V3" — Each Withdraw worth more than $25,000,000 on its day',
-        ]);
+        await expect(monitorCommand(['add', '--on', 'pool', '--silence', '--event', 'Mint', '--event', 'Burn'])).rejects.toThrow(/^This workspace has used all of its monitors\.$/);
     });
 });
 

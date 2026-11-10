@@ -1,7 +1,7 @@
 import { run } from '../../src/cli/index';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
 import { parseFlags } from '../../src/cli/commands/_args';
-import { columnsFrom } from '../../src/cli/commands/table';
+import { columnsFrom, readColumnsFrom } from '../../src/cli/commands/table';
 
 // The table and history commands send the tools their input and print the answer; each test pins the input and a few lines.
 const ok = (result: unknown) => ({ payload: { ok: true, result, ms: 7 } });
@@ -240,5 +240,16 @@ describe('descriptions', () => {
     it('a bare --description is refused', async () => {
         mockApi({});
         await expect(run(['table', 'update', 'Withdrawal rounds', '--description'])).rejects.toThrow(/--description takes a sentence/);
+    });
+});
+
+describe('table create: --column on a state table is a read on each open row (2026-11-08)', () => {
+    test('Label=view(args): id() is the row id, {Label} a cell, then .output and ; on / token / decimals', () => {
+        expect(readColumnsFrom(parseFlags(['--column', 'Owed=accountDebt(id())']))).toEqual([{ label: 'Owed', read: 'accountDebt', args: [':id'] }]);
+        expect(readColumnsFrom(parseFlags(['--column', 'Objections=getMotion(id()).objectionsAmount; decimals 18']))).toEqual([{ label: 'Objections', read: 'getMotion', args: [':id'], output: 'objectionsAmount', decimals: 18 }]);
+        expect(readColumnsFrom(parseFlags(['--column', 'Owner stETH=balanceOf({Owner}); on 0xAE7ab96520DE3A18E5e111B5EaAb095312D7fE84; token self']))).toEqual([{ label: 'Owner stETH', read: 'balanceOf', args: ['{Owner}'], target: '0xae7ab96520de3a18e5e111b5eaab095312d7fe84', token: 'self' }]);
+        expect(readColumnsFrom(parseFlags(['--column', 'Pos=getPosition({Trader}, id(), 0)']))).toEqual([{ label: 'Pos', read: 'getPosition', args: ['{Trader}', ':id', '0'] }]);
+        expect(() => readColumnsFrom(parseFlags(['--column', 'Amount=amountOfStETH']))).toThrow(/a view read on each open row/);
+        expect(() => readColumnsFrom(parseFlags(['--column', 'X=f(id()); on steth']))).toThrow(/0x address/);
     });
 });

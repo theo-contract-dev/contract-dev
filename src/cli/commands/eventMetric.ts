@@ -10,30 +10,25 @@ import { runTool } from '../tools';
 import { chainFlag } from '../data';
 import { printResult } from './_print';
 
+/** The units a metric takes; said before the call so a wrong one is explained, not refused. */
+const UNITS = ['usd', 'count', 'number'];
+export function checkUnit(unit: unknown): void {
+  if (unit === undefined || UNITS.includes(String(unit))) return;
+  throw new Error(`--unit is usd, count or number, not "${String(unit)}". Dollars are usd, a tally is count, anything else (a token amount, a rate, a percentage) is number: a percentage is --unit number with the value scaled (--value "u * 100") and % in the name or description.`);
+}
+
+
 export const EVENT_METRIC_HELP = `Event metrics — a number added up from events, each read exactly at its own transaction:
-  contract-dev metric define "<name>" --event <Event> [--event …] [--group <group> | --contract <ref>]
-                              [--read "<name>=<call>[.<output>] [on <target>] [with <arg>, …]"]… [--fixed <read>]…
-                              [--field "<name>=<expr>[ on <Event>]"]… [--value "<expr>"] [--where "<rule>"]
-                              [--aggregate sum|count|avg|min|max|latest] [--split contract|none|<name>] [--unit usd|count|number]
-                              [--line "<an index>"]          What one line of the split is, as the person would say it; needed
-                                                      when --split is a parameter, read or field (--split index --line "an index")
-                              [--history <days>] [--keep <param>[,<param>…] | --keep all]
-                              [--description "<sentence>"]   One sentence saying what it measures, the top of its page
-                              [--pair "<Event> [on <field>]"]…   Another event of the same transaction, its fields read as Event.field
-                                                      (--event BridgeStarted --pair "DZapBridgeStarted on transactionId" --split DZapBridgeStarted.integrator)
-                                                      Saved at once; its history is read back in the background and
-                                                      kept up to date
-                                                      A field "on <Event>" is for that event alone: the same name once per
-                                                      event when the events name a thing differently (--field "amt=amount
-                                                      on BridgeStarted" --field "amt=amountIn on CctpBridgeTransferStarted")
+  contract-dev metric define "<name>" --on <what> --each <Event>… [--value …] [--where …] [--read …]… [--field …]…
+                              [--aggregate …] [--split …] [--unit …] [--keep …] [--pair …] [--history <days>] [--hidden]
+                                                      An ACTIVITY metric: what happened, added up from events. The
+                                                      full grammar, and a STATE metric (--call): metric define help
   contract-dev metric events                          The event metrics: scope, events, unit, status, records
   contract-dev metric show <name> [--days <n>] [--by hour|day] [--split <contract|key>] [--records <n>] [--newest]
                                                       Its total, the largest contracts, a series, and the records behind
                                                       it with their parameters, reads and fields
   contract-dev metric update <name> [--name "<new>"] [any define flag]   Replace those parts; the history is read again
   contract-dev metric delete <name>                   Remove an event metric, or a tracked value by label or id (as untrack)
-  contract-dev metric pin <name> | unpin <name>       Show the metric in the overview's header, after Contracts and Activity
-                                                      (five at most, in the order pinned), or take it off
   contract-dev metric table "<name>" --table "<table>" [--column "<label>"] [--among active|done|all]
                               [--aggregate sum|count|avg|min|max] [--split contract|none] [--unit usd|count|number]
                                                       A number over a table's rows, recorded each minute from now
@@ -161,6 +156,7 @@ export function definitionFrom(flags: ParsedFlags): Record<string, unknown> {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }
+  checkUnit(input.unit);
   const history = flag(flags, 'history');
   if (history !== undefined) {
     const n = Number(String(history).replace(/d$/, ''));
@@ -200,7 +196,8 @@ export async function defineEventMetric(args: string[]): Promise<unknown> {
   const definition = definitionFrom(flags);
   if (!definition.events) throw new Error('--event names what is counted: --event Swap.');
   const description = flag(flags, 'description');
-  return print('define_metric', { name, ...scopeInput(flags), ...(description ? { description } : {}), ...definition });
+  // --hidden: off the Metrics page, a metric made only for a report (2026-11-06)
+  return print('define_metric', { name, ...scopeInput(flags), ...(description ? { description } : {}), ...definition, ...(flag(flags, 'hidden') !== undefined ? { listed: false } : {}) });
 }
 
 /** `metric show <name>` for an event metric; null when no event metric has that name. */
@@ -208,7 +205,10 @@ export async function showEventMetric(args: string[]): Promise<unknown> {
   const flags = parseFlags(args);
   const metric = (flags._ as string[]).join(' ').trim();
   const input: Record<string, unknown> = { metric };
-  const days = flag(flags, 'days') ?? flag(flags, 'range');
+  // --range takes the state metric words too (24h, 7d, 30d, 90d, all), so a group or table total reads
+  // like a metric on one contract; all is the longest the server keeps for these (90 days), 2026-11-09
+  const range = flag(flags, 'range');
+  const days = flag(flags, 'days') ?? (range === '24h' ? '1' : range === 'all' ? '90' : range);
   if (days !== undefined) {
     const n = Number(String(days).replace(/d$/, ''));
     if (!Number.isInteger(n) || n < 1 || n > 365) throw new Error('--days takes a number of days from 1 to 365.');
@@ -302,7 +302,7 @@ export function parseFormulaCall(raw: string): Record<string, unknown> {
 /** `track formula <contract> --label … --call … --value …`: a value worked out from several views at one block. */
 export async function trackFormula(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) {
-    console.log(`contract-dev track formula <contract> --label "<name>" --call "<name>=<call> [on <target>] [with <args>] [decimals <n>]"… --value "<expression>" [--chain <id>] [--preview]
+    console.log(`contract-dev track formula <contract> --label "<name>" --call "<name>=<call> [on <target>] [with <args>] [decimals <n>]"… --value "<expression>" [--chain <id>] [--preview] [--hidden]
 
 A value worked out from several reads at the same block, read every minute, charted, reported and monitored
 like any tracked value. A call is a view (getBuffer(), getFee(address) with 0x…; on <contract> unless "on"
@@ -314,7 +314,8 @@ worked out exactly; dollars only through a stated token: usd(held, 0xa0b8…) at
 by the token's decimals, where the token is its 0x address or a call that answers one (t0 = token0()).
 ago(<call>, 7d) is the call as it answered that long before the value's block (1m to 365d): a staking token's
 trailing yield is (rate - ago(rate, 7d)) / ago(rate, 7d) * 365 / 7 * 100. --preview reads it once now, with
-each call's answer (and each ago() reading), and saves nothing.
+each call's answer (and each ago() reading), and saves nothing. --hidden keeps it off the Metrics page: a value
+made only for a report or a monitor.
 
 Examples:
   contract-dev track formula 0xae7ab96520de3a18e5e111b5eaab095312d7fe84 --label "stETH share rate" \\
@@ -327,7 +328,7 @@ Examples:
     return;
   }
   const flags = parseFlags(args);
-  onlyFlags(flags, 'track formula', ['label', 'call', 'value', 'chain', 'preview']);
+  onlyFlags(flags, 'track formula', ['label', 'call', 'value', 'chain', 'preview', 'hidden']);
   const contract = requirePositional(flags._ as string[], 0, 'contract');
   const label = flag(flags, 'label');
   if (!label) throw new Error('--label names the value: --label "Free buffer".');
@@ -336,7 +337,8 @@ Examples:
   const value = flag(flags, 'value');
   if (!value) throw new Error('--value is the expression over the calls\' names: --value "pooled / shares".');
   const chainId = chainFlag(flags);
-  const input = { contract, label, calls, value, ...(chainId != null ? { chainId } : {}) };
+  // --hidden: off the Metrics page, a value made only for a report or a monitor (2026-11-06)
+  const input = { contract, label, calls, value, ...(chainId != null ? { chainId } : {}), ...(flag(flags, 'hidden') !== undefined ? { listed: false } : {}) };
   if (flag(flags, 'preview') === undefined) return print('track_formula', input);
   const result = await runTool<FormulaPreview>(requireAuth(), 'track_formula', { ...input, preview: true });
   for (const line of formulaPreviewLines(result)) console.log(line);
@@ -392,6 +394,7 @@ export async function defineGroupMetric(args: string[]): Promise<unknown> {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
   }
+  checkUnit(input.unit);
   return print('define_group_metric', input);
 }
 
@@ -406,6 +409,7 @@ export async function defineItemMetric(args: string[]): Promise<unknown> {
   for (const key of ['column', 'among', 'aggregate', 'split', 'unit', 'description'] as const) {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
+    if (key === 'unit') checkUnit(v);
   }
   return print('define_item_metric', input);
 }

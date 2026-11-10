@@ -1,5 +1,6 @@
 import { run } from '../../src/cli/index';
-import { parseMeasure } from '../../src/cli/commands/query';
+import { clausesFromFlags, parseMeasure } from '../../src/cli/commands/query';
+import { parseFlags } from '../../src/cli/commands/_args';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
 
 const ok = (result: unknown) => ({ status: 200, payload: { ok: true, result } });
@@ -414,4 +415,21 @@ describe('live tables and snapshots', () => {
         await expect(run(['table', 'create', 'X', '--from', 'events', '--group', 'G'])).rejects.toThrow(/--event names what each row is/);
         await expect(run(['table', 'create', 'X', '--from', 'events', '--event', 'Swap'])).rejects.toThrow(/--group <group> or --contract/);
     });
+});
+
+describe('--top', () => {
+  const clauses = (args: string[]) => clausesFromFlags(parseFlags(args));
+  it('keeps the n largest groups or rows', () => {
+    expect(clauses(['--by', 'wallet', '--top', '10'])).toMatchObject({ by: ['wallet'], limit: 10 });
+    expect(clauses(['--by', 'wallet', '--sum', '{vol}', '--top', '5'])).toMatchObject({ by: ['wallet'], measure: { fn: 'sum', expr: '{vol}' }, limit: 5 });
+    expect(clauses(['--sort', '{Value}', '--top', '3'])).toMatchObject({ sort: '{Value}', limit: 3 });
+    expect(clauses(['--by', 'wallet', '--top', '10']).asc).toBeUndefined();
+  });
+  it('refuses what it cannot rank or a conflicting window', () => {
+    expect(() => clauses(['--top', '10'])).toThrow(/--top ranks something/);
+    expect(() => clauses(['--by', 'wallet', '--top'])).toThrow(/--top takes how many/);
+    expect(() => clauses(['--by', 'wallet', '--top', '0'])).toThrow(/--top takes how many/);
+    expect(() => clauses(['--by', 'wallet', '--top', '10', '--limit', '5'])).toThrow(/not both/);
+    expect(() => clauses(['--sort', '{Value}', '--asc', '--top', '3'])).toThrow(/--top keeps the largest/);
+  });
 });

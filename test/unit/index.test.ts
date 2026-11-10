@@ -13,13 +13,12 @@ describe('entrypoint', () => {
     it('noun aliases route to the same commands', async () => {
         const calls = mockApi({
             'GET /api/mainnet/accounts': () => ({ payload: { accounts: [] } }),
-            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [] } }),
-            'POST /api/mainnet/tools/describe_metric': () => ({ payload: { ok: true, result: { metrics: [] }, ms: 1 } }),
+            'POST /api/mainnet/tools/list_metrics': () => ({ payload: { ok: true, result: { metrics: [] }, ms: 1 } }),
             'GET /api/mainnet/incidents': () => ({ payload: { incidents: [], days: 7 } }),
         });
         await run(['contracts', 'list']);
         await run(['metric', 'list']);
         await run(['incident']);
-        expect(calls.map((c) => c.path.split('?')[0])).toEqual(['/api/mainnet/accounts', '/api/mainnet/tracked-metrics', '/api/mainnet/tools/describe_metric', '/api/mainnet/incidents']);
+        expect(calls.map((c) => c.path.split('?')[0])).toEqual(['/api/mainnet/accounts', '/api/mainnet/tools/list_metrics', '/api/mainnet/incidents']);
     });
 });

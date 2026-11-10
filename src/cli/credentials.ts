@@ -132,6 +132,26 @@ function describeFailure(err: unknown, apiUrl: string, timeoutMs: number): Error
   return new Error(`Could not reach ${apiUrl}: ${message}`);
 }
 
+// Every request this process made: method, path (no query string), the status answered (0 when
+// nothing answered) and how long it took. The command report (./telemetry) sends them, so the
+// Activity page can say which call of a slow or failed command was the one.
+export interface RequestRecord {
+  method: string;
+  path: string;
+  status: number;
+  ms: number;
+}
+const requestLog: RequestRecord[] = [];
+
+export function requestsMade(): RequestRecord[] {
+  return requestLog.slice();
+}
+
+/** Tests only: a fresh log between commands. */
+export function forgetRequests(): void {
+  requestLog.length = 0;
+}
+
 // Authenticated call against the contract.dev app API.
 export async function apiRequest<T>(
   auth: ResolvedAuth,
@@ -142,17 +162,26 @@ export async function apiRequest<T>(
 ): Promise<T> {
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const workspace = workspaceOverrideRef();
-  const attempt = () =>
-    fetch(`${auth.apiUrl}${path}`, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${auth.apiKey}`,
-        ...(workspace ? { 'X-Contract-Dev-Workspace': workspace } : {}),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+  const attempt = async () => {
+    const t0 = Date.now();
+    try {
+      const res = await fetch(`${auth.apiUrl}${path}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${auth.apiKey}`,
+          ...(workspace ? { 'X-Contract-Dev-Workspace': workspace } : {}),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      requestLog.push({ method, path: path.split('?')[0], status: res.status, ms: Date.now() - t0 });
+      return res;
+    } catch (err) {
+      requestLog.push({ method, path: path.split('?')[0], status: 0, ms: Date.now() - t0 });
+      throw err;
+    }
+  };
 
   let response: Response;
   try {

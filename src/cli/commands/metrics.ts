@@ -4,12 +4,15 @@ import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { parseChainId, WatchedAccount } from './watch';
 import { chainFlag, chainOf, resolveContract } from '../data';
 import { runTool } from '../tools';
-import { EVENT_METRIC_HELP, defineEventMetric, defineGroupMetric, defineItemMetric, deleteEventMetric, findEventMetric, isEventMetric, listEventMetrics, monitorEventMetric, showEventMetric, trackFormula, updateEventMetric } from './eventMetric';
+import { defineMetricCommand, listMetricsCommand, resolveAnyMetric } from './_define';
+import { EVENT_METRIC_HELP, defineEventMetric, defineGroupMetric, defineItemMetric, deleteEventMetric, isEventMetric, listEventMetrics, monitorEventMetric, showEventMetric, trackFormula, updateEventMetric } from './eventMetric';
 
 const TRACK_HELP = `contract-dev track — track an on-chain value as a metric (charted on /metrics, usable by monitors)
 
 Usage:
-  contract-dev track <address|name> <kind> [--chain <id>] [--label "<name>"] [kind flags]
+  contract-dev track <address|name> <kind> [--chain <id>] [--label "<name>"] [--hidden] [kind flags]
+                                                 --hidden keeps it off the Metrics page: a value made only for a
+                                                 report or a monitor, gone with the report when nothing else reads it
   contract-dev untrack <id|label> [...]          Stop tracking (also removes monitors that read it)
 
 Kinds:
@@ -27,37 +30,28 @@ Examples:
   contract-dev track 0xVault… function --function "totalAssets() returns (uint256)" --decimals 18
 `;
 
-const METRICS_HELP = `contract-dev metrics — the workspace's tracked metrics
+const METRICS_HELP = `contract-dev metrics — the workspace's metrics, of two kinds
 
-Usage:
-  contract-dev metrics [--address <addr>] [--chain <id>]    List metrics: tracked values (id, kind, chain, address, label,
-                                                            value), then event, table and group metrics (id, kind, scope,
-                                                            name, status); --address or --chain lists tracked values only
-  contract-dev metrics show <id|label> [--range 24h|7d|30d|90d|all] [--limit <n>]
-                                                            The metric and its recent history
-  contract-dev metrics rename <id|label> "<label>"
-  contract-dev metrics pause <id|label>                     Stop sampling (keeps history)
-  contract-dev metrics resume <id|label>
-  contract-dev metrics decimals <id|label> <n|clear>        Display scale — re-interprets the stored history
-                                                            (monitor thresholds on it were typed against the old scale)
-  contract-dev metrics pin <id|label|name>                  Show the metric in the overview's header, after Contracts
-                                                            and Activity (five at most, in the order pinned): a tracked
-                                                            value, or an event, table or group metric by its name
-  contract-dev metrics unpin <id|label|name>                Take it off the header
-  contract-dev metrics export <id|label> [--range 24h|7d|30d|90d|all] [--format csv|json]
-                                                            The metric's history: at, value, block, tx (default: csv)
-  contract-dev track …                                      Start tracking (try: track help; also: metrics track …)
-  contract-dev untrack <id|label>                           Stop tracking (also: metrics untrack …)
+A STATE metric says how things stand (a balance, a supply, a view's result, a column added up): read every
+block, drawn as a level. An ACTIVITY metric says what happened over a window (swaps, fees, deposits): added
+up from events, drawn as bars. One command defines either, on a contract, a wallet, a group or a table.
 
-A metric may be referred to by its id or, when unambiguous, its label. \`--chain\` takes a
-chain id or name (ethereum, arbitrum, base, …); track reads a watched contract's own chain and
-asks for --chain otherwise. Tracking a value that is already tracked returns the existing metric.
+  contract-dev metrics [--kind state|activity] [--hidden] [--on <what>]   Every metric: kind, name, on, reads, unit, id
+  contract-dev metric define "<name>" --on <what> --call "<read>"… | --each <Event>…   (try: metric define help)
+  contract-dev metric show <id|name> [--range 24h|7d|30d|90d|all] [--days <n>] [--limit <n>]
+  contract-dev metric delete <id|name>…
+  contract-dev metric rename <id|name> "<new name>"
+  contract-dev metric pause <id|name> / resume <id|name>     A state metric on one contract or wallet: stop reading (history kept) / go on
+  contract-dev metric decimals <id|name> <n|clear>          Its display scale (one contract or wallet)
+  contract-dev metric export <id|name> [--range …] [--format csv|json]
+  contract-dev metric monitor <metric> --name "…" --when "<formula>"   An alert on it (or: notify add alert)
+
+A metric is named by its id or, when one has it, its name. The older spellings still work and say so:
+track <address> <kind> · track formula · metric events · metric table · metric group · group column add.
 `;
 
 // The serialized TrackedOnchainValue row the app's API returns (lastValueRaw decoded to lastValue).
 export interface TrackedMetric {
-  /** When it was pinned to the overview's header (ISO); null or absent = not pinned. */
-  pinnedAt?: string | null;
   id: string;
   chainId: number;
   address: string;
@@ -264,6 +258,7 @@ async function subjectName(auth: ResolvedAuth, chainId: number, address: string)
 }
 
 export async function trackCommand(args: string[]): Promise<TrackedMetric | void> {
+  if (args.length > 0 && !['help', '-h', '--help'].includes(args[0]) && args[1] !== 'formula' && args[0] !== 'formula') console.error('`track` is the older spelling: contract-dev metric define "<name>" --on <contract> --call "<read>" (try: metric define help).');
   // a calculated value: several calls and an expression (src/cli/commands/eventMetric)
   if (args[0] === 'formula') return (await trackFormula(args.slice(1))) as void;
   if (args[0] === 'help' || args[0] === '-h' || args[0] === '--help' || args[0] === undefined) {
@@ -315,6 +310,8 @@ export async function trackCommand(args: string[]): Promise<TrackedMetric | void
     kind: kind.api,
     ...(params && Object.keys(params).length ? { params } : {}),
     ...(label ? { label } : {}),
+    // --hidden: off the Metrics page, a value made only for a report or a monitor (2026-11-06)
+    ...(flag(flags, 'hidden') !== undefined ? { listed: false } : {}),
   });
   const metric = payload.trackedMetric;
   const verb = payload.created === false ? 'Already tracking' : 'Tracking';
@@ -353,21 +350,25 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
   const [sub, ...rest] = args;
   switch (sub) {
     case undefined:
-    case 'list':
-      return await listMetrics(sub === undefined ? args : rest);
+    case 'list': {
+      // one list of both kinds (2026-11-07); the old filters by address or chain still list tracked values alone
+      const a = sub === undefined ? args : rest;
+      return a.some((x) => x === '--address' || x === '--chain') ? await listMetrics(a) : await listMetricsCommand(a);
+    }
     case 'events':
-      return await listEventMetrics();
-    case 'show':
-      // a tracked value's id or label first; a name no tracked value has may be an event metric's
-      try {
-        return await showMetric(rest);
-      } catch (e) {
-        const ref = (parseFlags(rest)._ as string[]).join(' ').trim();
-        if (e instanceof Error && /No tracked metric matches/.test(e.message) && ref && (await isEventMetric(ref).catch(() => false))) return await showEventMetric(rest);
-        throw e;
-      }
+      console.log('`metric events` is now `metrics --kind activity`.');
+      return await listMetricsCommand(['--kind', 'activity']);
+    case 'show': {
+      // by id or name, whichever kind: a state metric's readings, an activity metric's records
+      const flags = parseFlags(rest);
+      const ref = (flags._ as string[]).join(' ').trim();
+      if (!ref) throw new Error('Missing required metric: contract-dev metric show <id|name>');
+      const found = await resolveAnyMetric(ref);
+      const after = rest.filter((x) => !(flags._ as string[]).includes(x));
+      return found.source === 'tracked' ? await showMetric([found.id, ...after]) : await showEventMetric([found.id, ...after]);
+    }
     case 'define':
-      return await defineEventMetric(rest);
+      return await defineMetricCommand(rest);
     case 'update':
       return await updateEventMetric(rest);
     case 'delete':
@@ -387,10 +388,6 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
       return await patchMetric(rest, 'resume');
     case 'decimals':
       return await patchMetric(rest, 'decimals');
-    case 'pin':
-      return await pinMetric(rest, true);
-    case 'unpin':
-      return await pinMetric(rest, false);
     case 'export':
       return await exportMetric(rest);
     case 'track':
@@ -406,8 +403,8 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
       console.log(EVENT_METRIC_HELP);
       return;
     default:
-      // `metrics --address …` — flags only, no subcommand.
-      if (sub.startsWith('--')) return await listMetrics(args);
+      // `metrics --kind …` — flags only, no subcommand.
+      if (sub.startsWith('--')) return args.some((x) => x === '--address' || x === '--chain') ? await listMetrics(args) : await listMetricsCommand(args);
       console.error(`Unknown metrics subcommand: ${sub}\n`);
       console.error(METRICS_HELP);
       process.exit(1);
@@ -444,7 +441,7 @@ async function listMetrics(args: string[]): Promise<Array<TrackedMetric | Listed
     return [];
   }
   for (const m of tracked) {
-    const state = `${m.enabled ? '' : '  (paused)'}${m.pinnedAt ? '  (pinned)' : ''}`;
+    const state = m.enabled ? '' : '  (paused)';
     console.log(
       `${m.id}  ${m.kind.padEnd(14)} ${String(m.chainId).padEnd(6)} ${shortHex(m.address)}  ${(m.label ?? '').padEnd(36)} ${formatValue(currentValue(m))}${state}`,
     );
@@ -452,7 +449,7 @@ async function listMetrics(args: string[]): Promise<Array<TrackedMetric | Listed
   if (others.length) {
     if (tracked.length) console.log('');
     console.log('Event, table and group metrics');
-    for (const m of others) console.log(`${m.id}  ${(METRIC_KIND_WORDS[m.kind] ?? m.kind).padEnd(14)} ${m.name.padEnd(36)} ${(m.scope ?? '').padEnd(28)} ${listedStatus(m)}${m.pinned ? '  (pinned)' : ''}`);
+    for (const m of others) console.log(`${m.id}  ${(METRIC_KIND_WORDS[m.kind] ?? m.kind).padEnd(14)} ${m.name.padEnd(36)} ${(m.scope ?? '').padEnd(28)} ${listedStatus(m)}`);
   } else if (othersFailed) console.log('\nEvent metrics could not be listed just now: contract-dev metric events.');
   return [...tracked, ...others];
 }
@@ -523,7 +520,16 @@ async function exportMetric(args: string[]): Promise<SeriesPayload> {
   if (format !== 'csv' && format !== 'json') throw new Error('--format must be csv or json');
 
   const auth = requireAuth();
-  const metric = await resolveMetric(auth, ref);
+  let metric: TrackedMetric;
+  try {
+    metric = await resolveMetric(auth, ref);
+  } catch (e) {
+    // a group or table total, or an activity metric: added up, with no readings to export (2026-11-09)
+    if (!(e instanceof Error && /No tracked metric matches/.test(e.message))) throw e;
+    const other = await resolveAnyMetric(ref).catch(() => null);
+    if (!other || other.source === 'tracked') throw e;
+    throw new Error(`${other.name} is added up from ${other.reads}, so it has no readings to export. Export is for a state metric on one contract or wallet; metric show "${other.name}" --json prints its series.`);
+  }
   const payload = await apiRequest<SeriesPayload>(auth, 'GET', `/api/mainnet/tracked-metrics/${metric.id}/series?range=${range}`);
   if (payload.range && payload.range !== range) console.error(`Note: ${payload.range} is the widest window on this plan; exporting that.`);
   if (format === 'json') {
@@ -544,7 +550,24 @@ async function patchMetric(args: string[], action: 'rename' | 'pause' | 'resume'
   const positional = flags._ as string[];
   const ref = requirePositional(positional, 0, 'metric id or label');
   const auth = requireAuth();
-  const metric = await resolveMetric(auth, ref);
+  let metric: TrackedMetric;
+  try {
+    metric = await resolveMetric(auth, ref);
+  } catch (e) {
+    if (!(e instanceof Error && /No tracked metric matches/.test(e.message))) throw e;
+    const other = await resolveAnyMetric(ref);
+    if (other.source === 'tracked') throw e;
+    if (action === 'rename') {
+      const name = positional.slice(1).join(' ').trim();
+      if (!name) throw new Error('Missing required name');
+      const { metric: renamed } = await apiRequest<{ metric: { id: string; name: string } }>(auth, 'PATCH', `/api/mainnet/custom-metrics/${other.id}`, { name });
+      console.log(`Renamed ${other.id} to "${renamed.name}".`);
+      return renamed as unknown as TrackedMetric;
+    }
+    // pause, resume and decimals are for a state metric on one contract or wallet; a group or table total
+    // and an activity metric are added up, not read (2026-11-09: was "is an state metric … it is not sampled")
+    throw new Error(`${other.name} is added up from ${other.reads}, so it can't be ${action === 'decimals' ? 'given a display scale' : 'paused or resumed'}. Pause, resume and decimals are for a state metric on one contract or wallet. Delete it (metric delete) or define it again.`);
+  }
 
   let body: Record<string, unknown>;
   switch (action) {
@@ -591,36 +614,6 @@ async function patchMetric(args: string[], action: 'rename' | 'pause' | 'resume'
     }
   }
   return trackedMetric;
-}
-
-/**
- * `metric pin|unpin <ref>`: the metric on the overview's header strip, after Contracts and Activity (five
- * at most, in the order pinned), or off it. A tracked value by id or label first; a name no tracked
- * value has may be an event, table or group metric's. A pin past the strip's room is refused by the
- * server with the reason.
- */
-async function pinMetric(args: string[], pinned: boolean): Promise<unknown> {
-  const flags = parseFlags(args);
-  const ref = (flags._ as string[]).join(' ').trim();
-  if (!ref) throw new Error(`Missing required metric: contract-dev metric ${pinned ? 'pin' : 'unpin'} <id|label|name>`);
-  const auth = requireAuth();
-  let tracked: TrackedMetric | null = null;
-  try {
-    tracked = await resolveMetric(auth, ref);
-  } catch (e) {
-    if (!(e instanceof Error && /No tracked metric matches/.test(e.message))) throw e;
-  }
-  if (tracked) {
-    const { trackedMetric } = await apiRequest<{ trackedMetric: TrackedMetric }>(auth, 'PATCH', `/api/mainnet/tracked-metrics/${tracked.id}`, { pinned });
-    const name = tracked.label ?? tracked.kind;
-    console.log(pinned ? `Pinned ${name} to the overview's header.` : `Unpinned ${name}.`);
-    return trackedMetric;
-  }
-  const other = await findEventMetric(ref);
-  if (!other) throw new Error(`No metric matches "${ref}" (run \`contract-dev metrics\` to list them).`);
-  const { metric } = await apiRequest<{ metric: { id: string; name: string; pinnedAt: string | null } }>(auth, 'PATCH', `/api/mainnet/custom-metrics/${other.id}`, { pinned });
-  console.log(pinned ? `Pinned ${metric.name} to the overview's header.` : `Unpinned ${metric.name}.`);
-  return metric;
 }
 
 export async function untrackCommand(args: string[]): Promise<Array<{ id: string; label: string | null }> | void> {

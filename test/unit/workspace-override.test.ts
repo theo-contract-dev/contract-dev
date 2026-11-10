@@ -18,13 +18,12 @@ describe('--workspace', () => {
     it('sends the named workspace on every request and leaves the command line intact', async () => {
         const calls = mockApi({
             'GET /api/mainnet/accounts': accounts,
-            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [] } }),
-            'POST /api/mainnet/tools/describe_metric': () => ({ payload: { ok: true, result: { metrics: [] }, ms: 1 } }),
+            'POST /api/mainnet/tools/list_metrics': () => ({ payload: { ok: true, result: { metrics: [] }, ms: 1 } }),
         });
         await cli(['watch', 'list', '--workspace', 'benqi']);
         await cli(['--workspace=benqi', 'metrics']);
-        expect(calls.map((c) => c.workspace)).toEqual(['benqi', 'benqi', 'benqi']);
-        expect(calls.map((c) => c.path.split('?')[0])).toEqual(['/api/mainnet/accounts', '/api/mainnet/tracked-metrics', '/api/mainnet/tools/describe_metric']);
+        expect(calls.map((c) => c.workspace)).toEqual(['benqi', 'benqi']);
+        expect(calls.map((c) => c.path.split('?')[0])).toEqual(['/api/mainnet/accounts', '/api/mainnet/tools/list_metrics']);
     });
 
     it('reads CONTRACT_DEV_WORKSPACE, and the flag wins over it', async () => {

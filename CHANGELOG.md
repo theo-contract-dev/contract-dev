@@ -1,5 +1,102 @@
 # Changelog
 
+## 4.4.0 — 2026-11-08
+
+One command for everything the workspace sends. `report …` and `monitor …` (and `reports`, `monitors`) are retired:
+each answers with the `notify` line to use (`report create` → `notify add report` or `notify add alert`, `report
+update` / `monitor set` → `notify set`, `report list` → `notify --type report`, and so on). `notify help` now carries
+every report flag itself.
+
+Two alerts on a condition the CLI could not make before:
+- `notify add alert "<name>" --on <contract> --overdue --event <Open> --answer <Close>… [--match <field>]… --for 3d`:
+  something opened and not answered in time (a withdrawal requested and not claimed), each open paired with its own
+  answer on the fields they share; without `--match` any answer closes the oldest open.
+- `notify add alert "<name>" --on table:"<table>" --column "<label>" --when "value < 1.1"`: a row threshold, the rule on
+  every open row of a state table, on a read column. Where it sends is set once on the rule (`--to`, and `notify set
+  <name> --to <dest>…` or `--to none` later) and every row's alert follows it, rows that open later included; it no
+  longer pages every destination. `notify` lists it as one line however many rows carry it (Alerting while any row
+  is); `show` lists the rows, `pause`, `resume` and `delete` act on them all.
+
+Past a plan's limit (more rows, contracts or metrics than the plan allows), the refusal now ends with where to go
+next: upgrade in Settings, or contact the team for more than the plan allows.
+
+Metrics:
+- `metric show` on a group or table total, or an activity metric, takes `--range 24h` and `--range all` as well as `7d`,
+  `30d` and `90d` (`24h` and `all` used to fail with "--days takes a number").
+- `metric pause`, `resume`, `decimals` and `export` on a metric that is added up (a group or table total, an activity
+  metric) say they are for a state metric on one contract or wallet, instead of "is an state metric … not sampled" or
+  "No tracked metric matches".
+- A state metric is described as read every minute, not every block, in the help, the README and the skill.
+
+Gone:
+- `metric pin` and `metric unpin`, and the `(pinned)` mark in `metrics`: the overview no longer shows pinned
+  metrics.
+- `--digest` on an alert on something happening. It sends once per block, a block's matches in one message; figures
+  every so often are a report with `--every`. `--no-digest` still takes an older digest off.
+- An alert on a condition from an event firing (`--event` without `--silence`, `--failures` or `--overdue`): an event
+  firing is an alert on something happening, `--event <Name> --message "…"`.
+- Alerts on a function call (`--method`, `--on-call`) and silence on a method or on any call (`--silence --method`,
+  `--silence` alone), while calls are not collected: they are refused and say to follow the event the method emits.
+  `--silence` takes `--event`.
+
+Fixed: `table create … --each <Event> --id <field> --column "Owed=accountDebt(id())"` makes the read column it says
+(it was dropped without a word): the view by name, `id()` where the row id goes, `{Label}` for a cell of the row,
+then `.output`, `; on 0x…`, `; token <token>`, `; show usd`, `; decimals <n>`.
+
+Also fixed:
+- `--top <n>` on `query` and `table create` keeps the n largest (the groups by their first measure with `--by`, the
+  rows by `--sort` without); it was taken and dropped without a word, so `--by wallet --top 10` printed 25 groups. The
+  help's "Whales" example groups `--by wallet` (`signer` is not a column of a row).
+- `table create --each <Event>` with `--status`, a plain `--column <name>`, or `--sum`/`--count` beside `--by` stays
+  an activity table; each of them made a state table of the events, silently. A state table is `--id`, `--finished`,
+  `--formula`, a read column (`--column "Owed=accountDebt(id())"`), or `--count`/`--sum` without `--by`.
+
+## 4.3.0 — 2026-11-07
+
+One grammar for a metric, of two kinds. `metric define "<name>" --on <what> --call "<read>"…` makes a STATE metric
+(how things stand, read every block: a balance, a supply, a formula over several reads; on a group every member read
+and added up, `--split contract` keeps each) and `--each <Event>`… an ACTIVITY metric (what happened, from events).
+`--on` is a contract or wallet by name or address, `tag:<group>`, `table:"<name>"` (a state table's column added up,
+or a table over events counted) or `workspace`. A state metric works on any address; an activity metric watches an
+address given as one and says so. `metrics` lists both kinds as one (`--kind`, `--hidden`); `metric show`, `rename`,
+`pin` and `delete` take either by name or id. The older spellings (`track`, `track formula`, `metric events`,
+`metric table`, `metric group`) still work and say the new one.
+
+The same words inline, anywhere a metric is named: a report row `--row metric:"<name>"` takes any metric, and
+`--row "metric:<name>=on steth; call totalSupply()"` defines one for the report, off the Metrics page and deleted
+with it; an alert's `--on metric:"<name>"` or `--on "metric:<name>=…"` the same. A report's `--table
+"<name>=on tag:pools; each Swap; where … | top 5"` makes a live table for the report, off /tables, deleted with it.
+
+Tables take the same words: `table create "<name>" --on <what> --each <Event>` (with `--id`, `--column`,
+`--finished`: a STATE table, one row per thing; alone: an ACTIVITY table, one row per event), `--rows
+transfers|transactions|wallets`, `--on table:"<other>"` to build on one. The older `--group`, `--contract`,
+`--opens`, `--event` and `--from` still work.
+
+`alert add …` and `alert list` are `notify add alert` and `notify list --type alert`; `alerts` alone is still what
+opened. In `notify add alert`, a method called on the contract is `--method <name>` (`--call` is a read now, as a
+metric takes one). In `report create`, the weekday is `--day` (`--on <weekday>` still taken).
+
+## 4.2.0 — 2026-10-31
+
+### Added
+- `notify`: every notification in the app's two types, a **report** (figures on a schedule) and an **alert** (a
+  message when something happens, once per block, or when a condition is met, with the all-clear when it clears;
+  `--remind` re-sends it hourly until acknowledged). `notify` lists them
+  with the app's statuses (Active or Paused; an active monitor also Alerting or No data); `notify add report|alert`
+  makes one; `show`, `set`, `rename`, `pause`, `resume`, `delete`, `send` and `ack` take any of them by name.
+  An update sends once per block, the block's matches in one message (no `--digest`).
+- `--row "<kind>@<scope>"`: a report's default line (transactions, volume, wallets, an event's count) covers its own
+  scope, tag:<group> or a contract, so one report holds the workspace's and a group's side by side.
+- `--hidden` on `track`, `track formula` and `metric define`: a value made only for a report or a monitor, kept off
+  the Metrics page. Deleting a report (or dropping its row) deletes such a hidden value when nothing else reads it.
+  A monitor has one line (no `--warn`), and an event firing is an update, not a monitor. `report` and `monitor` still
+  work; an each-time report now prints as an update.
+- After a command has printed, the CLI reports it to the workspace's server (`POST /api/telemetry/cli`): the command
+  line with secrets taken out, whether it worked, the error shown, how long it took and every request it made with
+  its status and time. The command centre's Activity page lists them, so a command that failed or dragged is seen
+  without anyone writing in. Sent after the output with a short deadline, never for `login`, `logout`, `help` or
+  `version`, never for a command that worked without asking the server, and not at all with `CONTRACT_DEV_NO_TELEMETRY=1`.
+
 ## 4.1.0 — 2026-10-30
 
 ### Changed

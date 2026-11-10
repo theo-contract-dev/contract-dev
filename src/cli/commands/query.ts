@@ -68,6 +68,7 @@ Clauses (any dataset; columns by label in braces or by key):
                                 the rule (as --where) that puts a row in it, the last without one the rest; usable by
                                 name in the clauses: --status 'Type: Batch={Event} == "DZapBatchTokenSwapped"; Single'
   --limit <n>                   Rows or groups to print (default 25; the answer says how many matched)
+  --top <n>                     The n largest: with --by the groups by their first measure, else the rows by --sort
   --json                        The tool's own result
 
 Examples:
@@ -265,11 +266,22 @@ export function clausesFromFlags(flags: ParsedFlags): Record<string, unknown> {
   const total = listFlag(flags, 'total');
   if (total && total.length > 0) input.total = total;
   if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 25, 200);
+  // --top <n> (2026-11-09): the n largest, the groups by their first measure or the rows by --sort; it was taken
+  // and dropped without a word, so `--by wallet --top 10` printed 25 groups
+  const top = flag(flags, 'top');
+  if (top !== undefined) {
+    const n = Number(top);
+    if (top === 'true' || !Number.isInteger(n) || n < 1 || n > 200) throw new Error('--top takes how many to keep, 1 to 200: --top 10.');
+    if (flag(flags, 'limit') !== undefined) throw new Error('Give --top or --limit, not both: --top <n> is the n largest.');
+    if (flag(flags, 'asc') === 'true') throw new Error('--top keeps the largest; for the smallest, --sort "<expr>" --asc --limit <n>.');
+    if (!by && !sort) throw new Error('--top ranks something: --by <column> (the groups, by their first measure) or --sort "<expr>" (the rows).');
+    input.limit = n;
+  }
   return input;
 }
 
 /** `live`: the question kept as a live table under Tables with this name (`table create "<name>" --from …`), not a snapshot; `description`: what it shows. */
-export async function queryCommand(args: string[], opts: { live?: string; description?: string } = {}): Promise<unknown> {
+export async function queryCommand(args: string[], opts: { live?: string; description?: string; hidden?: boolean } = {}): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0]) || args.includes('--help') || args.includes('-h')) return void console.log(HELP);
   const flags = parseFlags(args);
   const positional = flags._ as string[];
@@ -371,7 +383,7 @@ export async function queryCommand(args: string[], opts: { live?: string; descri
   }
   // a question is answered where asked; a table kept under Tables is `table create` (--save, the snapshot under Queries, went 2026-10-28)
   if (['save', 'title', 'draw', 'keep'].some((k) => flag(flags, k) !== undefined)) throw new Error('--save is gone: a table kept under Tables is contract-dev table create "<name>" --from <rows> with the same flags (contract-dev table help).');
-  if (opts.live) input.save = { title: opts.live, ...(opts.description ? { description: opts.description } : {}) };
+  if (opts.live) input.save = { title: opts.live, ...(opts.description ? { description: opts.description } : {}), ...(opts.hidden ? { listed: false } : {}) };
   const r = (await runTool(requireAuth(), noun === 'table' ? 'query_data' : `query_${noun}`, input)) as Record<string, unknown>;
   const matched = Number(r.matched ?? 0);
   const returned = Number(r.returned ?? 0);

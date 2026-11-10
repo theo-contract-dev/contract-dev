@@ -26,7 +26,7 @@ Usage:
 A wallet is watched per (chain, address): watch it on another chain with a second call. Its dashboard is
 /wallets/<chain>/<address>. Its activity reads like a contract's: \`contract-dev query transactions --contract <name>\`
 (sent and received), \`query transfers --contract <name> --out\` (what left it). A balance alert is a tracked
-balance(self) with \`contract-dev monitor add\`. A group holds contracts or wallets, never both.
+balance(self) with \`contract-dev notify add alert\`. A group holds contracts or wallets, never both.
 A contract (an address with code) is refused here: watch it with \`contract-dev watch <address>\`.
 `;
 

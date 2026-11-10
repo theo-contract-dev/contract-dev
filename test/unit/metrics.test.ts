@@ -214,44 +214,46 @@ describe('metrics / untrack', () => {
         expect(calls).toHaveLength(1); // a narrowed list is tracked values only
     });
 
-    it('list without filters adds the event, table and group metrics, each with its kind', async () => {
-        const listed = [
-            { id: 'e1', name: 'Swap fees', kind: 'event', scope: 'Uniswap v3', status: 'ready', records: 1204 },
-            { id: 'e2', name: 'Outstanding', kind: 'item', scope: 'Wildcat markets', status: 'ready' },
-            { id: 'e3', name: 'Deposits', kind: 'event', scope: 'Vault', status: 'reading its history', records: 12 },
+    it('list is one list of both kinds, state and activity, from list_metrics', async () => {
+        const rows = [
+            { source: 'tracked', id: 'm1', name: 'stETH supply', kind: 'state', listed: true, enabled: true, pinned: false, on: 'Lido stETH', reads: 'totalSupply()', unit: null, chainId: 1 },
+            { source: 'custom', id: 'e1', name: 'Swap fees', kind: 'activity', listed: true, enabled: true, pinned: false, on: 'Uniswap v3', reads: 'Swap', unit: 'usd', chainId: null },
+            { source: 'custom', id: 'e2', name: 'Outstanding', kind: 'state', listed: false, enabled: true, pinned: false, on: 'Wildcat markets', reads: 'Outstanding of Loans', unit: 'usd', chainId: null },
         ];
-        const calls = mockApi({
-            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: metrics.slice(0, 1) } }),
-            'POST /api/mainnet/tools/describe_metric': () => ({ payload: { ok: true, result: { metrics: listed }, ms: 1 } }),
-        });
+        const calls = mockApi({ 'POST /api/mainnet/tools/list_metrics': (c) => ({ payload: { ok: true, result: { metrics: c.body.input.kind ? rows.filter((r) => r.kind === c.body.input.kind) : rows }, ms: 1 } }) });
         const r = (await metricsCommand([])) as unknown[];
-        expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tracked-metrics', '/api/mainnet/tools/describe_metric']);
+        expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tools/list_metrics']);
         const out = printed();
-        expect(out[0]).toMatch(/^m1 {2}nativeBalance/);
-        expect(out.slice(1, 3)).toEqual(['', 'Event, table and group metrics']);
-        expect(out[3]).toMatch(/^e1 {2}event {10}Swap fees {28}Uniswap v3 {19}1,204 records$/);
-        expect(out[4]).toMatch(/^e2 {2}table .*Wildcat markets +ready$/);
-        expect(out[5]).toMatch(/reading its history$/);
-        expect(r).toHaveLength(4);
+        expect(out[0]).toMatch(/^KIND {6}NAME/);
+        expect(out[1]).toMatch(/^state {5}stETH supply .*Lido stETH .*totalSupply\(\) .*m1$/);
+        expect(out[2]).toMatch(/^activity {2}Swap fees .*Uniswap v3 .*Swap .*usd {5}e1$/);
+        expect(out[3]).toMatch(/e2 {2}\(hidden\)$/);
+        expect(r).toHaveLength(3);
+        // --kind narrows it on the server; the old filters by address still list tracked values alone
+        await metricsCommand(['--kind', 'activity']);
+        expect(calls[1].body.input).toEqual({ kind: 'activity' });
+        await expect(metricsCommand(['--kind', 'other'])).rejects.toThrow(/state .* or activity/);
     });
 
     it('show resolves by label and fetches the series', async () => {
         const calls = mockApi({
+            'POST /api/mainnet/tools/list_metrics': () => ({ payload: { ok: true, result: { metrics: [{"source":"tracked","id":"m1","name":"Treasury · Native balance","kind":"state","listed":true,"enabled":true,"pinned":false,"on":"Treasury","reads":"Coin balance","unit":null,"chainId":1}] }, ms: 1 } }),
             'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: metrics } }),
             'GET /api/mainnet/tracked-metrics/m1/series': () => ({
                 payload: { trackedMetric: metrics[0], points: [{ at: '2026-09-15T00:00:00Z', value: 12.5, blockNumber: 100 }], prev: null },
             }),
         });
         await metricsCommand(['show', 'treasury · native balance', '--range', '7d']);
-        expect(calls[1].path).toBe('/api/mainnet/tracked-metrics/m1/series?range=7d');
+        expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tools/list_metrics', '/api/mainnet/tracked-metrics?include=unlisted', '/api/mainnet/tracked-metrics/m1/series?range=7d']);
         expect(printed().join('\n')).toMatch(/2026-09-15T00:00:00Z {2}.*12\.5 {2}block 100/);
         await expect(metricsCommand(['show', 'm1', '--range', '2d'])).rejects.toThrow(/--range/);
     });
 
     it('an ambiguous label demands an id', async () => {
-        mockApi({ 'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: metrics } }) });
+        mockApi({ 'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: metrics } }), 'POST /api/mainnet/tools/list_metrics': () => ({ payload: { ok: true, result: { metrics: [] }, ms: 1 } }) });
         await expect(metricsCommand(['pause', 'Supply'])).rejects.toThrow(/2 metrics are labelled "Supply".*m2, m3/);
-        await expect(metricsCommand(['pause', 'nope'])).rejects.toThrow(/No tracked metric matches/);
+        // a name no tracked value has is looked for among every metric, and said to be missing as one
+        await expect(metricsCommand(['pause', 'nope'])).rejects.toThrow(/No metric matches "nope"/);
     });
 
     it('rename / pause / resume / decimals PATCH the right fields', async () => {
@@ -289,55 +291,3 @@ describe('metrics / untrack', () => {
     });
 });
 
-describe('metric pin', () => {
-    useEnvAuth();
-    const tracked = { id: 'm1', chainId: 1, address: VAULT, kind: 'nativeBalance', label: 'Bal', params: null, enabled: true, lastValue: 2 };
-    const tool = () => ({ payload: { ok: true, result: { metrics: [{ id: 'cm1', name: 'Swap fees', kind: 'event' }] } } });
-
-    it('pins a tracked value by its label through its own route', async () => {
-        const calls = mockApi({
-            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [tracked] } }),
-            'PATCH /api/mainnet/tracked-metrics/m1': (c) => ({ payload: { trackedMetric: { ...tracked, pinnedAt: c.body.pinned ? '2026-10-26T12:00:00Z' : null } } }),
-        });
-        await metricsCommand(['pin', 'Bal']);
-        const patch = calls.find((c) => c.method === 'PATCH')!;
-        expect(patch.path).toBe('/api/mainnet/tracked-metrics/m1');
-        expect(patch.body).toEqual({ pinned: true });
-        expect(printed()[0]).toBe("Pinned Bal to the overview's header.");
-        await metricsCommand(['unpin', 'm1']);
-        expect(calls.filter((c) => c.method === 'PATCH')[1].body).toEqual({ pinned: false });
-        expect(printed()[1]).toBe('Unpinned Bal.');
-    });
-
-    it('a name no tracked value has is looked up among the event, table and group metrics', async () => {
-        const calls = mockApi({
-            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [tracked] } }),
-            'POST /api/mainnet/tools/describe_metric': tool,
-            'PATCH /api/mainnet/custom-metrics/cm1': (c) => ({ payload: { metric: { id: 'cm1', name: 'Swap fees', pinnedAt: c.body.pinned ? '2026-10-26T12:00:00Z' : null } } }),
-        });
-        await metricsCommand(['pin', 'swap fees']);
-        const patch = calls.find((c) => c.method === 'PATCH')!;
-        expect(patch.path).toBe('/api/mainnet/custom-metrics/cm1');
-        expect(patch.body).toEqual({ pinned: true });
-        expect(printed()[0]).toBe("Pinned Swap fees to the overview's header.");
-        await expect(metricsCommand(['pin', 'Nothing here'])).rejects.toThrow(/No metric matches "Nothing here"/);
-    });
-
-    it('a pin past the header\'s room repeats the server\'s reason', async () => {
-        mockApi({
-            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [tracked] } }),
-            'PATCH /api/mainnet/tracked-metrics/m1': () => ({ status: 409, payload: { error: 'The overview holds 5 pinned metrics. Unpin one first.' } }),
-        });
-        await expect(metricsCommand(['pin', 'Bal'])).rejects.toThrow(/Unpin one first/);
-    });
-
-    it('lists the pinned ones', async () => {
-        mockApi({
-            'GET /api/mainnet/tracked-metrics': () => ({ payload: { trackedMetrics: [{ ...tracked, pinnedAt: '2026-10-26T12:00:00Z' }] } }),
-            'POST /api/mainnet/tools/describe_metric': () => ({ payload: { ok: true, result: { metrics: [{ id: 'cm1', name: 'Swap fees', kind: 'event', status: 'ready', records: 12, pinned: true }] } } }),
-        });
-        await metricsCommand([]);
-        expect(printed()[0]).toMatch(/Bal.*\(pinned\)$/);
-        expect(printed().some((l) => /Swap fees.*12 records  \(pinned\)$/.test(l))).toBe(true);
-    });
-});

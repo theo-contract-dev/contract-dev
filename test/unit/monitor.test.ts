@@ -63,8 +63,8 @@ describe('monitor add', () => {
         await expect(monitorCommand(['add', 'm1', '--when', 'value < 1', '--warn', '30,000'])).rejects.toThrow('--warn is a formula: --warn "value < 30000".');
         await expect(monitorCommand(['add', 'm1', '--when', 'value < 1', '--to'])).rejects.toThrow(/--to needs a destination/);
         await expect(monitorCommand(['add', 'm1', '--when', 'value < 1', '--max-age', '5'])).rejects.toThrow(/at least 30/);
-        await expect(monitorCommand(['add', 'm1', '--below', '25000'])).rejects.toThrow('Unknown flag --below for monitor add. It takes --when, --warn, --to, --name, --max-age.');
-        await expect(monitorCommand(['add', 'm1', '--when', 'value < 1', '--warn-pct', '5'])).rejects.toThrow(/^Unknown flag --warn-pct for monitor add\./);
+        await expect(monitorCommand(['add', 'm1', '--below', '25000'])).rejects.toThrow('Unknown flag --below for notify add alert. It takes --when, --warn, --to, --name, --max-age, --per.');
+        await expect(monitorCommand(['add', 'm1', '--when', 'value < 1', '--warn-pct', '5'])).rejects.toThrow(/^Unknown flag --warn-pct for notify add alert\./);
         expect(calls).toHaveLength(0);
     });
 
@@ -253,7 +253,7 @@ describe('monitors / monitor show / set / lifecycle', () => {
         ]);
         await expect(monitorCommand(['set', 'inv1'])).rejects.toThrow(/Nothing to change/);
         await expect(monitorCommand(['set', 'inv1', '--warn', '30000'])).rejects.toThrow('--warn is a formula: --warn "value < 30000".');
-        await expect(monitorCommand(['set', 'inv1', '--below', '20000'])).rejects.toThrow('Unknown flag --below for monitor set. It takes --when, --warn, --no-warn, --to, --max-age, --no-max-age, --name.');
+        await expect(monitorCommand(['set', 'inv1', '--below', '20000'])).rejects.toThrow('Unknown flag --below for notify set. It takes --when, --warn, --no-warn, --to, --max-age, --no-max-age, --name.');
         expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(3);
     });
 

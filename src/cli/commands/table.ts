@@ -21,6 +21,18 @@ import { printResult, columnsTable, type BreakdownColumn } from './_print';
 import { clausesFromFlags, printRows, queryCommand, savedLine } from './query';
 
 const HELP = `contract-dev table — everything on the Tables page: live tables over rows the workspace keeps, and item tables
+
+One grammar, the same words as a metric (2026-11-07): --on says what the table is on (a contract or wallet,
+tag:<group>, workspace, or table:"<other>" to build on it); --each <Event> says what a row is. With --id (and
+--column, --finished, --status) it is a STATE table: one row per thing found by that event, alive while the
+thing is, its columns read live. Alone it is an ACTIVITY table: one row per event. --rows transfers|transactions|
+wallets|contracts makes an activity table from what the workspace already keeps. The older --group/--contract,
+--opens, --event and --from still work.
+
+  contract-dev table create "Loans" --on tag:markets --each LoanOpened --id loanId --column "Owed=accountDebt(id())" --finished "seen(LoanClosed)"
+  contract-dev table create "Big swaps" --on tag:pools --each Swap --where "usd(abs(amount0), token0()) > 10000"
+  contract-dev table create "Treasury out" --on treasury --rows transfers --where "direction == out"
+  contract-dev table create "Whales" --on table:"Big swaps" --by wallet --top 10
 (withdrawal rounds, loans, requests… one row per id, over their whole life)
 
 Usage:
@@ -255,11 +267,14 @@ async function createLiveTable(args: string[]): Promise<unknown> {
   const events = from.toLowerCase() === 'events';
   // --keep is an item table's old flag, and a table from events' parameters to keep; --status is both tables' category
   // (an item table's over its rows' facts, a live table's a pill over its columns, 2026-10-27)
-  for (const f of ['--opens', '--closes', '--formula', '--finished', '--hidden', ...(events ? [] : ['--keep'])])
+  // --hidden (2026-11-07): off /tables, a report's own, deleted with it
+  const hidden = others.includes('--hidden');
+  const kept = others.filter((a) => a !== '--hidden');
+  for (const f of ['--opens', '--closes', '--formula', '--finished', ...(events ? [] : ['--keep'])])
     if (others.some((a) => a === f || a.startsWith(`${f}=`))) throw new Error(`${f} is for a table that opens rows on an event (--opens); a live table takes the query's flags (contract-dev query help).`);
-  if (events) return createEventsTable(name, others, description);
+  if (events) return createEventsTable(name, kept, description, hidden);
   const query = FROM_DATASETS.includes(from.toLowerCase()) ? [from.toLowerCase()] : ['data', from];
-  return queryCommand([...query, ...others], { live: name, ...(description ? { description } : {}) });
+  return queryCommand([...query, ...kept], { live: name, ...(description ? { description } : {}), ...(hidden ? { hidden: true } : {}) });
 }
 
 /** The flags that say what the rows are (the data kept underneath); every other flag is the question asked of them. */
@@ -286,7 +301,7 @@ function withoutFlags(args: string[], names: string[]): string[] {
  * table, deleted with it), then the question is asked of them by id and kept as the live table. --where, --by, --measure
  * and the rest are the question, in the table language over the fields; the per-event figures are --field.
  */
-async function createEventsTable(name: string, args: string[], description?: string): Promise<unknown> {
+async function createEventsTable(name: string, args: string[], description?: string, hidden = false): Promise<unknown> {
   const flags = parseFlags(args);
   for (const k of ['value', 'aggregate', 'unit', 'split', 'line'])
     if (flag(flags, k) !== undefined) throw new Error(`--${k} makes a metric (contract-dev metric define); a table keeps the events as rows and adds them up with --by and --measure.`);
@@ -306,7 +321,7 @@ async function createEventsTable(name: string, args: string[], description?: str
   // one call (2026-10-30): the rows and the table together, the server keeping nothing when the question is refused
   // (until then this chained define_data and a query, and a failed column check left the rows behind under the name)
   const question = parseFlags(withoutFlags(args, EVENTS_DATA_FLAGS));
-  const table: Record<string, unknown> = { title: name, ...(description ? { description } : {}), ...clausesFromFlags(question) };
+  const table: Record<string, unknown> = { title: name, ...(description ? { description } : {}), ...(hidden ? { listed: false } : {}), ...clausesFromFlags(question) };
   // the columns a listing shows, in order, and the lines a row opens onto (as contract-dev query takes them)
   const columns = flagAll(question, 'column').flatMap((c) => String(c).split(',')).map((c) => c.trim()).filter(Boolean);
   if (columns.length > 0) table.columns = columns;
@@ -515,6 +530,63 @@ export function columnsFrom(flags: ParsedFlags): Record<string, unknown>[] {
   return out;
 }
 
+/** The arguments inside a call's parentheses, split on the commas at its own depth. */
+function splitArgs(inner: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of inner) {
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    if (ch === ')' || ch === ']' || ch === '}') depth--;
+    if (ch === ',' && depth === 0) {
+      out.push(cur.trim());
+      cur = '';
+    } else cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+/**
+ * `--column "Owed=accountDebt(id())"` on a state table: a view read on each open row (2026-11-08; the
+ * help's own example was dropped without a word before). The view by name, its arguments in order:
+ * id() where the row id goes, {Label} for a cell of the row, self, or a literal. After the call, in
+ * any order: `.<output>` (which output of several), `; on 0x…` (read on another contract),
+ * `; token <token> [; show usd]` or `; decimals <n>`.
+ */
+export function readColumnsFrom(flags: ParsedFlags): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const raw of flagAll(flags, 'column')) {
+    if (raw === 'true') throw new Error('--column needs Label=view(args): --column "Owed=accountDebt(id())".');
+    const eq = raw.indexOf('=');
+    const label = eq > 0 ? raw.slice(0, eq).trim() : '';
+    const [call = '', ...more] = (eq > 0 ? raw.slice(eq + 1) : '').split(';').map((x) => x.trim());
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)\((.*)\)(?:\.([A-Za-z_][A-Za-z0-9_]*))?$/s.exec(call);
+    if (!label || !m) throw new Error(`--column on a state table is a view read on each open row, Label=view(args): --column "Owed=accountDebt(id())" (got: ${raw}). A fold of an event is --sum or --count; a sum of columns is --formula.`);
+    const col: Record<string, unknown> = { label, read: m[1] };
+    const args = splitArgs(m[2]);
+    if (args.length > 0) col.args = args.map((a) => (a === 'id()' ? ':id' : a));
+    if (m[3]) col.output = m[3];
+    for (const part of more.filter(Boolean)) {
+      const w = /^(on|token|show|decimals|unit)\s+(\S+)$/.exec(part);
+      if (!w) throw new Error(`--column: after the call come "; on 0x…", "; token <token>", "; show usd", "; decimals <n>" or "; unit <unit>" (got: ${part})`);
+      if (w[1] === 'on') {
+        if (!/^0x[0-9a-fA-F]{40}$/.test(w[2])) throw new Error(`--column: on takes the contract's 0x address (got: ${w[2]}).`);
+        col.target = w[2].toLowerCase();
+      } else if (w[1] === 'token') col.token = tokenRef(w[2], '--column');
+      else if (w[1] === 'show') col.show = showOf(w[2], '--column');
+      else if (w[1] === 'decimals') {
+        const n = Number(w[2]);
+        if (!Number.isInteger(n) || n < 0 || n > 36) throw new Error(`--column: decimals is a whole number from 0 to 36 (got: ${w[2]}).`);
+        col.decimals = n;
+      } else col.unit = w[2];
+    }
+    if (col.show && !col.token) throw new Error('--column: show needs a token.');
+    out.push(col);
+  }
+  return out;
+}
+
 /** --event "<Event>.<field>": an event the rules name, with the field that holds the row id (stated when more than one could). */
 function eventsFrom(flags: ParsedFlags): string[] {
   return flagAll(flags, 'event')
@@ -524,6 +596,7 @@ function eventsFrom(flags: ParsedFlags): string[] {
 }
 
 async function createTable(args: string[]): Promise<unknown> {
+  args = rewriteTableArgs(args);
   if (!args.length || HELP_WORDS.includes(args[0])) return void console.log(HELP);
   if (args.some((a) => a === '--from' || a.startsWith('--from='))) return createLiveTable(args);
   const flags = parseFlags(args);
@@ -543,7 +616,7 @@ async function createTable(args: string[]): Promise<unknown> {
   if (statuses.length > 0) input.statuses = statuses;
   const formulas = formulasFrom(flags);
   if (formulas.length > 0) input.formulas = formulas;
-  const columns = columnsFrom(flags);
+  const columns = [...columnsFrom(flags), ...readColumnsFrom(flags)];
   if (columns.length > 0) input.columns = columns;
   if (flag(flags, 'hidden') !== undefined) input.listed = false;
   const description = descriptionFlag(flags);
@@ -632,4 +705,53 @@ async function updateLive(auth: ReturnType<typeof requireAuth>, live: LiveTable,
   const { query } = await apiRequest<{ query: LiveTable }>(auth, 'PATCH', `/api/mainnet/queries/${live.id}`, { ...(name ? { title: name } : {}), ...(description !== undefined ? { description } : {}) });
   console.log(`Updated live table "${query.title}" (${query.id})${query.description ? `: ${query.description}` : description === '' ? ': description removed' : ''}`);
   return query;
+}
+
+/** The one grammar's words as the older flags: --on, --each and --rows (2026-11-07). */
+export function rewriteTableArgs(args: string[]): string[] {
+  const out: string[] = [];
+  const has = (f: string) => args.some((a) => a === `--${f}` || a.startsWith(`--${f}=`));
+  // the words only a state table takes. --status is both kinds' pill and --column both kinds' column, so neither
+  // decides alone (2026-11-09: `--each Swap --status …` or `--column trader` made a state table of swaps, silently);
+  // a --column that reads something, "Owed=accountDebt(id())", is a state table's
+  // --count and --sum are a state table's event columns, and with --by the measure an activity table folds by
+  const stateWords = ['id', 'finished', 'closes', 'closes-on', 'formula', 'opens', 'id-shown', ...(has('by') ? [] : ['count', 'sum'])];
+  const values = (f: string) => args.flatMap((a, i) => (a === `--${f}` ? [args[i + 1] ?? ''] : a.startsWith(`--${f}=`) ? [a.slice(f.length + 3)] : []));
+  const state = stateWords.some(has) || values('column').some((v) => v.includes('='));
+  let each: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const v = () => args[++i];
+    if (a === '--on') {
+      const w = v();
+      if (w === undefined) throw new Error('--on says what the table is on: a contract or wallet, tag:<group>, workspace, or table:"<other>".');
+      const m = /^(tag|group|table):\s*(.+)$/i.exec(w);
+      if (/^(workspace|all)$/i.test(w)) continue;
+      if (m && m[1].toLowerCase() === 'table') out.push('--from', m[2].trim().replace(/^"(.*)"$/, '$1'));
+      else if (m) out.push('--group', m[2].trim());
+      else out.push('--contract', w);
+    } else if (a === '--each') {
+      const w = v();
+      if (w === undefined) throw new Error('--each names the event a row is: --each Swap.');
+      if (state && !has('opens') && !each) {
+        each = w;
+        out.push('--opens', w);
+      } else out.push('--event', w);
+    } else if (a === '--rows') {
+      const w = v();
+      if (w === undefined) throw new Error('--rows names what the workspace keeps: transfers, transactions, wallets or contracts.');
+      out.push('--from', w);
+    } else out.push(a);
+  }
+  // an activity table straight from events: --each alone
+  if (args.includes('--each') && !state && !has('from')) out.push('--from', 'events');
+  return out;
+}
+
+/** The table a create answered with: a live table (the query's save, or define_data's table) or a state table (create_table). */
+export function savedTable(result: unknown): { id: string; store: 'live' | 'item' } | null {
+  const o = (result ?? {}) as { saved?: { id?: unknown }; table?: { saved?: { id?: unknown }; id?: unknown } };
+  const live = o.saved?.id ?? o.table?.saved?.id;
+  if (typeof live === 'string') return { id: live, store: 'live' };
+  return typeof o.table?.id === 'string' ? { id: o.table.id, store: 'item' } : null;
 }

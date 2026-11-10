@@ -40,6 +40,7 @@ const report = (over: Record<string, unknown> = {}) => ({
     weekday: null,
     hour: 9,
     timezone: 'Australia/Sydney',
+    columns: ['24h'],
     rows: dailyRows,
     origin: 'cli',
     nextRunAt: '2026-10-13T22:00:00.000Z',
@@ -80,11 +81,14 @@ describe('report list', () => {
         expect((result as any).quota).toEqual(quota);
     });
 
-    it('says so when there are none, and `reports` is the noun', async () => {
+    it('says so when there are none; `report` and `reports` are retired for notify', async () => {
         const calls = mockApi(listOf([]));
-        await run(['reports']);
-        expect(printed()[0]).toBe('No reports. Create one with `contract-dev report create --template daily --to <dest>`.');
+        await reportCommand(['list']);
+        expect(printed()[0]).toBe('No reports. Create one with `contract-dev notify add report --template daily --to <dest>`.');
         expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/reports']);
+        await expect(run(['reports'])).rejects.toThrow('`contract-dev reports` is now `contract-dev notify`');
+        await expect(run(['report', 'create', '--template', 'daily'])).rejects.toThrow(/notify add report/);
+        await expect(run(['monitor', 'set', 'x', '--when', 'value < 1'])).rejects.toThrow(/contract-dev notify set <name>/);
     });
 });
 
@@ -101,10 +105,10 @@ describe('report show', () => {
         expect(out[0]).toBe('Daily report  (rep1)');
         expect(out[1]).toBe('  scope:      Workspace');
         expect(out[2]).toBe('  schedule:   daily 09:00 Australia/Sydney');
-        expect(out[3]).toBe('  columns:    24h, 7d, 30d (with the change against the window before)');
+        expect(out[3]).toBe('  columns:    24h');
         expect(out[4]).toBe('  rows:       Active wallets · Transactions · Reverted · Volume in · Volume out');
         expect(out[5]).toBe('  sends to:   discord_bot #alerts, telegram -100123');
-        expect(out[6]).toBe(`  next send:  ${fmtLocalTime(Date.parse('2026-10-13T22:00:00.000Z'))}`);
+        expect(out[6]).toBe(`  next run:   ${fmtLocalTime(Date.parse('2026-10-13T22:00:00.000Z'))}`);
         expect(out[7]).toBe(`  last run:   ${fmtLocalTime(Date.parse('2026-10-12T22:00:00.000Z'))} · sent`);
         expect(out).toContain(TEXT);
         const joined = out.join('\n');
@@ -134,7 +138,7 @@ describe('report show', () => {
         expect(out[0]).toBe('Daily report  (rep1)  (paused)');
         expect(out[1]).toBe('  scope:      Lido: stETH');
         expect(out[4]).toBe('  rows:       Vault reserves · Swap');
-        expect(out[6]).toBe('  next send:  paused');
+        expect(out[6]).toBe('  next run:   paused');
         expect(out).toContain('No runs');
         expect(out.at(-1)).toBe('  runs: 0');
     });
@@ -163,17 +167,17 @@ describe('report create', () => {
 
     it('--add-row keeps the template rows and appends an event metric, found by its name', async () => {
         const calls = mockApi({ ...base, 'GET /api/mainnet/custom-metrics': () => ({ payload: { metrics: [{ id: 'cm1', name: 'Swap fees' }, { id: 'cm2', name: 'Outstanding withdrawals' }] } }) });
-        await reportCommand(['create', '--template', 'daily', '--add-row', 'customMetric:swap fees']);
+        await reportCommand(['create', '--columns', '24h', '--template', 'daily', '--add-row', 'customMetric:swap fees']);
         const post = calls.find((c) => c.method === 'POST')!;
         expect(post.body.rows).toEqual([...dailyRows, { kind: 'customMetric', params: { id: 'cm1' } }]);
-        await expect(reportCommand(['create', '--template', 'daily', '--add-row', 'customMetric:Nope'])).rejects.toThrow(/No event or item metric is called "Nope"/);
+        await expect(reportCommand(['create', '--columns', '24h', '--template', 'daily', '--add-row', 'customMetric:Nope'])).rejects.toThrow(/No event or item metric is called "Nope"/);
     });
 
     it('--template fills the name, cadence and rows; the zone defaults to this machine; --to resolves by label', async () => {
         const calls = mockApi(base);
-        const created = await reportCommand(['create', '--template', 'daily', '--to', '#alerts']);
+        const created = await reportCommand(['create', '--columns', '24h', '--template', 'daily', '--to', '#alerts']);
         const post = calls.find((c) => c.method === 'POST')!;
-        expect(post.body).toEqual({ name: 'Daily report', scope: { kind: 'workspace' }, cadence: 'daily', hour: 9, timezone: machineTimeZone(), rows: dailyRows, channelIds: ['ch2'], runNow: true });
+        expect(post.body).toEqual({ name: 'Daily report', scope: { kind: 'workspace' }, cadence: 'daily', hour: 9, timezone: machineTimeZone(), columns: ['24h'], rows: dailyRows, channelIds: ['ch2'], runNow: true });
         expect((created as any).id).toBe('rep9');
         const out = printed();
         expect(out[0]).toBe('Created report "Daily report" (rep9).');
@@ -184,7 +188,7 @@ describe('report create', () => {
 
     it('--row replaces the template rows (event by name, tracked metric by label); tag scope; --on, --at, --tz; repeated and comma --to', async () => {
         const calls = mockApi(base);
-        await reportCommand(['create', '--template', 'weekly', '--name', 'Pools weekly', '--scope', 'tag:pools', '--row', 'transactions', '--row', 'eventCount:Swap', '--row', 'trackedMetric:Vault reserves', '--to', 'telegram', '--to', '#alerts,ch1', '--on', 'friday', '--at', '17', '--tz', 'Europe/London']);
+        await reportCommand(['create', '--columns', '7d', '--template', 'weekly', '--name', 'Pools weekly', '--scope', 'tag:pools', '--row', 'transactions', '--row', 'eventCount:Swap', '--row', 'trackedMetric:Vault reserves', '--to', 'telegram', '--to', '#alerts,ch1', '--on', 'friday', '--at', '17', '--tz', 'Europe/London']);
         expect(calls.find((c) => c.method === 'POST')!.body).toEqual({
             name: 'Pools weekly',
             scope: { kind: 'tag', tag: 'pools' },
@@ -192,54 +196,57 @@ describe('report create', () => {
             weekday: 5,
             hour: 17,
             timezone: 'Europe/London',
+            columns: ['7d'],
             rows: [{ kind: 'transactions' }, { kind: 'eventCount', params: { name: 'Swap' } }, { kind: 'trackedMetric', params: { id: 'm2' } }],
             channelIds: ['ch1', 'ch2'],
             runNow: true,
         });
         expect(printed()[2]).toBe('  schedule:   weekly Friday 17:00 Europe/London');
-        expect(printed()[3]).toBe('  columns:    7d, 30d, 90d (with the change against the window before)');
+        expect(printed()[3]).toBe('  columns:    7d');
         expect(printed()[4]).toBe('  rows:       Transactions · Swap · Vault reserves');
     });
 
     it('--scope names a watched contract (by name or address, lower-cased); --on alone makes a report weekly on that day', async () => {
         const calls = mockApi(base);
-        await reportCommand(['create', '--name', 'stETH', '--scope', 'steth', '--row', 'transactions', '--on', '7', '--to', 'ch1']);
+        await reportCommand(['create', '--columns', '24h', '--name', 'stETH', '--scope', 'steth', '--row', 'transactions', '--on', '7', '--to', 'ch1']);
         expect(calls.find((c) => c.method === 'POST')!.body).toMatchObject({ name: 'stETH', scope: { kind: 'contract', chainId: 1, address: STETH.toLowerCase() }, cadence: 'weekly', weekday: 7, rows: [{ kind: 'transactions' }] });
-        await reportCommand(['create', '--name', 'stETH', '--scope', `contract:${STETH.toUpperCase().replace('0X', '0x')}`, '--row', 'transactions', '--to', 'ch1']);
+        await reportCommand(['create', '--columns', '24h', '--name', 'stETH', '--scope', `contract:${STETH.toUpperCase().replace('0X', '0x')}`, '--row', 'transactions', '--to', 'ch1']);
         expect(calls.filter((c) => c.method === 'POST').at(-1)!.body).toMatchObject({ scope: { kind: 'contract', chainId: 1, address: STETH.toLowerCase() }, cadence: 'daily' });
     });
 
     it('refuses: no name or template, an unknown kind, an event without its name, a parameter where none goes, --on with a daily template, a bad hour, weekday or zone', async () => {
         const calls = mockApi(base);
-        await expect(reportCommand(['create', '--row', 'transactions', '--to', 'ch1'])).rejects.toThrow(/--name, or start from --template/);
-        await expect(reportCommand(['create', '--template', 'monthly', '--to', 'ch1'])).rejects.toThrow(/--template must be daily or weekly/);
-        await expect(reportCommand(['create', '--name', 'x', '--row', 'swaps', '--to', 'ch1'])).rejects.toThrow(/Unknown row kind "swaps". One of: activeWallets, transactions/);
-        await expect(reportCommand(['create', '--name', 'x', '--row', 'eventCount', '--to', 'ch1'])).rejects.toThrow(/eventCount names an event: --row eventCount:Swap/);
-        await expect(reportCommand(['create', '--name', 'x', '--row', 'transactions:all', '--to', 'ch1'])).rejects.toThrow(/transactions takes no parameter/);
-        await expect(reportCommand(['create', '--template', 'daily', '--on', 'monday', '--to', 'ch1'])).rejects.toThrow(/--on is for a weekly report/);
-        await expect(reportCommand(['create', '--template', 'daily', '--at', '24', '--to', 'ch1'])).rejects.toThrow(/--at must be an hour from 0 to 23/);
-        await expect(reportCommand(['create', '--template', 'weekly', '--on', 'someday', '--to', 'ch1'])).rejects.toThrow(/--on must be a weekday/);
-        await expect(reportCommand(['create', '--template', 'daily', '--tz', 'Mars/Olympus', '--to', 'ch1'])).rejects.toThrow(/--tz must be an IANA zone name/);
-        await expect(reportCommand(['create', '--template', 'daily', '--to', 'slack'])).rejects.toThrow(/No alert destination matches "slack"/);
+        await expect(reportCommand(['create', '--columns', '24h', '--row', 'transactions', '--to', 'ch1'])).rejects.toThrow(/--name, or start from --template/);
+        await expect(reportCommand(['create', '--template', 'daily', '--to', 'ch1'])).rejects.toThrow(/Say which columns the table prints: --columns 24h/);
+        await expect(reportCommand(['create', '--name', 'x', '--row', 'transactions', '--to', 'ch1'])).rejects.toThrow(/Say which columns the table prints/);
+        await expect(reportCommand(['create', '--columns', '24h', '--template', 'monthly', '--to', 'ch1'])).rejects.toThrow(/--template must be daily or weekly/);
+        await expect(reportCommand(['create', '--columns', '24h', '--name', 'x', '--row', 'swaps', '--to', 'ch1'])).rejects.toThrow(/Unknown row kind "swaps". One of: activeWallets, transactions/);
+        await expect(reportCommand(['create', '--columns', '24h', '--name', 'x', '--row', 'eventCount', '--to', 'ch1'])).rejects.toThrow(/eventCount names an event: --row eventCount:Swap/);
+        await expect(reportCommand(['create', '--columns', '24h', '--name', 'x', '--row', 'transactions:all', '--to', 'ch1'])).rejects.toThrow(/transactions takes no parameter/);
+        await expect(reportCommand(['create', '--columns', '24h', '--template', 'daily', '--on', 'monday', '--to', 'ch1'])).rejects.toThrow(/--on is for a weekly report/);
+        await expect(reportCommand(['create', '--columns', '24h', '--template', 'daily', '--at', '24', '--to', 'ch1'])).rejects.toThrow(/--at must be an hour from 0 to 23/);
+        await expect(reportCommand(['create', '--columns', '7d', '--template', 'weekly', '--on', 'someday', '--to', 'ch1'])).rejects.toThrow(/--on must be a weekday/);
+        await expect(reportCommand(['create', '--columns', '24h', '--template', 'daily', '--tz', 'Mars/Olympus', '--to', 'ch1'])).rejects.toThrow(/--tz must be an IANA zone name/);
+        await expect(reportCommand(['create', '--columns', '24h', '--template', 'daily', '--to', 'slack'])).rejects.toThrow(/No alert destination matches "slack"/);
         expect(calls.some((c) => c.method === 'POST')).toBe(false);
     });
 
     it('without --to the report is created with no destination, the destinations are never read, and it says where the table shows', async () => {
         const calls = mockApi(base);
-        const created = await reportCommand(['create', '--template', 'daily']);
+        const created = await reportCommand(['create', '--columns', '24h', '--template', 'daily']);
         const post = calls.find((c) => c.method === 'POST')!;
-        expect(post.body).toEqual({ name: 'Daily report', scope: { kind: 'workspace' }, cadence: 'daily', hour: 9, timezone: machineTimeZone(), rows: dailyRows, channelIds: [], runNow: true });
+        expect(post.body).toEqual({ name: 'Daily report', scope: { kind: 'workspace' }, cadence: 'daily', hour: 9, timezone: machineTimeZone(), columns: ['24h'], rows: dailyRows, channelIds: [], runNow: true });
         expect(calls.some((c) => c.path.startsWith('/api/cli/alert-channels'))).toBe(false);
         expect((created as any).channels).toEqual([]);
         const out = printed();
         expect(out[0]).toBe('Created report "Daily report" (rep9).');
-        expect(out[5]).toBe('  sends to:   nobody');
+        expect(out[5]).toBe('  sends to:   the app');
         expect(out.slice(-2)).toEqual(["First table queued: it shows on the report's page within a minute, then the report runs on schedule.", "No destination yet: the table shows on the report's page in the app until one is linked."]);
     });
 
     it('surfaces the server error (the plan cap) verbatim', async () => {
         mockApi({ ...base, 'POST /api/mainnet/reports': () => ({ status: 403, payload: { error: 'This workspace is on Free and has used all 1 of its reports.', code: 'UPGRADE_REQUIRED' } }) });
-        await expect(reportCommand(['create', '--template', 'daily', '--to', 'ch1'])).rejects.toThrow(/used all 1 of its reports/);
+        await expect(reportCommand(['create', '--columns', '24h', '--template', 'daily', '--to', 'ch1'])).rejects.toThrow(/used all 1 of its reports/);
     });
 
     it('weekdays by name, prefix or number', () => {
@@ -268,7 +275,7 @@ describe('report create --every / report update', () => {
 
     it('--every makes an interval report on the UTC clock; --snapshot, --only-when and a row nocompare land in the body', async () => {
         const calls = mockApi(base);
-        await reportCommand(['create', '--every', '10m', '--name', 'Wildcat pulse', '--scope', 'tag:Wildcat markets', '--row', 'customMetric:Breached markets', '--row', 'transactions | nocompare', '--snapshot', '--only-when', '{Breached markets} > 0']);
+        await reportCommand(['create', '--columns', '24h', '--every', '10m', '--name', 'Wildcat pulse', '--scope', 'tag:Wildcat markets', '--row', 'customMetric:Breached markets', '--row', 'transactions | nocompare', '--snapshot', '--only-when', '{Breached markets} > 0']);
         const post = calls.find((c) => c.method === 'POST')!;
         expect(post.body).toEqual({
             name: 'Wildcat pulse',
@@ -277,18 +284,19 @@ describe('report create --every / report update', () => {
             hour: 0,
             timezone: 'UTC',
             everyMinutes: 10,
+            columns: ['24h'],
             compare: false,
             onlyWhen: '{Breached markets} > 0',
             rows: [{ kind: 'customMetric', params: { id: 'cm1' } }, { kind: 'transactions', compare: false }],
             channelIds: [],
             runNow: true,
         });
-        expect(printed()[2]).toBe('  schedule:   every 10m · snapshot');
+        expect(printed()[2]).toBe('  schedule:   every 10m');
         expect(printed()[3]).toBe('  only when:  {Breached markets} > 0');
         expect(printed()[4]).toBe('  columns:    24h');
-        await expect(reportCommand(['create', '--every', '30s', '--name', 'x', '--row', 'transactions'])).rejects.toThrow(/--every takes minutes, hours or days/);
-        await expect(reportCommand(['create', '--every', '8d', '--name', 'x', '--row', 'transactions'])).rejects.toThrow(/--every must be from 1m to 7d/);
-        await expect(reportCommand(['create', '--every', '1h', '--template', 'daily'])).rejects.toThrow(/--every makes an interval report/);
+        await expect(reportCommand(['create', '--columns', '24h', '--every', '30s', '--name', 'x', '--row', 'transactions'])).rejects.toThrow(/--every takes minutes, hours or days/);
+        await expect(reportCommand(['create', '--columns', '24h', '--every', '8d', '--name', 'x', '--row', 'transactions'])).rejects.toThrow(/--every must be from 1m to 7d/);
+        await expect(reportCommand(['create', '--columns', '24h', '--every', '1h', '--template', 'daily'])).rejects.toThrow(/--every makes an interval report/);
     });
 
     it('update patches only what changes: --add-row keeps the rows, --every moves it to an interval, --always clears the condition', async () => {
@@ -317,7 +325,7 @@ describe('report preview / run / pause / resume / delete', () => {
         });
         await reportCommand(['run', 'Daily report']);
         expect(calls.at(-1)!.path).toBe('/api/mainnet/reports/rep1/run');
-        expect(printed()[0]).toBe('Sending "Daily report" now (run run5, rendered) — its destinations get it within a minute.');
+        expect(printed()[0]).toBe('Running "Daily report" now (run run5, rendered) — its destinations get it within a minute.');
         expect(printed()).toContain(TEXT);
 
         mockApi({ ...listOf([report()]), 'POST /api/mainnet/reports/rep1/run': () => ({ status: 502, payload: { run: { ...sentRun, id: 'run6', status: 'failed', error: 'compute timed out', text: null } } }) });
@@ -367,7 +375,7 @@ describe('repeated flags and local time', () => {
     it('report create help answers with the help, not an error', async () => {
         const log = jest.spyOn(console, 'log').mockImplementation(() => {});
         await reportCommand(['create', 'help']);
-        expect(String(log.mock.calls[0][0])).toMatch(/^contract-dev report — /);
+        expect(String(log.mock.calls[0][0])).toMatch(/^Reports are notifications: contract-dev notify help/);
         log.mockRestore();
     });
 });
@@ -382,7 +390,7 @@ describe('report create / preview --each', () => {
             'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
             'POST /api/mainnet/reports': () => ({ payload: { report: report({ id: 'rep9', name: 'Large swaps', cadence: 'each', rows: [], each, channels: [channels[1]] }) } }),
         });
-        await run(['report', 'create', '--each', '--name', 'Large swaps', '--metric', 'Swap size (USD)', '--when', 'value >= 10000', '--message', '{name(sender())} swapped {value}', '--to', '#alerts']);
+        await reportCommand(['create', '--each', '--name', 'Large swaps', '--metric', 'Swap size (USD)', '--when', 'value >= 10000', '--message', '{name(sender())} swapped {value}', '--to', '#alerts']);
         const post = calls.find((c) => c.method === 'POST' && c.path === '/api/mainnet/reports');
         expect(post?.body).toEqual({ name: 'Large swaps', cadence: 'each', metric: 'Swap size (USD)', when: 'value >= 10000', message: '{name(sender())} swapped {value}', channelIds: ['ch2'] });
         const out = printed();
@@ -396,64 +404,64 @@ describe('report create --on-* / update on an each-time report', () => {
     useEnvAuth();
     const made = (body: Record<string, unknown>, each: Record<string, unknown>) => ({ payload: { report: report({ id: 'rep11', name: body.name, cadence: 'each', rows: [], each, channels: [] }) } });
 
-    test('--on-member posts a member trigger with its on word; --digest and --when ride along; the name comes from the subject', async () => {
+    test('--on-member posts a member trigger with its on word; --when rides along; the name comes from the subject; --digest is refused', async () => {
         const calls = mockApi({
             'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
             'POST /api/mainnet/reports': (c: any) => made(c.body, { kind: 'member', subject: 'a contract leaves Wildcat markets', metricId: null, metricName: null, when: '{what} == "left"', message: c.body.message, digestMinutes: 60 }),
         });
-        await run(['report', 'create', '--on-member', 'Wildcat markets:left', '--message', '{name(contract)} left {group}', '--when', '{what} == "left"', '--digest', '1h']);
+        await expect(reportCommand(['create', '--on-member', 'Wildcat markets:left', '--message', 'x', '--digest', '1h'])).rejects.toThrow(/sends once per block/);
+        await reportCommand(['create', '--on-member', 'Wildcat markets:left', '--message', '{name(contract)} left {group}', '--when', '{what} == "left"']);
         const post = calls.find((c) => c.method === 'POST' && c.path === '/api/mainnet/reports');
-        expect(post?.body).toEqual({ name: 'Each time: Wildcat markets', cadence: 'each', trigger: { kind: 'member', group: 'Wildcat markets', on: 'left' }, when: '{what} == "left"', message: '{name(contract)} left {group}', digestMinutes: 60, channelIds: [] });
+        expect(post?.body).toEqual({ name: 'Each time: Wildcat markets', cadence: 'each', trigger: { kind: 'member', group: 'Wildcat markets', on: 'left' }, when: '{what} == "left"', message: '{name(contract)} left {group}', channelIds: [] });
         const out = printed();
         expect(out.some((l) => l.includes('each time a contract leaves Wildcat markets where {what} == "left"'))).toBe(true);
-        expect(out.some((l) => l.includes('digest:     one message every 1h'))).toBe(true);
     });
 
-    test('--on-event carries the event and --value; --on-row and --on-monitor split their on word; --on-call keeps the method; one trigger at a time', async () => {
+    test('--on-event carries the event and --value; --on-row splits its on word; --on-call is refused (calls are not collected); one trigger at a time; no --on-monitor', async () => {
         const calls = mockApi({
             'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
             'POST /api/mainnet/reports': (c: any) => made(c.body, { kind: 'metricRecord', subject: 'Swap fires', metricId: 'cm9', metricName: 'Swaps (report)', when: 'true', message: c.body.message, digestMinutes: null }),
         });
-        await run(['report', 'create', '--on-event', 'Swap', '--value', 'usd(amount0, token0())', '--message', '{name(sender())} swapped {value}', '--name', 'Swaps']);
-        await run(['report', 'create', '--on-row', 'Loans:finished', '--message', 'Loan {id} repaid']);
-        await run(['report', 'create', '--on-monitor', 'any', '--message', '{monitor} {what}']);
-        await run(['report', 'create', '--on-call', 'transfer(address,uint256)', '--scope', 'tag:pools', '--message', '{name(caller)} called {method}']);
+        await reportCommand(['create', '--on-event', 'Swap', '--value', 'usd(amount0, token0())', '--message', '{name(sender())} swapped {value}', '--name', 'Swaps']);
+        await reportCommand(['create', '--on-row', 'Loans:finished', '--message', 'Loan {id} repaid']);
+        await expect(reportCommand(['create', '--on-call', 'transfer(address,uint256)', '--scope', 'tag:pools', '--message', 'x'])).rejects.toThrow(/function call are not available/);
         const posts = calls.filter((c) => c.method === 'POST' && c.path === '/api/mainnet/reports').map((c) => c.body);
         expect(posts[0].trigger).toEqual({ kind: 'event', event: 'Swap', value: 'usd(amount0, token0())' });
         expect(posts[1].trigger).toEqual({ kind: 'row', table: 'Loans', on: 'finished' });
-        expect(posts[2].trigger).toEqual({ kind: 'monitor', monitor: 'any' });
-        expect(posts[3].trigger).toEqual({ kind: 'call', method: 'transfer(address,uint256)' });
-        expect(posts[3].scope).toEqual({ kind: 'tag', tag: 'pools' });
-        await expect(run(['report', 'create', '--on-row', 'Loans', '--on-member', 'pools', '--message', 'x'])).rejects.toThrow(/Pass one trigger/);
-        await expect(run(['report', 'create', '--on-row', 'Loans'])).rejects.toThrow(/needs --message/);
-        await expect(run(['report', 'create', '--on-row', 'Loans', '--message', 'x', '--digest', '0m'])).rejects.toThrow(/--digest must be from 1m to 7d/);
+        expect(posts).toHaveLength(2);
+        // an alert on another alert is not made any more (2026-11-07)
+        await expect(reportCommand(['create', '--on-monitor', 'any', '--message', 'x'])).rejects.toThrow(/--on-monitor/);
+        await expect(reportCommand(['create', '--on-row', 'Loans', '--on-member', 'pools', '--message', 'x'])).rejects.toThrow(/Pass one trigger/);
+        await expect(reportCommand(['create', '--on-row', 'Loans'])).rejects.toThrow(/needs --message/);
+        await expect(reportCommand(['create', '--on-row', 'Loans', '--message', 'x', '--digest', '30m'])).rejects.toThrow(/takes no --digest/);
     });
 
-    test('update on an each-time report patches when, message, digest and on; a schedule flag is refused', async () => {
+    test('update on an each-time report patches when, message and on; --digest is refused, --no-digest takes an old one off; a schedule flag is refused', async () => {
         const existing = report({ id: 'rep11', name: 'Repaid loans', cadence: 'each', rows: [], each: { kind: 'row', subject: 'a row finishes in Loans', metricId: null, metricName: null, when: '', message: 'Loan {id} repaid', digestMinutes: null }, channels: [] });
         const calls = mockApi({
             ...listOf([existing]),
             'GET /api/cli/alert-channels': () => ({ payload: { channels } }),
             'PATCH /api/mainnet/reports/rep11': (c: any) => ({ payload: { report: { ...existing, each: { ...(existing as any).each, when: c.body.when, message: c.body.message, digestMinutes: c.body.digestMinutes } } } }),
         });
-        await run(['report', 'update', 'Repaid loans', '--when', '{Principal} > 1000', '--message', 'Loan {id} repaid: {Principal}', '--digest', '30m', '--on', 'both']);
+        await expect(reportCommand(['update', 'Repaid loans', '--digest', '30m'])).rejects.toThrow(/takes no --digest/);
+        await reportCommand(['update', 'Repaid loans', '--when', '{Principal} > 1000', '--message', 'Loan {id} repaid: {Principal}', '--on', 'both']);
         const patch = calls.find((c) => c.method === 'PATCH')!;
-        expect(patch.body).toEqual({ when: '{Principal} > 1000', message: 'Loan {id} repaid: {Principal}', digestMinutes: 30, on: 'both' });
-        await run(['report', 'update', 'Repaid loans', '--no-digest']);
+        expect(patch.body).toEqual({ when: '{Principal} > 1000', message: 'Loan {id} repaid: {Principal}', on: 'both' });
+        await reportCommand(['update', 'Repaid loans', '--no-digest']);
         expect(calls.filter((c) => c.method === 'PATCH')[1].body).toEqual({ digestMinutes: null });
-        await expect(run(['report', 'update', 'Repaid loans', '--every', '1h'])).rejects.toThrow(/--every is for a scheduled report/);
+        await expect(reportCommand(['update', 'Repaid loans', '--every', '1h'])).rejects.toThrow(/--every is for a scheduled report/);
     });
 });
 
 describe('report intervals', () => {
-    it('--every and --digest take any whole minutes from 1m to 7d', async () => {
-        const { parseEvery, parseDigest, parseWindow, everyWord } = await import('../../src/cli/commands/report');
+    it('--every takes any whole minutes from 1m to 7d', async () => {
+        const { parseEvery, parseWindow, everyWord } = await import('../../src/cli/commands/report');
         expect(parseEvery('1m')).toBe(1);
         expect(parseEvery('7')).toBe(7);
         expect(parseEvery('90m')).toBe(90);
         expect(parseEvery('4h')).toBe(240);
         expect(parseEvery('1d')).toBe(1440);
-        expect(parseDigest('7d')).toBe(10_080);
+        expect(parseEvery('7d')).toBe(10_080);
         expect(parseWindow('1m')).toBe('1m');
         expect(everyWord(1)).toBe('1m');
         expect(everyWord(1440)).toBe('1d');

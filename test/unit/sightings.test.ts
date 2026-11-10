@@ -1,5 +1,5 @@
 import { run } from '../../src/cli/index';
-import { quietStretches, windowWords, type SightingsPayload } from '../../src/cli/commands/monitor';
+import { monitorCommand, quietStretches, windowWords, type SightingsPayload } from '../../src/cli/commands/monitor';
 import { mockApi, useEnvAuth, printed, RecordedCall } from './_mockApi';
 
 // A silence monitor's sightings: the calls (or emissions) it counts off the chain's record,
@@ -95,7 +95,7 @@ describe('monitor show / sightings on a silence monitor', () => {
     it('show reads the sightings and prints the count, how long quiet, the longest gap, the strip and the quiet stretches', async () => {
         const p = sightings();
         const calls = mockApi({ ...base, 'GET /api/mainnet/invariants/inv9/sightings': () => ({ payload: p }) });
-        await run(['monitor', 'show', 'sAVAX rewards stopped accruing', '--range', '7d']);
+        await monitorCommand(['show', 'sAVAX rewards stopped accruing', '--range', '7d']);
         expect(query(calls.find((c) => c.path.includes('/sightings'))!)).toEqual({ range: '7d' });
         const out = printed();
         expect(out[0]).toBe('sAVAX rewards stopped accruing  (inv9)');
@@ -115,22 +115,22 @@ describe('monitor show / sightings on a silence monitor', () => {
     it('show says when nothing was seen, when the record is capped, and when the chain is not collected', async () => {
         const p = sightings();
         mockApi({ ...base, 'GET /api/mainnet/invariants/inv9/sightings': () => ({ payload: { ...p, total: 0, sightings: [], bins: [] } }) });
-        await run(['monitor', 'show', 'inv9']);
+        await monitorCommand(['show', 'inv9']);
         expect(printed().find((l) => l.startsWith('  sightings:'))).toMatch(/^ {2}sightings: 0 calls in the last 24h · last seen .* ago \(2025-10-05 \d{2}:\d{2} UTC\), from the monitor's own record · quiet /);
 
         mockApi({ ...base, 'GET /api/mainnet/invariants/inv9/sightings': () => ({ payload: { ...p, total: 5000, capped: true } }) });
-        await run(['monitor', 'show', 'inv9']);
+        await monitorCommand(['show', 'inv9']);
         expect(printed()).toContain('    quiet stretches: not read — the sightings are a sample at this volume');
 
         mockApi({ ...base, 'GET /api/mainnet/invariants/inv9/sightings': () => ({ payload: { ...p, frontierSec: null, total: 0, sightings: [], bins: [] } }) });
-        await run(['monitor', 'show', 'inv9']);
+        await monitorCommand(['show', 'inv9']);
         expect(printed()).toContain('  sightings: chain not collected');
     });
 
     it('sightings lists them newest first, up to --limit; a threshold monitor has none', async () => {
         const p = sightings();
         mockApi({ ...base, 'GET /api/mainnet/invariants/inv9/sightings': () => ({ payload: p }) });
-        await run(['monitor', 'sightings', 'inv9', '--limit', '2']);
+        await monitorCommand(['sightings', 'inv9', '--limit', '2']);
         const out = printed();
         expect(out[0]).toBe('sAVAX rewards stopped accruing · sightings · last 24h');
         expect(out[1]).toMatch(/^4 calls between \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC and \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/);
@@ -141,6 +141,6 @@ describe('monitor show / sightings on a silence monitor', () => {
         expect(out.at(-1)).toBe('  … 2 more (--limit, or --json for all)');
 
         mockApi(base);
-        await expect(run(['monitor', 'sightings', 'inv1'])).rejects.toThrow('"Treasury · Native balance" is not a silence monitor — sightings are what a silence monitor counts.');
+        await expect(monitorCommand(['sightings', 'inv1'])).rejects.toThrow('"Treasury · Native balance" is not a silence monitor — sightings are what a silence monitor counts.');
     });
 });
