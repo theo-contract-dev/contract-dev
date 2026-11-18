@@ -9,14 +9,15 @@ describe('incidents', () => {
         { id: 'inc0', kind: 'breach', openedAt: '2026-09-10T10:00:00Z', resolvedAt: '2026-09-10T11:00:00Z', ackedAt: '2026-09-10T10:05:00Z', notifyCount: 1, level: 'warning', peakLevel: 'warning', invariantId: 'inv1', name: 'Treasury floor', exprText: 'bal >= 25000', warnExprText: 'bal >= 30000', enabled: true, chainId: null, address: null },
     ];
 
-    it('list passes --days/--limit and prints open vs resolved', async () => {
+    it('list passes --last (as days) and --limit and prints open vs resolved', async () => {
         const calls = mockApi({ 'GET /api/mainnet/incidents': () => ({ payload: { incidents: rows, days: 30 } }) });
-        await incidentsCommand(['--days', '30', '--limit', '10']);
+        await incidentsCommand(['--last', '30d', '--limit', '10']);
         expect(calls[0].path).toBe('/api/mainnet/incidents?days=30&limit=10');
         const out = printed();
         expect(out[0]).toMatch(/^inc1 {2}alert {3}2026-09-16T10:00:00Z {2}OPEN {30} Treasury floor — bal >= 25000 {2}\[chain 1 0x1111…1111\]$/);
         expect(out[1]).toMatch(/resolved 2026-09-10T11:00:00Z.*acked$/);
-        await expect(incidentsCommand(['--days', '0'])).rejects.toThrow(/--days/);
+        await expect(incidentsCommand(['--days', '7'])).rejects.toThrow('--days is gone: say --last <n>d (contract-dev alerts help).');
+        await expect(incidentsCommand(['--last', '1h'])).rejects.toThrow(/whole days/);
     });
 
     it('show prints evidence per input and every delivery', async () => {

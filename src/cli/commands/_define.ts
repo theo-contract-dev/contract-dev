@@ -4,6 +4,7 @@
 // STATE metric), `each` counts what happens (an ACTIVITY metric), `on table:` takes the table's.
 // The person never names the store, and never makes a metric by hand to put one in a report.
 
+import { refuseGoneFlags, METRIC_GONE } from './gone';
 import { flag, flagAll, onlyFlags, parseFlags, requirePositional, type ParsedFlags } from './_args';
 import { definitionFrom } from './eventMetric';
 import { chainFlag } from '../data';
@@ -19,7 +20,6 @@ export const DEFINE_FLAGS = [
   'token',
   'show',
   'each',
-  'event',
   'where',
   'read',
   'fixed',
@@ -28,7 +28,7 @@ export const DEFINE_FLAGS = [
   'split',
   'line',
   'unit',
-  'history',
+  'last',
   'keep',
   'pair',
   'column',
@@ -36,8 +36,6 @@ export const DEFINE_FLAGS = [
   'description',
   'hidden',
   'preview',
-  'group',
-  'contract',
 ] as const;
 
 export const DEFINE_HELP = `contract-dev metric define "<name>" --on <what> [--chain <id>] …
@@ -55,12 +53,14 @@ What it is on (--on): a contract or wallet by its name or 0x address · tag:<gro
   An ACTIVITY metric — what happened, added up from events per window (the address is watched for you):
     --each <Event>… [--value "<expr>"] [--where "<rule>"] [--read "<name>=<call>…"]… [--field "<name>=<expr>"]…
       [--aggregate sum|count|avg|min|max|latest] [--split contract|<field>] [--unit usd|count|number]
-      [--keep <param>…] [--pair "<Event> [on <field>]"]… [--history <days>] [--line "<what one line is>"]
+      [--keep <param>…] [--pair "<Event> [on <field>]"]… [--last <n>d] [--line "<what one line is>"]
       no --value counts the events; dollars only through a stated token: --value "usd(amount, token0())"
 
   On a table (--on table:"<t>"): [--column "<label>"] [--among active|done|all] [--aggregate …] (a state
     table: the column added up across its rows) or [--value "<expr>"] [--where …] (a table over events: its
-    rows counted or summed, under the table's own where)
+    rows counted or summed, under the table's own where). On a table over events, --value naming one of its
+    columns (or none: a count) with --split a column, contract or none adds up the rows the table keeps: no
+    event is read again, and the figures always agree with the table. A formula or a --where reads the events
 
   [--description "<sentence>"]  [--hidden: off the Metrics page, made for one report or alert]  [--preview]
 
@@ -73,6 +73,7 @@ Examples:
     --value "usd(abs(amount0) * fee / 1000000, t0)"
   contract-dev metric define "LP value" --on table:"Positions" --column Value
   contract-dev metric define "Big swaps a day" --on table:"Big swaps" --aggregate count
+  contract-dev metric define "Swap fees" --on table:"Swaps" --value feeusd --split id --line "a pool"
 
 The same words inline, in a report row or an alert, make the metric for it and keep it off the Metrics page:
   --row "metric:LP value=on table:Positions; column Value"     --on "metric:Supply=on steth; call totalSupply()"
@@ -81,11 +82,11 @@ The same words inline, in a report row or an alert, make the metric for it and k
 /** The define flags as the tool's input. */
 export function defineInputFromFlags(name: string, flags: ParsedFlags): Record<string, unknown> {
   const definition = definitionFrom(flags);
-  const each = [...flagAll(flags, 'each'), ...((definition.events as string[] | undefined) ?? [])];
+  // definitionFrom reads --each as the events
+  const each = (definition.events as string[] | undefined) ?? [];
   delete definition.events;
   const input: Record<string, unknown> = { name, ...definition };
-  const group = flag(flags, 'group');
-  const on = flag(flags, 'on') ?? (group ? `tag:${group}` : flag(flags, 'contract'));
+  const on = flag(flags, 'on');
   if (on) input.on = on;
   const chainId = chainFlag(flags);
   if (chainId != null) input.chainId = chainId;
@@ -137,7 +138,7 @@ export function splitClauses(text: string): string[] {
   return out.filter(Boolean);
 }
 
-export const CLAUSE_HELP = 'An inline metric is "<name>=<clause>; <clause>…", each clause a define flag without its dashes: on steth; call totalSupply(); each Swap; value usd(amount, token0()); where amount > 0; aggregate count; split contract; unit usd; column Value; among active; token 0x…; show usd; decimals 18; history 30; hidden.';
+export const CLAUSE_HELP = 'An inline metric is "<name>=<clause>; <clause>…", each clause a define flag without its dashes: on steth; call totalSupply(); each Swap; value usd(amount, token0()); where amount > 0; aggregate count; split contract; unit usd; column Value; among active; token 0x…; show usd; decimals 18; last 30d; hidden.';
 
 const CLAUSE_WORDS = new Set<string>(DEFINE_FLAGS);
 
@@ -147,6 +148,7 @@ export function clausesToArgs(text: string): string[] {
   for (const clause of splitClauses(text)) {
     const m = /^([a-z-]+)(?:\s+(.*))?$/s.exec(clause);
     const word = m?.[1] ?? '';
+    if (m && Object.prototype.hasOwnProperty.call(METRIC_GONE, word)) throw new Error(`"${word}" is gone: say ${METRIC_GONE[word].replace(/--/g, '')} (contract-dev metric define help).`);
     if (!m || !CLAUSE_WORDS.has(word)) throw new Error(`Unknown clause "${clause.split(/\s/)[0]}". ${CLAUSE_HELP}`);
     const rest = (m[2] ?? '').trim();
     if (word === 'hidden' || word === 'preview') {
@@ -155,7 +157,7 @@ export function clausesToArgs(text: string): string[] {
     }
     if (!rest) throw new Error(`"${word}" needs a value. ${CLAUSE_HELP}`);
     // several events in one clause: each Swap, Mint
-    if (word === 'each' || word === 'event') for (const e of rest.split(',').map((x) => x.trim()).filter(Boolean)) args.push(`--${word}`, e);
+    if (word === 'each') for (const e of rest.split(',').map((x) => x.trim()).filter(Boolean)) args.push(`--${word}`, e);
     else args.push(`--${word}`, rest.replace(/^"(.*)"$/s, '$1'));
   }
   return args;
@@ -210,6 +212,7 @@ export async function defineInline(name: string, clauses: string): Promise<{ id:
 /** `metric define "<name>" …` */
 export async function defineMetricCommand(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) return void console.log(DEFINE_HELP);
+  refuseGoneFlags(args, METRIC_GONE, 'metric define');
   const flags = parseFlags(args);
   onlyFlags(flags, 'metric define', DEFINE_FLAGS);
   const name = requirePositional(flags._ as string[], 0, 'name');

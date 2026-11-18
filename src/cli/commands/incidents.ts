@@ -1,3 +1,5 @@
+import { refuseGoneFlags } from './gone';
+import { lastDays, lastFlag } from '../last';
 import { parseFlags, flag, requirePositional } from './_args';
 import { apiRequest, requireAuth } from '../credentials';
 import { formatValue, shortHex, TrackedMetric } from './metrics';
@@ -5,7 +7,7 @@ import { formatValue, shortHex, TrackedMetric } from './metrics';
 const HELP = `contract-dev alerts — the workspace's alert episodes
 
 Usage:
-  contract-dev alerts [--days <n>] [--limit <n>]   What fired (default: last 7 days + anything still open)
+  contract-dev alerts [--last <n>d] [--limit <n>]  What fired (default: --last 7d, and anything still open)
   contract-dev alerts show <id>                   One episode in full: evidence, deliveries, who acked
   contract-dev alerts ack <id>                    Stop the reminders (the all-clear still comes)
   contract-dev alerts unack <id>                  Hand it back — reminders resume
@@ -136,14 +138,17 @@ export async function incidentsCommand(args: string[]): Promise<unknown> {
 }
 
 async function listIncidents(args: string[]): Promise<IncidentRow[]> {
+  refuseGoneFlags(args, { days: '--last <n>d', range: '--last <n>d', window: '--last <n>d' }, 'alerts');
   const flags = parseFlags(args);
   const query: string[] = [];
-  for (const key of ['days', 'limit'] as const) {
-    const raw = flag(flags, key);
-    if (raw === undefined) continue;
+  // --last <n>d: whole days (the route's days)
+  const last = lastFlag(flags);
+  if (last !== undefined) query.push(`days=${lastDays(last, 'Alerts')}`);
+  const raw = flag(flags, 'limit');
+  if (raw !== undefined) {
     const n = Number(raw);
-    if (!Number.isInteger(n) || n <= 0) throw new Error(`--${key} must be a positive integer`);
-    query.push(`${key}=${n}`);
+    if (!Number.isInteger(n) || n <= 0) throw new Error('--limit must be a positive integer');
+    query.push(`limit=${n}`);
   }
   const auth = requireAuth();
   const { incidents, days } = await apiRequest<{ incidents: IncidentRow[]; days: number }>(

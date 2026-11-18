@@ -225,7 +225,7 @@ export function tableClausesToArgs(text: string): string[] {
 
 /**
  * A --table: a table of the workspace by name or id with the report's clauses after a |, or
- * "<name>=<clauses>" (2026-11-07), a live table made for this report (the clauses of `table create`:
+ * "<name>=<clauses>" (2026-11-07), a table made for this report (the clauses of `table create`:
  * on, each or rows, where, keep, field, days, by, measure), kept off /tables and deleted with it.
  */
 export async function tableSpecFromFlag(raw: string): Promise<ReportTableSpec> {
@@ -728,7 +728,7 @@ const toRefs = (flags: ReturnType<typeof parseFlags>): string[] =>
 const ON_FLAGS: Record<string, string> = { 'on-event': 'event', 'on-value': 'value', 'on-row': 'row', 'on-member': 'member' };
 
 /** Function-call alerts are off for now (2026-11-08): calls are not collected; an event the method emits is. */
-export const NO_CALLS = 'Alerts on a function call are not available: calls are not collected. Follow the event the method emits instead: --event <Name>.';
+export const NO_CALLS = 'Alerts on a function call are not available: calls are not collected. Follow the event the method emits instead: --each <Event>.';
 
 /** `--each`, or one of the `--on-*` triggers, asks for an each-time report. */
 export const isEach = (flags: ReturnType<typeof parseFlags>): boolean => flag(flags, 'each') !== undefined || Object.keys(ON_FLAGS).some((k) => flag(flags, k) !== undefined);

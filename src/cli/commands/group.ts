@@ -32,7 +32,7 @@ Usage:
                                                       Name every member from its own reads: "{token0().symbol()} pool"
   contract-dev group name-pattern <group> --clear     Members keep their own names again
   contract-dev group column add <group> --label "…" --read "totalAssets()" [--args a,b] [--word <n>] [--decimals <n>]
-                              (then: contract-dev metric group "<name>" --group <group> --column <key> rolls it up)
+                              (then: contract-dev metric group "<name>" --on tag:<group> --column <key> rolls it up)
                               [--decimals-from "decimals()"] [--token <token> [--show usd]] [--unit int|pct|duration|rate|raw] [--attribute]
                               [--type address|uint|bool|string] [--key <key>]
                                                       A column on the group's table: one read on every member, refreshed

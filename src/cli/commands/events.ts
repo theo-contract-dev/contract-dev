@@ -1,54 +1,11 @@
 import { parseFlags, flag, flagAll, type ParsedFlags } from './_args';
 import { parseRead } from './eventMetric';
-import { runTool } from '../tools';
 import { printResult } from './_print';
 import { requireAuth, apiRequest } from '../credentials';
-import { chainFlag, limitFlag, lookupNames, nameKey, parseRange, RANGES, resolveContract, servedRangeNote } from '../data';
+import { chainFlag, limitFlag, lookupNames, nameKey, RANGES, resolveContract, servedRangeNote } from '../data';
+import { EVENT_WINDOWS, lastFlag, lastWindow, SUMMARY_WINDOWS } from '../last';
 import { chainLabel, DASH, fmtAge, fmtChange, fmtInt, nameOr, plural, shortAddr, sparkline, table, type Column } from '../view';
 
-const HELP = `contract-dev events — what your contracts emitted, event by event
-
-Usage:
-  contract-dev events [<contract>] [flags]     Every event fired in the window: how often, in how many
-                                               transactions, against the previous window; with a contract,
-                                               the events its ABI declares that never fired too
-
-Flags:
-  --range 24h|7d|30d|90d   Window (default 24h; Free workspaces keep 24h); --window reads the same
-  --chain <id|name>        One chain
-  --limit <n>              Rows to print (default 25)
-
-<contract> is an address or a watched contract's name. For the logs themselves, newest
-first, use \`contract-dev activity <contract> --events\`. Add --json for everything.
-
-Query (with --event): the events themselves, worked through formulas, in the language of metric define
-  contract-dev events [<contract> | --group <group> | --address 0x… --chain <id>] --event <Name> [--event …] [--chain <id|name>]
-                      [--read "<name>=<call> [on <target>] [with <arg>, …]"]… [--fixed <read>]…
-                      [--show "<name>=<expr>"]… [--where "<expr>"] [--sort "<expr>" [--asc]]
-                      [--by contract|day|week|sender|<name>]… [--sum|--avg|--min|--max "<expr>" | --count]
-                      [--window 1h|24h|7d|30d|90d|365d] [--limit <n>]   (--range reads the same)
-  --sort ranks the events, largest first (newest first without it); --by groups them and --sum, --avg,
-  --min, --max or --count adds each group up (without --by, the whole window: one total). Tokens are named in the formula: usd(raw, token),
-  amount(raw, token), the token an address, a read or a parameter (\`contract-dev describe <contract>\` shows each
-  field's token as checked against the contract's transactions). Each event is priced on its own day. Each listed
-  event says who made it: the wallet (a smart account when there is one), the signer it came via, a searcher bot.
-  A --sort on a field, abs(), usd()/amount() of one or max() of those (no --where) ranks the whole window; any
-  other reads the newest 10,000 events (1,000 with a read per transaction) and says where it started.
-  --address reads a contract nobody watches (a position manager, a factory, a pool) straight from the chain's
-  log history, narrowed: a --where equality on an indexed field (to == 0x…) is applied by the log index itself,
-  or --window is 7d at most. With no verified ABI, write the event as its full signature.
-
-
-Examples:
-  contract-dev events 0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640 --event Swap --read "t0=token0()" --fixed t0 \\
-    --sort "usd(abs(amount0), t0)" --limit 10
-  contract-dev events --group "Wildcat markets" --event Deposit --read "a=asset()" --fixed a \\
-    --where "usd(assetAmount, a) > 100000" --show "usd=usd(assetAmount, a)"
-  contract-dev events --group "Uniswap v3" --event Swap --read "t0=token0()" --fixed t0 \\
-    --by contract --by day --sum "usd(abs(amount0), t0)" --window 7d
-  contract-dev events --address 0xC36442b4a4522E871399CD717aBDD847Ab11FE88 --chain 1 --event Transfer \\
-    --where "to == 0xMYWALLET" --window 90d
-`;
 
 const AGGS = ['sum', 'avg', 'min', 'max'] as const;
 
@@ -133,20 +90,17 @@ export function queryLines(r: QueryResult): string[] {
   return out;
 }
 
-export function queryInput(flags: ParsedFlags): Record<string, unknown> {
-  const events = flagAll(flags, 'event').flatMap((e) => e.split(',')).map((e) => e.trim()).filter((e) => e && e !== 'true');
-  if (events.length === 0) throw new Error('Name the events: --event Swap (contract-dev events <contract> lists them).');
-  const input: Record<string, unknown> = { events };
-  const ref = (flags._ as string[]).join(' ').trim();
-  const group = flag(flags, 'group');
-  const address = flag(flags, 'address');
-  const chain = chainFlag(flags);
-  if (address === 'true') throw new Error('--address needs a 0x address (and --chain).');
-  if (address && (ref || (group && group !== 'true'))) throw new Error('Give --address, or a contract or --group, not both.');
-  if (address) input.address = address;
-  else if (ref) input.contract = ref;
-  else if (group && group !== 'true') input.group = group;
-  if (chain !== undefined) input.chainId = chain;
+/** Where `query events` looks: a watched contract or wallet, a group, the whole workspace, or a contract nobody watches by address. */
+export interface EventScope {
+  contract?: string;
+  group?: string;
+  address?: string;
+  chainId?: number;
+}
+
+/** `query events --each <Event> --last <duration>`: the query_events input from the flags: what to read, keep, show, rank or group. */
+export function eventsQueryInput(flags: ParsedFlags, events: string[], scope: EventScope): Record<string, unknown> {
+  const input: Record<string, unknown> = { events, ...scope };
   const fixed = new Set(flagAll(flags, 'fixed').map((f) => f.trim()));
   const reads = flagAll(flags, 'read').map((r) => parseRead(r, fixed));
   if (reads.length > 0) input.reads = reads;
@@ -165,13 +119,13 @@ export function queryInput(flags: ParsedFlags): Record<string, unknown> {
   if (flag(flags, 'asc') === 'true') input.asc = true;
   const by = flagAll(flags, 'by').flatMap((b) => b.split(',')).map((b) => b.trim()).filter((b) => b && b !== 'true');
   if (by.length > 0) input.by = by;
+  if (flagAll(flags, 'measure').length > 0) throw new Error('query events adds up with one measure: --sum, --avg, --min or --max "<expr>", or --count.');
   const measures = [...AGGS.flatMap((fn) => flagAll(flags, fn).map((expr) => ({ fn, expr }))), ...(flag(flags, 'count') === 'true' ? [{ fn: 'count' as const }] : [])];
   if (measures.length > 1) throw new Error('One measure per query: --sum, --avg, --min, --max or --count.');
   if (measures.length === 1) input.measure = measures[0];
-  // --range reads as --window here, as --window reads as --range on the summary (2026-10-28: an agent took one for the other)
-  const window = flag(flags, 'window') ?? flag(flags, 'range');
-  // a year reads as 1y too
-  if (window !== undefined) input.window = /^(1y|1yr|1year|12m)$/i.test(String(window).trim()) ? '365d' : window;
+  // the events tool's own windows, never rounded: 1h, 24h, 7d, 30d, 90d, 365d
+  const last = lastFlag(flags);
+  if (last !== undefined) input.window = lastWindow(last, EVENT_WINDOWS, 'events', { since: true });
   if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 20, 100);
   return input;
 }
@@ -202,25 +156,15 @@ export interface EventsPayload {
   unavailable?: 'store' | 'chain' | null;
 }
 
-export async function eventsCommand(args: string[]): Promise<EventsPayload | void> {
-  if (['help', '-h', '--help'].includes(args[0])) {
-    console.log(HELP);
-    return;
-  }
-  const flags = parseFlags(args);
-  // with --event: the events themselves, through formulas (query_events)
-  if (flagAll(flags, 'event').some((e) => e !== 'true')) {
-    if (flag(flags, 'save') !== undefined) throw new Error('--save is gone: a table of events kept under Tables is contract-dev table create "<name>" --from events … (contract-dev table help).');
-    const r = await runTool<QueryResult>(requireAuth(), 'query_events', queryInput(flags));
-    for (const line of queryLines(r)) console.log(line);
-    return r as unknown as EventsPayload;
-  }
-  const range = parseRange(flag(flags, 'range') === undefined && flag(flags, 'window') !== undefined ? { ...flags, range: flag(flags, 'window') } : flags, RANGES, '24h');
+/** `query events --on <contract>` with no --each: every event the contract (or every watched one) fired in the window, and the ones it declares that never fired. */
+export async function eventsSummary(flags: ParsedFlags, contractRef: string | null): Promise<EventsPayload> {
+  const last = lastFlag(flags);
+  const range = last === undefined ? '24h' : lastWindow(last, SUMMARY_WINDOWS, 'the events summary');
+  if (!(RANGES as readonly string[]).includes(range)) throw new Error(`--last on the events summary takes 24h, 7d, 30d or 90d (got: ${last}).`);
   const chainId = chainFlag(flags);
   const limit = limitFlag(flags, 25);
   const auth = requireAuth();
-  const ref = flags._[0];
-  const contract = ref ? await resolveContract(auth, ref, chainId) : null;
+  const contract = contractRef ? await resolveContract(auth, contractRef, chainId) : null;
   const q = new URLSearchParams({ range });
   const chain = contract?.chainId ?? chainId;
   if (chain !== undefined) q.set('chainId', String(chain));

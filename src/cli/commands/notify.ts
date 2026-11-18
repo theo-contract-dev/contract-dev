@@ -3,6 +3,7 @@
 // rule on a table's rows). The one command for them since 4.4.0: `report` and `monitor` are retired as
 // commands, and their modules (./report, ./monitor) are what this hands to. The words match the app's
 // Notifications page: the types, and the status a row wears.
+import { refuseGoneFlags } from './gone';
 import { apiRequest, requireAuth, type ResolvedAuth } from '../credentials';
 import { defineInline, inlineDefinition } from './_define';
 import { runTool } from '../tools';
@@ -38,25 +39,25 @@ A report: a table of figures on a schedule.
 
 An alert: a message on one of two triggers.
   When something happens (once per block: a block's matches in one message):
-  contract-dev notify add alert ["<name>"] --on <contract> --event <Name> --message "<text>" [--when "<condition>"]
+  contract-dev notify add alert ["<name>"] --on <contract> --each <Event> --message "<text>" [--when "<condition>"]
                              [--value "<expr>"] [--read name=call()]… [--to <dest>…]
                                                           --value is what each emission is worth (usd(amount, token));
                                                           a view of the emitting contract it needs is a --read, named
                                                           (--read t0=token0() --value "usd(abs(amount0), t0)")
-                                                          Instead of --event: --on-value "<metric>",
+                                                          Instead of --each: --on-value "<metric>",
                                                           --on-row "<table>[:opened|finished|both]",
                                                           --on-member "<group>[:joined|left|both]", --metric "<event metric>";
-                                                          --group <g> instead of --on for every contract in a group
+                                                          --on tag:<group> for every contract in a group
   When a condition is met (sent when it starts, and the all-clear when it clears):
   contract-dev notify add alert ["<name>"] --on metric:"<metric>" --when "<formula>" [--remind] [--to <dest>…] [--max-age <sec>]
                                                           Any metric, state or activity, by name or id; or defined here for
                                                           this alert: --on "metric:Supply=on steth; call totalSupply()"
                                                           (the clauses of metric define, off the Metrics page)
-  contract-dev notify add alert ["<name>"] --on <contract> --silence --event <Name> [--for 24h] [--remind]
+  contract-dev notify add alert ["<name>"] --on <contract> --silence --each <Event> [--for 24h] [--remind]
                                                           It goes quiet: no such event for the window
   contract-dev notify add alert ["<name>"] --on <contract> --failures [--rows "<where>"] [--by <column>] [--when "<rule>"] [--for 1h]
                                                           Its calls fail: a rule over failed, total and share in the window
-  contract-dev notify add alert ["<name>"] --on <contract> --overdue --event <Open> --answer <Close>… [--match <field>]… --for 3d
+  contract-dev notify add alert ["<name>"] --on <contract> --overdue --each <Open> --answer <Close>… [--match <field>]… --for 3d
                                                           Something opened is not answered in time; --match pairs each open
                                                           with its own answer (requestId, or requestId=_requestId); without
                                                           it any answer closes the oldest open
@@ -90,13 +91,13 @@ Examples:
   contract-dev notify add report --template daily --to "#alerts"
   contract-dev notify add report "Morning" --row transactions --row metric:"Treasury ETH" --columns 24h,7d --at 9
   contract-dev notify add report "Hourly swaps" --every 1h --row eventCount:Swap --columns 1h --to telegram
-  contract-dev notify add alert "Large swaps" --group "Uniswap pools" --event Swap --read t0=token0() --read t1=token1() \\
+  contract-dev notify add alert "Large swaps" --on tag:"Uniswap pools" --each Swap --read t0=token0() --read t1=token1() \\
     --value "max(usd(abs(amount0), t0), usd(abs(amount1), t1))" --when "value >= 100000" \\
     --message "{name(sender())} swapped {value} on {name(emitter())}" --to "#trades"
   contract-dev notify add alert "New markets" --on-member "Wildcat markets" --message "{name(contract)} joined"
   contract-dev notify add alert "Treasury low" --on metric:"Treasury ETH" --when "value < 25000" --remind --to telegram
-  contract-dev notify add alert "stETH quiet" --on steth --silence --event Transfer --for 24h
-  contract-dev notify add alert "Withdrawal unclaimed" --on "Withdrawal Queue" --overdue --event WithdrawalRequested \\
+  contract-dev notify add alert "stETH quiet" --on steth --silence --each Transfer --for 24h
+  contract-dev notify add alert "Withdrawal unclaimed" --on "Withdrawal Queue" --overdue --each WithdrawalRequested \\
     --answer WithdrawalClaimed --match requestId --for 7d
   contract-dev notify add alert "Loan at risk" --on table:"Loans" --column "Health factor" --when "value < 1.1"
   contract-dev notify pause "Large swaps"
@@ -368,7 +369,7 @@ export async function inlineMetrics(args: string[]): Promise<string[]> {
 
 export function reportArgs(rest: string[]): string[] {
   const ts = tokens(rest);
-  if (has(ts, ...UPDATE_TRIGGERS)) throw new Error('A message each time something happens is an alert on an event: `contract-dev notify add alert … --event <Name> --message "…"` (try: notify help).');
+  if (has(ts, ...UPDATE_TRIGGERS)) throw new Error('A message each time something happens is an alert on an event: `contract-dev notify add alert … --each <Event> --message "…"` (try: notify help).');
   const [name, ...more] = positionals(ts);
   if (more.length) throw new Error(`Unexpected "${more[0]}": a report takes its name, then flags (try: notify help).`);
   return ['create', ...(name ? ['--name', name] : []), ...untokens(flagsOnly(ts))];
@@ -377,9 +378,9 @@ export function reportArgs(rest: string[]): string[] {
 export function updateArgs(rest: string[]): string[] {
   const ts = tokens(rest);
   if (has(ts, 'call')) throw new Error('--call is a read, the way a metric takes one (metric define help); a method called on the contract is --method <name>.');
-  if (!has(ts, ...UPDATE_TRIGGERS)) throw new Error('An alert on something happening needs what happens: --event <Name> (with --on <contract> or --group <group>), --on-value, --on-row, --on-member or --metric (try: notify help).');
+  if (!has(ts, ...UPDATE_TRIGGERS)) throw new Error('An alert on something happening needs what happens: --each <Event> (with --on <contract> or --on tag:<group>), --on-value, --on-row, --on-member or --metric (try: notify help).');
   if (has(ts, 'silence', 'failures', 'overdue')) throw new Error('A contract going quiet, failing or leaving something unanswered is an alert on a condition: `contract-dev notify add alert … --silence` (try: notify help).');
-  if (has(ts, 'on', 'group') && has(ts, 'scope')) throw new Error('Pass --on <contract> or --group <group>, not --scope as well.');
+  if (has(ts, 'on', 'group') && has(ts, 'scope')) throw new Error('Pass --on <contract> or --on tag:<group>, not --scope as well.');
   // once per block since 2026-11-06: no summaries (figures every hour are a report: notify add report --every 1h)
   if (has(ts, 'digest')) throw new Error('An alert on something happening sends once per block, every match in the block in one message: it takes no --digest. Figures every hour are a report: `contract-dev notify add report --every 1h`.');
   const [name, ...more] = positionals(ts);
@@ -402,11 +403,11 @@ export function monitorArgs(rest: string[]): string[] {
   const ts = tokens(rest);
   if (has(ts, 'warn')) throw new Error('An alert on a condition has one line: --when. Make a second alert for a second line.');
   if (has(ts, 'call')) throw new Error('--call is a read, the way a metric takes one (metric define help); a method called on the contract is --method <name>.');
-  if (has(ts, 'message', 'digest', ...UPDATE_TRIGGERS.filter((f) => f.startsWith('on-')))) throw new Error('A message each time something happens is an alert on an event: `contract-dev notify add alert … --event <Name> --message "…"` (try: notify help).');
+  if (has(ts, 'message', 'digest', ...UPDATE_TRIGGERS.filter((f) => f.startsWith('on-')))) throw new Error('A message each time something happens is an alert on an event: `contract-dev notify add alert … --each <Event> --message "…"` (try: notify help).');
   const sentence = has(ts, 'on', 'group', 'event', 'silence', 'failures', 'overdue');
   // an event firing is news: an update. A monitor on an event watches it stop, or waits for its answer.
   if (sentence && has(ts, 'event') && !has(ts, 'silence', 'failures', 'overdue')) {
-    throw new Error('An event each time it is emitted is an alert on something happening: add --message (`contract-dev notify add alert … --event <Name> --message "…"`), or --silence to alert when it stops.');
+    throw new Error('An event each time it is emitted is an alert on something happening: add --message (`contract-dev notify add alert … --each <Event> --message "…"`), or --silence to alert when it stops.');
   }
   const [name, valueArg, ...more] = positionals(ts);
   if (more.length) throw new Error(`Unexpected "${more[0]}": an alert takes its name, then flags (try: notify help).`);
@@ -504,8 +505,35 @@ async function addNotification(args: string[]): Promise<unknown> {
   }
 }
 
+/**
+ * An alert's words (5.0.0): `--on tag:<group>` for every contract of a group and `--each <Event>` for the event,
+ * as table, query and metric say them. `--group` and `--event` are refused with those; the commands below still
+ * read their own older names, so the new words are handed on as them.
+ */
+export function alertWords(args: string[]): string[] {
+  refuseGoneFlags(args, { group: '--on tag:<group>', event: '--each <Event>' }, 'notify');
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const eq = a.indexOf('=');
+    const name = a.startsWith('--') ? (eq > 0 ? a.slice(2, eq) : a.slice(2)) : null;
+    const next = eq > 0 ? a.slice(eq + 1) : args[i + 1];
+    const valued = next !== undefined && (eq > 0 || !next.startsWith('--'));
+    if (name === 'each' && valued) {
+      out.push('--event', next);
+      if (eq < 0) i++;
+    } else if (name === 'on' && valued && /^(tag|group):\s*\S/i.test(next)) {
+      out.push('--group', next.replace(/^(tag|group):\s*/i, '').replace(/^"(.*)"$/, '$1'));
+      if (eq < 0) i++;
+    } else out.push(a);
+  }
+  return out;
+}
+
 async function addNotificationOnce(args: string[]): Promise<unknown> {
-  const [type, ...rawRest] = args;
+  const [type, ...given] = args;
+  const isAlert = ['alert', 'alerts', 'update', 'updates', 'monitor', 'monitors'].includes(type ?? '');
+  const rawRest = isAlert ? alertWords(given) : given;
   // --remind: a condition alert re-sent hourly while it holds (2026-11-06), set once it is made
   const remind = rawRest.includes('--remind');
   const rest = await inlineMetrics(rawRest.filter((a) => a !== '--remind'));

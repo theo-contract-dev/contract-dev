@@ -21,7 +21,7 @@ describe('query', () => {
                     totals: { headroom: -1735063.28 },
                 }),
         });
-        await run(['query', 'contracts', '--group', 'Wildcat markets', '--show', 'headroom={Held} - {Required}', '--where', 'headroom < 0', '--sort', 'headroom', '--asc', '--total', 'Supplied,headroom', '--limit', '2', '--chain', '1', '--kind', 'token']);
+        await run(['query', 'contracts', '--on', 'tag:Wildcat markets', '--show', 'headroom={Held} - {Required}', '--where', 'headroom < 0', '--sort', 'headroom', '--asc', '--total', 'Supplied,headroom', '--limit', '2', '--chain', '1', '--kind', 'token']);
         expect(calls.map((c) => [c.path, c.body.input])).toEqual([
             [
                 '/api/mainnet/tools/query_contracts',
@@ -40,7 +40,7 @@ describe('query', () => {
             'POST /api/mainnet/tools/query_metric': () => ok({ dataset: 'metric', columns: [], rows: [{ day: '2026-10-17', value: 12.5, rows: 3 }], matched: 1, returned: 1, more: 0, grouped: { by: ['day'], measure: 'sum({value})' } }),
         });
         await run(['query', 'table', 'Withdrawal', 'rounds', '--among', 'all', '--where', '{Stage} == "Paying"']);
-        await run(['query', 'metric', 'Deposits', '--days', '30', '--by', 'day', '--sum', '{value}']);
+        await run(['query', 'metric', 'Deposits', '--last', '30d', '--by', 'day', '--sum', '{value}']);
         expect(calls.map((c) => c.body.input)).toEqual([
             { where: '{Stage} == "Paying"', data: 'Withdrawal rounds', among: 'all' },
             { by: ['day'], measure: { fn: 'sum', expr: '{value}' }, metric: 'Deposits', days: 30 },
@@ -50,7 +50,7 @@ describe('query', () => {
 
     it('refuses what the server would: an unknown dataset, a measure with no --by, a --show with no name', async () => {
         mockApi({});
-        await expect(run(['query', 'pools'])).rejects.toThrow(/Say which dataset/);
+        await expect(run(['query', 'pools'])).rejects.toThrow(/Say which rows/);
         await expect(run(['query', 'monitors', '--count'])).rejects.toThrow(/say --by/);
         await expect(run(['query', 'monitors', '--show', '{Held} - 1'])).rejects.toThrow(/name=expression/);
         await expect(run(['query', 'table'])).rejects.toThrow(/Name the table/);
@@ -61,7 +61,7 @@ describe('query', () => {
         await run(['query', 'metric', 'help']);
         await run(['query', 'table', '--help']);
         expect(calls).toHaveLength(0);
-        expect(printed().join('\n')).toMatch(/contract-dev query — ask one dataset a question/);
+        expect(printed().join('\n')).toMatch(/contract-dev query — ask a question, once/);
     });
 
     it('--breakdown splits each group again: sent with --by, its parts printed indented under each row', async () => {
@@ -134,7 +134,7 @@ describe('query contracts --read', () => {
     useEnvAuth();
     it('a view with its token is a call read, an expression is an expr read, and they keep their order', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/query_contracts': () => ok({ dataset: 'contracts', columns: [], rows: [], matched: 0, returned: 0, more: 0 }) });
-        await run(['query', 'contracts', '--group', 'Wildcat markets', '--read', 'cov=coverageLiquidity() in asset()', '--read', 'held=totalAssets() in asset() as amount', '--read', 'gap=held - cov', '--sort', 'gap', '--asc']);
+        await run(['query', 'contracts', '--on', 'tag:Wildcat markets', '--read', 'cov=coverageLiquidity() in asset()', '--read', 'held=totalAssets() in asset() as amount', '--read', 'gap=held - cov', '--sort', 'gap', '--asc']);
         expect(calls[0].body.input).toEqual({
             sort: 'gap',
             asc: true,
@@ -161,7 +161,7 @@ describe('query contracts --read', () => {
                     readAt: { sp7: { at: '2026-10-12T14:02:00Z', blocks: [{ chainId: 1, block: 23456789, time: '2026-10-12T14:01:47Z' }] } },
                 }),
         });
-        await run(['query', 'contracts', '--group', 'Vaults', '--read', 'sp=convertToAssets(1000000000000000000)', '--read', 'sp7=convertToAssets(1000000000000000000) in asset() as amount at 7d', '--show', 'apr=(sp - sp7) / sp7 * 52', '--sort', 'apr']);
+        await run(['query', 'contracts', '--on', 'tag:Vaults', '--read', 'sp=convertToAssets(1000000000000000000)', '--read', 'sp7=convertToAssets(1000000000000000000) in asset() as amount at 7d', '--show', 'apr=(sp - sp7) / sp7 * 52', '--sort', 'apr']);
         expect(calls[0].body.input).toEqual({
             show: [{ name: 'apr', expr: '(sp - sp7) / sp7 * 52' }],
             sort: 'apr',
@@ -188,7 +188,7 @@ describe('query contracts --read', () => {
                     more: 30,
                 }),
         });
-        await run(['query', 'contracts', '--group', 'Vaults', '--read', 'sp=convertToAssets(1000000000000000000)', '--series', '30d', '--every', '1d']);
+        await run(['query', 'contracts', '--on', 'tag:Vaults', '--read', 'sp=convertToAssets(1000000000000000000)', '--series', '30d', '--every', '1d']);
         expect(calls[0].body.input).toEqual({ group: 'Vaults', reads: [{ name: 'sp', call: 'convertToAssets(1000000000000000000)' }], series: { from: '30d', every: '1d' } });
         const out = printed().join('\n');
         expect(out).toMatch(/Series: every 1d · 31 points · 2026-09-19 14:02 → 2026-10-19 14:02/);
@@ -207,7 +207,7 @@ describe('query transactions / transfers / wallets', () => {
             'POST /api/mainnet/tools/query_transactions': () =>
                 ok({ dataset: 'transactions', columns: [{ key: 'time', label: 'Time', kind: 'number', unit: 'time' }, { key: 'contract', label: 'Contract', kind: 'text' }, { key: 'status', label: 'Status', kind: 'text' }], rows: [{ hash: '0xabc', time: 1_700_000_000, contract: 'Wintermute USDC', status: 'failed' }], matched: 1, returned: 1, more: 0, notes: ['History starts 2026-10-18 for the newest of these contracts; earlier activity is not counted (still being read).'] }),
         });
-        await run(['query', 'transactions', '--group', 'Wildcat markets', '--days', '30', '--signer', '0x' + '1'.repeat(40), '--failed', '--routed', '--method', 'borrow', '--by', 'day', '--count']);
+        await run(['query', 'transactions', '--on', 'tag:Wildcat markets', '--last', '30d', '--signer', '0x' + '1'.repeat(40), '--failed', '--routed', '--method', 'borrow', '--by', 'day', '--count']);
         const out = printed();
         expect(calls[0].body.input).toEqual({ by: ['day'], measure: { fn: 'count' }, group: 'Wildcat markets', signer: '0x' + '1'.repeat(40), failed: true, direct: false, method: 'borrow', days: 30 });
         expect(out.join('\n')).toContain('2023-11-14 22:13  Wintermute USDC  failed');
@@ -219,11 +219,11 @@ describe('query transactions / transfers / wallets', () => {
             'POST /api/mainnet/tools/query_transfers': () => ok({ dataset: 'transfers', columns: [], rows: [], matched: 0, returned: 0, more: 0 }),
             'POST /api/mainnet/tools/query_wallets': () => ok({ dataset: 'wallets', columns: [{ key: 'wallet', label: 'Wallet', kind: 'text' }], rows: [{ wallet: '0xabc' }], matched: 1, returned: 1, more: 0, active: { now: 26, before: 22 }, new: { now: 16, before: 15 } }),
         });
-        await run(['query', 'transfers', '--contract', 'Wintermute USDC', '--out', '--token', 'USDC', '--counterparty', '0x' + '2'.repeat(40), '--by', 'counterparty', '--sum', '{USD}']);
+        await run(['query', 'transfers', '--on', 'Wintermute USDC', '--out', '--token', 'USDC', '--counterparty', '0x' + '2'.repeat(40), '--by', 'counterparty', '--sum', '{USD}']);
         expect(calls[0].body.input).toEqual({ by: ['counterparty'], measure: { fn: 'sum', expr: '{USD}' }, contract: 'Wintermute USDC', direction: 'out', token: 'USDC', counterparty: '0x' + '2'.repeat(40) });
         await run(['query', 'transfers', '--before', '2026-10-01T00:00:00Z']);
         expect(calls[1].body.input).toEqual({ before: '2026-10-01T00:00:00Z' });
-        await run(['query', 'wallets', '--days', '7']);
+        await run(['query', 'wallets', '--last', '168h']);
         const out = printed();
         expect(calls[2].body.input).toEqual({ days: 7 });
         expect(out).toContain('Active 26 (the window before: 22) · New 16 (before: 15)');
@@ -251,7 +251,7 @@ describe('query measures', () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/query_data': () => ok({ dataset: 'metric', data: { name: 'DZap swaps', kind: 'data' }, columns: [], rows: [], matched: 0, returned: 0, more: 0 }),
         });
-        await run(['query', 'table', 'DZap', 'swaps', '--days', '90', '--by', 'wallet', '--measure', 'volume=sum(vol)', '--measure', 'swaps=count', '--having', 'volume > 10000', '--sort', 'swaps']);
+        await run(['query', 'table', 'DZap', 'swaps', '--last', '90d', '--by', 'wallet', '--measure', 'volume=sum(vol)', '--measure', 'swaps=count', '--having', 'volume > 10000', '--sort', 'swaps']);
         await run(['query', 'table', 'Withdrawal rounds', '--among', 'all', '--by', 'contract', '--count']);
         expect(calls.map((c) => c.body.input)).toEqual([
             { sort: 'swaps', by: ['wallet'], measures: [{ name: 'volume', fn: 'sum', expr: 'vol' }, { name: 'swaps', fn: 'count' }], having: 'volume > 10000', data: 'DZap swaps', days: 90 },
@@ -350,44 +350,44 @@ describe('query measures', () => {
     });
 });
 
-describe('live tables and snapshots', () => {
+describe('tables kept from a question, and snapshots', () => {
     useEnvAuth();
     const saved = (kept: boolean) =>
         ok({ dataset: 'data', columns: [], rows: [{ wallet: '0xa', volume: 5 }], matched: 1, returned: 1, more: 0, saved: { id: 'q1', url: `http://app/${kept ? 'tables' : 'queries'}/q1`, as: 'table', title: 'Top wallets', asOf: '2026-10-26T00:00:00Z', ...(kept ? { kept } : {}) } });
 
-    it('table create --from asks the question through query and keeps it as a live table named by the table', async () => {
+    it('table create on another table or on kept rows asks the question through query and keeps it as a table named by the table', async () => {
         const calls = mockApi({ 'POST /api/mainnet/tools/query_data': () => saved(true), 'POST /api/mainnet/tools/query_transfers': () => saved(true) });
-        await run(['table', 'create', 'Top wallets', '--from', 'DZap activity', '--days', '1', '--by', 'wallet', '--measure', 'volume=sum(vol)']);
-        await run(['table', 'create', 'Top wallets', '--from=transfers', '--group', 'DZap Routers', '--by', 'wallet', '--sum', '{USD}']);
+        await run(['table', 'create', 'Top wallets', '--on', 'table:DZap activity', '--last', '24h', '--by', 'wallet', '--measure', 'volume=sum(vol)']);
+        await run(['table', 'create', 'Top wallets', '--rows=transfers', '--on', 'tag:DZap Routers', '--by', 'wallet', '--sum', '{USD}']);
         expect(calls.map((c) => [c.path, c.body.input])).toEqual([
-            // one kind of kept answer since 2026-10-28: a live table; `as` and `keep` went with the snapshots
+            // one kind of kept answer since 2026-10-28: a table; `as` and `keep` went with the snapshots
             ['/api/mainnet/tools/query_data', { by: ['wallet'], measures: [{ name: 'volume', fn: 'sum', expr: 'vol' }], data: 'DZap activity', days: 1, save: { title: 'Top wallets' } }],
             ['/api/mainnet/tools/query_transfers', { by: ['wallet'], measure: { fn: 'sum', expr: '{USD}' }, group: 'DZap Routers', save: { title: 'Top wallets' } }],
         ]);
-        expect(printed().join('\n')).toMatch(/Live table under Tables · Top wallets: http:\/\/app\/tables\/q1/);
+        expect(printed().join('\n')).toMatch(/Table under Tables · Top wallets: http:\/\/app\/tables\/q1/);
     });
 
     it('--save, --keep, --title and --draw are gone (the snapshots under Queries went 2026-10-28) and say what to use', async () => {
         const calls = mockApi({});
         for (const flag of ['--save', '--keep', '--title', '--draw'])
-            await expect(run(['query', 'table', 'DZap activity', '--by', 'wallet', '--count', flag, ...(flag === '--title' || flag === '--draw' ? ['x'] : [])])).rejects.toThrow(/--save is gone: a table kept under Tables is contract-dev table create "<name>" --from <rows>/);
+            await expect(run(['query', 'table', 'DZap activity', '--by', 'wallet', '--count', flag, ...(flag === '--title' || flag === '--draw' ? ['x'] : [])])).rejects.toThrow(/--save is gone: a table kept under Tables is contract-dev table create "<name>" --rows <data>/);
         expect(calls).toHaveLength(0);
     });
 
-    it('a live table refuses an item table\'s flags and a snapshot\'s, and table create says which kind it needs', async () => {
+    it('a table over kept rows refuses the words of a table of things and a snapshot\'s, and table create says what it needs', async () => {
         mockApi({});
-        await expect(run(['table', 'create', 'X', '--from', 'transfers', '--opens', 'Foo'])).rejects.toThrow(/--opens is for a table that opens rows/);
-        await expect(run(['table', 'create', 'X', '--from', 'transfers', '--by', 'wallet', '--count', '--save'])).rejects.toThrow(/--save is gone/);
-        await expect(run(['table', 'create', 'X', '--group', 'G'])).rejects.toThrow(/--from events --event <Event> for a live table/);
+        await expect(run(['table', 'create', 'X', '--rows', 'transfers', '--formula', 'A={B}'])).rejects.toThrow(/--formula is for a table whose rows are things an event announces/);
+        await expect(run(['table', 'create', 'X', '--rows', 'transfers', '--by', 'wallet', '--count', '--save'])).rejects.toThrow(/--save is gone/);
+        await expect(run(['table', 'create', 'X', '--on', 'tag:G'])).rejects.toThrow(/Say what a row is: --each <Event>/);
     });
 
-    it('table create --from events is one call: the rows kept as data of its own, off the lists, and the question over them kept as the table, with the title and the question carried in `table`', async () => {
+    it('table create --each is one call: the rows kept as data of its own, off the lists, and the question over them kept as the table, with the title and the question carried in `table`', async () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/define_data': () => saved(true),
         });
         await run([
-            'table', 'create', 'Top integrators', '--from', 'events', '--group', 'DZap Routers',
-            '--event', 'DZapTokenSwapped', '--event', 'BridgeStarted', '--pair', 'DZapBridgeStarted on transactionId',
+            'table', 'create', 'Top integrators', '--on', 'tag:DZap Routers',
+            '--each', 'DZapTokenSwapped', '--each', 'BridgeStarted', '--pair', 'DZapBridgeStarted on transactionId',
             '--field', 'vol=usd(amount, from) on BridgeStarted', '--keep', 'integrator',
             '--where', 'vol > 0', '--by', 'integrator', '--measure', 'volume=sum(vol)',
         ]);
@@ -399,21 +399,20 @@ describe('live tables and snapshots', () => {
             pair: [{ event: 'DZapBridgeStarted', on: 'transactionId' }],
             fields: [{ name: 'vol', expr: 'usd(amount, from)', on: 'BridgeStarted' }],
             keep: ['integrator'],
-            // the server fills the window from the rows' history when --days is not given
+            // the server fills the window from the rows' history when --last is not given
             table: { title: 'Top integrators', where: 'vol > 0', by: ['integrator'], measures: [{ name: 'volume', fn: 'sum', expr: 'vol' }] },
         });
-        expect(printed().join('\n')).toMatch(/Live table under Tables · Top wallets: http:\/\/app\/tables\/q1/);
+        expect(printed().join('\n')).toMatch(/Table under Tables · Top wallets: http:\/\/app\/tables\/q1/);
     });
 
-    it('--days on a table from events reaches back over the rows kept and is the question\'s window; a question the server refuses leaves nothing behind (it deletes the rows itself, 2026-10-30)', async () => {
+    it('--last on a table from events reaches back over the rows kept and is the question\'s window; a question the server refuses leaves nothing behind (it deletes the rows itself, 2026-10-30)', async () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/define_data': () => ({ status: 400, payload: { error: 'No column is called nope.' } }),
         });
-        await expect(run(['table', 'create', 'X', '--from=events', '--contract', 'Router', '--event', 'Swap', '--days', '30', '--sort', 'nope'])).rejects.toThrow(/nope/);
+        await expect(run(['table', 'create', 'X', '--on', 'Router', '--each', 'Swap', '--last', '30d', '--sort', 'nope'])).rejects.toThrow(/nope/);
         expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tools/define_data']);
         expect(calls[0].body.input).toEqual({ name: 'X', contract: 'Router', events: ['Swap'], history: 30, table: { title: 'X', days: 30, sort: 'nope' } });
-        await expect(run(['table', 'create', 'X', '--from', 'events', '--group', 'G'])).rejects.toThrow(/--event names what each row is/);
-        await expect(run(['table', 'create', 'X', '--from', 'events', '--event', 'Swap'])).rejects.toThrow(/--group <group> or --contract/);
+        await expect(run(['table', 'create', 'X', '--each', 'Swap'])).rejects.toThrow(/Say whose events: --on <contract> or --on tag:<group>/);
     });
 });
 

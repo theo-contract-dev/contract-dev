@@ -8,7 +8,6 @@ import { channelsCommand } from './commands/monitor';
 import { incidentsCommand } from './commands/incidents';
 import { notifyCommand } from './commands/notify';
 import { statusCommand } from './commands/status';
-import { eventsCommand } from './commands/events';
 import { holdersCommand } from './commands/holders';
 import { txCommand, addressCommand, blockCommand, walletCommand, sourceCommand } from './commands/explorer';
 import { findCommand, describeCommand } from './commands/ask';
@@ -16,8 +15,9 @@ import { whoCommand, readCommand } from './commands/questions';
 import { queryCommand } from './commands/query';
 import { groupCommand, factoryCommand } from './commands/group';
 import { walletsCommand } from './commands/wallets';
+import { usersCommand } from './commands/users';
 import { tableCommand } from './commands/table';
-import { historyCommand } from './commands/history';
+import { goneQuestion } from './commands/gone';
 import { toolCommand } from './commands/tool';
 import { refreshGuideIfStale, refreshInstalledSkills, skillsCommand } from './commands/skills';
 import { extractTargetFlags } from './target';
@@ -54,40 +54,44 @@ Groups:
   contract-dev group monitor add <group> --name "…" --column <key> --when "value < <n>"   One monitor on every member
 
 Tables (rows kept current, and the things inside contracts: withdrawal rounds, loans, requests):
-  contract-dev table list                 Every table: the live tables, then the item tables, hidden ones too (try: table help)
-  contract-dev table create "<name>" --from events --group <g> --event <Event> [--field "vol=usd(…)"] [--by … --measure …]
-                                          A live table straight from events, one step: the events kept underneath, the
-                                          question asked of them and asked again while the table is open
-  contract-dev table create "<name>" --from "<table>"|transactions|transfers|wallets|contracts [the query's flags]
-                                          A live table over rows the workspace already keeps: another table's rows (its
+  contract-dev table list                 Every table, hidden ones too (try: table help)
+  contract-dev table create "<name>" --on <contract|tag:<g>> --each <Event> [--field "vol=usd(…)"] [--by … --measure …]
+                                          A row per event, one step: the events kept underneath, the question asked of
+                                          them and asked again while the table is open
+  contract-dev table create "<name>" --on table:"<table>" | --rows transactions|transfers|wallets|contracts [the query's flags]
+                                          Rows the workspace already keeps: another table's rows (its
                                           own --where carried in), a metric's records, the ledger
-  contract-dev table show <table>         A live table's rows now; an item table's openings and closings, how long rows stay open
-  contract-dev table create "<name>" --opens <Event> [--closes <Event>] [--group <g>] [--count <Event>] [--hidden]
-                                          An item table from the contracts' events, its whole history read
+  contract-dev table show <table>         Its rows now; for a table of things, openings and closings, how long rows stay open
+  contract-dev table create "<name>" --on <contract|tag:<g>> --each <Event> --id <field> [--closes <Event>] [--count <Event>] [--hidden]
+                                          A row per thing the event announces, read live, its whole history read
 
 Metrics:
   contract-dev metrics                    List tracked metrics (try: metrics help)
   contract-dev metric define "<name>" …   A metric added up from events, each read at its own transaction (try: metrics help)
-  contract-dev metric group "<name>" --group <g> --column <key>   A group's column rolled up into one metric across its contracts
+  contract-dev metric group "<name>" --on tag:<g> --column <key>   A group's column rolled up into one metric across its contracts
   contract-dev metrics export <id|label>  A metric's history as CSV or JSON
   contract-dev track <address> <kind>     Track a balance, supply, call result or method telemetry (try: track help)
   contract-dev untrack <id|label>         Stop tracking
 
 Data (<contract> is an address or a watched contract's name):
-  contract-dev events [<contract>]        Events emitted, event by event, and the ones declared but never fired
-  contract-dev events <contract> --event <Name> --sort "<expr>"   The events themselves through formulas: sort, filter, group (try: events help)
-  contract-dev history [<contract>] --event <Name>   Every firing since launch: by week, sizes, top wallets, when (try: history help)
   contract-dev contracts show <contract>  One contract at a glance (its Overview tab)
+  contract-dev users                      Who uses the protocol: one row per user, ranked by value (try: users help)
+  contract-dev users define --who "<Event>.<field>" [--sum …] [--column "<Label>=balanceOf(user())"] [--segment "<Name>=<rule>"]
+                                          Say who a user is and what each one carries; users show <0x…> reads one
   contract-dev holders <contract>         A token's holders (try: holders help)
 
-Ask (questions over the workspace; scope is --group <name>, --contract <ref> or --chain <id>, else everything):
+Ask (the one question command is query; scope is --on <contract | tag:<group> | workspace>, else everything):
+  contract-dev query <events|transactions|transfers|wallets|contracts|table|metric|monitors|alerts|reports> …
+                                          A question answered once, in the same words as table create: --on, --each,
+                                          --last or --since launch, --where, --show, --sort, --by with --sum, --count or
+                                          several --measure, --having, --breakdown, --total (try: query help)
+  contract-dev query events --on <ref> --each <Event> [--last 7d | --since launch]
+                                          The events themselves through formulas over a recent window, or their whole
+                                          history: by week, sizes, top wallets
   contract-dev find <query>               What a name points at: contracts (by name, address or kind: pools, vaults,
                                           tokens), groups, metrics, notifications, destinations
   contract-dev describe <contract>        What a contract is: kinds, standards, owner, its events and write
                                           functions
-  contract-dev query <contracts|table|metric|transactions|transfers|wallets|monitors|alerts|reports> …
-                                          One dataset, asked in the table language: --where, --show, --sort, --by with
-                                          --sum, --count or several --measure, --having, --breakdown, --total (try: query help)
   contract-dev who <address|ENS|name>     Who it is
   contract-dev read <contract> <function> [<arg>…]   Call a view function, now or --at a past time (try: read help)
 
@@ -179,6 +183,9 @@ export async function run(args: string[]): Promise<unknown> {
       return await contractsCommand(rest);
     case 'wallets':
       return await walletsCommand(rest);
+    case 'users':
+    case 'user':
+      return await usersCommand(rest);
     case 'unwatch':
       return await unwatchCommand(rest);
     case 'rename':
@@ -215,7 +222,9 @@ export async function run(args: string[]): Promise<unknown> {
       return await notifyCommand(rest);
     case 'events':
     case 'event':
-      return await eventsCommand(rest);
+    case 'history':
+      // 5.0.0: one question command; the old line is answered with its query events equivalent
+      throw new Error(goneQuestion(cmd, rest));
     case 'holders':
       return await holdersCommand(rest);
     case 'tx':
@@ -238,8 +247,6 @@ export async function run(args: string[]): Promise<unknown> {
     case 'table':
     case 'tables':
       return await tableCommand(rest);
-    case 'history':
-      return await historyCommand(rest);
     case 'factory':
       return await factoryCommand(rest);
     case 'tool':

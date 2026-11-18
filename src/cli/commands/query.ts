@@ -1,5 +1,6 @@
-// `contract-dev query <noun> …` — one command over every dataset the platform keeps, named as the
-// app's pages name them: contracts, a table, a metric, monitors, alerts, reports. The clauses are the
+// `contract-dev query <rows> …` — the one question command (5.0.0: `events` and `history` folded in), over every set of
+// rows the platform keeps or reads: events, transactions, transfers, wallets, contracts, a table, a metric, monitors,
+// alerts, reports. Scoped with --on as table create is. The clauses are the
 // same for all of them (where, show, sort, by with a measure, total, limit) and are the server's
 // query_* tools' arguments one to one, so an agent reading this and the Slack assistant speak the
 // same language. Prints the rows as a table; --json hands back the tool's own result.
@@ -10,96 +11,117 @@ import { chainFlag, limitFlag } from '../data';
 import { cell, columnsTable, byUnit, partCells, type BreakdownColumn, coverageLine } from './_print';
 import { statusesFrom } from './_status';
 import { parseRead } from './eventMetric';
+import { eventsQueryInput, eventsSummary, queryLines, type EventScope } from './events';
+import { historyInputFrom, runHistory } from './history';
+import { lastDays, lastFlag, refuseDays } from '../last';
 
-const HELP = `contract-dev query — ask one dataset a question, in the table language
+const HELP = `contract-dev query — ask a question, once, in the same words as table create
+
+query answers once, here. table create "<name>" with the same words keeps the answer as a table under Tables.
 
 Usage:
-  contract-dev query contracts [--group <g>] [--chain <id>] [--kind pool|vault|token|…]   The watched contracts, with a group's columns
+  contract-dev query <rows> [--on <contract | tag:<group> | workspace>] [--last <duration> | --since …] [the clauses]
+
+  contract-dev query events --on <ref> --each <Event> [--each …] [--last 1h|24h|7d|30d|90d|365d]
+      [--read "<name>=<call> [on <target>] [with <arg>, …]"]… [--fixed <read>]…
+      [--show "<name>=<expr>"]… [--where "<expr>"] [--sort "<expr>" [--asc]]
+      [--by contract|day|week|sender|<name>]… [--sum|--avg|--min|--max "<expr>" | --count] [--limit <n>]
+                                                               The events themselves over a recent window (7 days unless said), worked
+                                                               through formulas in the language of metric define: ranked, filtered, grouped
+  contract-dev query events --on <ref> --each <Event> [--each …] --since launch|<YYYY-MM-DD> [--until <date>]
+      [--by day|week|month|wallet] [--who <field>|signer] [--read "<name>=<call>"]… [--value "<expr>"]
+      [--tz <zone>] [--wallet 0x…] [--limit <n>] [--once]
+                                                               Their whole history, from launch or a date: counts by period, a timeline, top
+                                                               and repeat wallets (by the signer, or the address field --who names), the
+                                                               weekday and hour shape, the first, last, newest and largest; with --value, what
+                                                               each is worth (reads read once per contract) and the spread of those values
+  contract-dev query events --on <contract> [--last 24h|7d|30d|90d]   Which events fired, how often, and the ones declared that never fired
+  contract-dev query events --address 0x… --chain <id> --each <Event> …   A contract nobody watches, read from the chain's log history,
+                                                               narrowed: a --where equality on an indexed field (to == 0x…), or --last 7d at
+                                                               most; with --since, --who naming an indexed field and --wallet, or a month
+  contract-dev query transactions [--on <ref>] [--last <n>d] [--signer <0x>] [--failed] [--direct | --routed] [--method <name>]
+                                                               The transactions that reached the contracts (or a watched wallet sent and
+                                                               received), newest first. Columns: time, day, contract, chain, wallet, who,
+                                                               via, method, status, value, events, revert (why a failed direct call failed,
+                                                               in the failing contract's own words), revertBy, and a direct call's arguments
+                                                               as {args.<path>}: {args.swapExecutionData[0].dex}
+  contract-dev query transfers [--on <ref>] [--last <n>d] [--in | --out] [--token <symbol|0x|native>] [--counterparty <0x>] [--signer <0x>]
+                                                               What moved in and out of them, each leg priced on its day
+  contract-dev query wallets [--on <ref>] [--last <n>d] [--signer <0x>]   The wallets behind them: new or returning, first and last seen, dollars
+      [--before <time>]                                        transactions and transfers page further back from this time (the answer's "next")
+  contract-dev query contracts [--on tag:<group>] [--chain <id>] [--kind pool|vault|token|…]   The watched contracts, with a group's columns
       [--read <name>=<view()> [in <token>] [as usd|amount] [at <time>]]…   A figure read on every contract now: --read cov="coverageLiquidity() in asset()"
-                                                               …or as it was then: --read bal7="balanceOf(0x…)(uint256) in asset() at 7d" (7d, 24h, 2w, or a UTC date)
-                                                               …one of several outputs, with arguments: --read n="getConnectedGardens(uint256,uint256).total with 0, 1"
+                                                               …or as it was then: --read bal7="balanceOf(0x…)(uint256) in asset() at 7d"
       [--read <name>=<expression>]…                            …or an expression over earlier reads and the group's columns
       [--series <from>[..<to>] [--every 1h|6h|1d|1w]]           Every read at each step over a window: one row per time per contract
-  contract-dev query table "<name>" [--days <n>] [--among active|done|all]                 A table's rows (contract-dev table list names them): a live table
-                                                               (the rows it reads, its own --where carried in), an item table's rows
-                                                               (active by default), or a metric's records (one row per event)
-  contract-dev query metric "<name>" [--days <n>]                                         What is behind a metric: its records or readings
-  contract-dev query metrics --metric "<name>"… [--split contract|<param>] [--days <n>]     Metrics split the same way, side by side: one row per
-                                                               split value (an integrator, a sender, a contract), one column per metric's total
-  contract-dev query monitors · query alerts [--days <n>] · query reports
-  contract-dev query transactions [--group <g> | --contract <c>] [--days <n>] [--signer <0x>] [--failed] [--direct | --routed] [--method <name>]
-                                                                                          The transactions that reached the contracts (or a watched wallet sent and received), newest first
-                                                               Columns: time, day, contract, chain, wallet, who, via, method, status, value, events, revert (why a
-                                                               failed direct call failed, in the failing contract's own words, from its trace; paid plans),
-                                                               revertBy (the contract whose failure it was), and a direct call's arguments as {args.<path>}
-                                                               by the ABI's names, [index] for a list item: {args.swapExecutionData[0].dex}, usable in --where,
-                                                               --by, --column and --sort
-  contract-dev query transfers [--group <g> | --contract <c>] [--days <n>] [--in | --out] [--token <symbol|0x|native>] [--counterparty <0x>] [--signer <0x>]
-                                                                                          What moved in and out of them, each leg priced on its day
-  contract-dev query wallets [--group <g> | --contract <c>] [--days <n>] [--signer <0x>]    The wallets behind them: new or returning, first and last seen, dollars in and out
-      [--before <time>]   transactions and transfers page further back: the window counted back from this time (the answer's "next" gives it)
-      A --by over a stored column (day, contract, wallet, counterparty, token, method, status, via) with --count, --sum "{Value}" or --sum "{USD}"
-      is folded in the database over the whole window, exact at any size.
+  contract-dev query table "<name>" [--last <n>d] [--among active|done|all]   A table's rows (contract-dev table list names them)
+  contract-dev query metric "<name>" [--last <n>d]              What is behind a metric: its records or readings
+  contract-dev query metrics --metric "<name>"… [--split contract|<param>] [--last <n>d]   Metrics split the same way, side by side
+  contract-dev query monitors · query alerts [--last <n>d] · query reports
 
---contract takes a watched contract or a watched wallet (its name or address): a wallet's transactions are the ones it
-sent and received, its transfers the legs naming it. --signer keeps one address's own transactions within the scope.
+--last is how far back: a number and h, d or w (1h, 24h, 7d, 30d, 2w, 365d). Events read 1h, 24h, 7d, 30d, 90d or 365d
+exactly; every other set of rows counts in whole days (--last 1d and up). --since launch|<date> reads an event's whole
+history instead; give one of the two.
 
-Clauses (any dataset; columns by label in braces or by key):
+--on is what the question is about: a watched contract or wallet (its name or 0x address), tag:<group>, or workspace
+(everything, the default); --chain picks one chain. A watched wallet's transactions are the ones it sent and received,
+its transfers the legs naming it. --signer keeps one address's own transactions within the scope. A --by over a
+stored column of transactions or transfers (day, contract, wallet, counterparty, token, method, status, via) with
+--count, --sum "{Value}" or --sum "{USD}" is counted over the whole window, exact at any size.
+
+Events: tokens are named in the formula, usd(raw, token) and amount(raw, token), the token an address, a read or a
+parameter (contract-dev describe <contract> shows each field's token as checked against the contract's transactions).
+Each event is priced on its own day. Each listed event says who made it: the wallet, the signer it came via, a searcher
+bot. A --sort on a field, abs(), usd()/amount() of one or max() of those (no --where) ranks the whole window; any other
+reads the newest 10,000 events (1,000 with a read per transaction) and says where it started. With no verified ABI,
+write the event as its full signature.
+
+Clauses (any rows; columns by label in braces or by key):
   --where "<expr>"              Keep the rows this holds for:        --where "{Held} < {Required}"
   --show <name>="<expr>"        A worked-out column, usable below:   --show headroom="{Held} - {Required}"  (repeat for more)
   --sort "<expr>" [--asc]       Rank the rows, largest first
-  --by <a,b> --sum|--avg|--min|--max|--distinct|--first|--last "<expr>" | --count     Fold the rows into groups, one value each
+  --by <a,b> --sum|--avg|--min|--max|--distinct|--first "<expr>" | --count     Fold the rows into groups, one value each (the
+                                last value of each: --measure <name>="last(<expr>)")
   --measure <name>="<fn>(<expr>) [where <rule>]"   With --by, in place of --sum…: several values per group, each a column by its
-                                name (repeat it). fn: count, sum, avg, min, max, distinct (how many different values),
-                                first, last (on the group's earliest or latest row); where counts or adds only its rows:
-                                --measure swaps=count --measure volume="sum({Value})" --measure chains="distinct(chain)"
-                                --measure bridges='count where {Event} == "BridgeStarted"'
+                                name (repeat it). fn: count, sum, avg, min, max, distinct, first, last; where counts or adds
+                                only its rows: --measure swaps=count --measure volume="sum({Value})" (not on query events)
   --having "<expr>"             With --by: keep the groups this holds for, over their columns and measures by name
-  --sort "<expr>" [--asc]       With --by: rank the groups by a measure (default: the first, largest first)
-  --breakdown <column>          With --by: split each group again, its parts listed under it and counted:
-                                --by wallet --sum "{Value}" --breakdown chain  (each wallet's total and chains, then per chain)
+  --breakdown <column>          With --by: split each group again, its parts listed under it and counted
   --total <a,b>                 Add these columns up over every matching row
   --column <name>               Event rows (a table, a metric's records) listed, not folded: a column to show, in order
-                                (repeat it); only those show. A field, a parameter, or the row's own time, day, tx, chain,
-                                contract, event or wallet (the wallet that signed it)
-  --detail <name>               Event rows listed: a column each row opens onto, one line per item of a list field (a
-                                batch swap's swaps; a single swap is one line), repeat it; printed under the row
-  --status "<Label>: <Opt>=<rule>; <Opt>"   A category on each row (a pill on the page): its options in order, each with
-                                the rule (as --where) that puts a row in it, the last without one the rest; usable by
-                                name in the clauses: --status 'Type: Batch={Event} == "DZapBatchTokenSwapped"; Single'
+  --detail <name>               Event rows listed: a column each row opens onto, one line per item of a list field
+  --status "<Label>: <Opt>=<rule>; <Opt>"   A category on each row: its options in order, each with the rule that puts a row in it
   --limit <n>                   Rows or groups to print (default 25; the answer says how many matched)
   --top <n>                     The n largest: with --by the groups by their first measure, else the rows by --sort
   --json                        The tool's own result
 
 Examples:
-  contract-dev query contracts --group "Wildcat markets" --show headroom="{Held} - {Required}" --where "headroom < 0" --sort headroom --asc
-  contract-dev query contracts --group "Wildcat markets" --by kind --sum "{Supplied}"
-  contract-dev query contracts --group "Wildcat markets" --read cov="coverageLiquidity() in asset()" --read held="totalAssets() in asset()" --read gap="held - cov" --sort gap --asc
-  contract-dev query contracts --group Vaults --read sp="convertToAssets(1000000000000000000)" --read sp7="convertToAssets(1000000000000000000) at 7d" --show apr="(sp - sp7) / sp7 * 52" --sort apr
-  contract-dev query contracts --group Vaults --read sp="convertToAssets(1000000000000000000)" --series 30d --every 1d
-  contract-dev query contracts --group Vaults --read sp="convertToAssets(1000000000000000000)" --series 2026-09-01..2026-10-01 --by day --avg sp
+  contract-dev query events --on "USDC/WETH 0.05%" --each Swap --read "t0=token0()" --fixed t0 --sort "usd(abs(amount0), t0)" --limit 10
+  contract-dev query events --on tag:"Wildcat markets" --each Deposit --read "a=asset()" --fixed a --where "usd(assetAmount, a) > 100000" --show "usd=usd(assetAmount, a)"
+  contract-dev query events --on tag:"Uniswap v3" --each Swap --read "t0=token0()" --fixed t0 --by contract --by day --sum "usd(abs(amount0), t0)" --last 7d
+  contract-dev query events --on tag:"Wildcat markets" --each WithdrawalQueued --since launch --read "a=asset()" --value "usd(normalizedAmount, a)" --who account --by week
+  contract-dev query events --on Treasury --each Transfer --since 2026-10-01 --tz Australia/Sydney
+  contract-dev query events --on "Voter incentives"
+  contract-dev query transactions --on tag:"Wildcat markets" --last 30d --by day --count
+  contract-dev query transactions --signer 0x1234…abcd --last 90d
+  contract-dev query transfers --on Treasury --out --last 30d --by counterparty --sum "{USD}"
+  contract-dev query wallets --on tag:"Wildcat markets" --last 7d --where '{Status} == "new"'
+  contract-dev query contracts --on tag:"Wildcat markets" --show headroom="{Held} - {Required}" --where "headroom < 0" --sort headroom --asc
+  contract-dev query contracts --on tag:Vaults --read sp="convertToAssets(1000000000000000000)" --series 30d --every 1d
   contract-dev query table "Withdrawal rounds" --where '{Stage} == "Paying" and age > 7d' --sort "{Outstanding}"
-  contract-dev query metric Deposits --days 30 --by day --sum "{value}"
-  contract-dev query table "DZap activity" --days 90 --by integrator --measure swaps='count where {Event} != "BridgeStarted"' --measure bridges='count where {Event} == "BridgeStarted"' --measure volume="sum({Value})"
-  contract-dev query table "DZap activity" --days 90 --by wallet --measure volume="sum(vol)" --measure swaps=count --having "volume > 10000" --breakdown chain
-  contract-dev query metrics --metric "DZap bridges" --metric "DZap swaps" --metric "DZap swap volume" --split integrator
-  contract-dev query metric "DZap swap volume" --where "{Value} > 10000" --sort "{Value}"
-  contract-dev query monitors --where '{State} == "breached"'
-  contract-dev query alerts --days 30 --by monitor --count
-  contract-dev query transactions --group "Wildcat markets" --days 30 --by day --count
-  contract-dev query transactions --signer 0x1234…abcd --days 90
-  contract-dev query transactions --group "DZap Routers" --days 7 --failed --by "args.swapExecutionData[0].dex" --measure failed=count --measure reason='last({revert})'
-  contract-dev query transfers --contract Treasury --out --days 30 --by counterparty --sum "{USD}"
-  contract-dev query transfers --group "Wildcat markets" --out --by counterparty --sum "{USD}" --limit 10
-  contract-dev query wallets --group "Wildcat markets" --days 7 --where '{Status} == "new"'
-  contract-dev query transfers --group DZap --days 30 --by day,token --sum "{USD}"
+  contract-dev query metric Deposits --last 30d --by day --sum "{value}"
+  contract-dev query alerts --last 30d --by monitor --count
+
+The same question kept as a table: contract-dev table create "Big deposits" --on tag:"Wildcat markets" --each Deposit …,
+contract-dev table create "Treasury out" --on Treasury --rows transfers --where 'direction == "out"'.
 `;
 
-const DATASETS = ['contracts', 'table', 'metric', 'metrics', 'data', 'monitors', 'alerts', 'reports', 'transactions', 'transfers', 'wallets'] as const;
+const DATASETS = ['contracts', 'events', 'table', 'metric', 'metrics', 'data', 'monitors', 'alerts', 'reports', 'transactions', 'transfers', 'wallets'] as const;
 const ACTIVITY: readonly string[] = ['transactions', 'transfers', 'wallets'];
 type Dataset = (typeof DATASETS)[number];
-const MEASURES = ['sum', 'avg', 'min', 'max', 'distinct', 'first', 'last'] as const;
-const MEASURE_FNS = ['count', ...MEASURES] as readonly string[];
+// --last is how far back (5.0.0): the last value of each group is --measure <name>="last(<expr>)"
+const MEASURES = ['sum', 'avg', 'min', 'max', 'distinct', 'first'] as const;
+const MEASURE_FNS = ['count', ...MEASURES, 'last'] as readonly string[];
 
 /**
  * `--measure volume="sum({Value})"`, `swaps=count`, `bridges="count where {Event} == \"BridgeStarted\""`,
@@ -280,7 +302,82 @@ export function clausesFromFlags(flags: ParsedFlags): Record<string, unknown> {
   return input;
 }
 
-/** `live`: the question kept as a live table under Tables with this name (`table create "<name>" --from …`), not a snapshot; `description`: what it shows. */
+/**
+ * `--on <ref>` (5.0.0), as table create reads it: `tag:<group>`, `workspace`, or a watched contract or wallet by name
+ * or 0x address. `query table "<name>"` asks a table, so `--on table:` is refused here.
+ */
+export function onScope(raw: string | undefined): { group?: string; contract?: string } {
+  if (raw === undefined) return {};
+  const w = raw.trim();
+  if (!w || w === 'true') throw new Error('--on says which contracts: a contract or wallet, tag:<group>, or workspace.');
+  if (/^(workspace|all)$/i.test(w)) return {};
+  const m = /^(tag|group|table):\s*(.+)$/i.exec(w);
+  if (m && m[1].toLowerCase() === 'table') throw new Error(`To ask a table, say contract-dev query table "${m[2].trim().replace(/^"(.*)"$/, '$1')}".`);
+  if (m) return { group: m[2].trim().replace(/^"(.*)"$/, '$1') };
+  return { contract: w };
+}
+
+/** What each set of rows is called when it is refused an hour: they count in whole days. */
+const ROWS_WORD: Record<string, string> = {
+  transactions: 'Transactions',
+  transfers: 'Transfers',
+  wallets: 'Wallets',
+  table: "A table's rows",
+  data: "A table's rows",
+  metric: "A metric's records",
+  metrics: "Metrics' records",
+  alerts: 'Alerts',
+};
+
+/** The flags `query` no longer takes (5.0.0), each refused with the word that replaces it. */
+const GONE: Record<string, string> = {
+  group: '--group is gone: say --on tag:<group> (contract-dev query help).',
+  contract: '--contract is gone: say --on <contract or wallet> (contract-dev query help).',
+  event: '--event is gone: say --each <Event> (contract-dev query help).',
+  window: '--window is gone: say --last <duration> (1h, 7d, 30d…), or --since launch|<date> for the whole history (contract-dev query help).',
+  range: '--range is gone: say --last <duration> (1h, 7d, 30d…), or --since launch|<date> for the whole history (contract-dev query help).',
+};
+function refuseGone(flags: ParsedFlags): void {
+  for (const [k, why] of Object.entries(GONE)) if (flag(flags, k) !== undefined) throw new Error(why);
+  refuseDays(flags, 'query');
+}
+
+/** The flags a whole-history read (--since) answers in its own way, and the ones a recent window does not take. */
+const RECENT_ONLY = ['where', 'sort', 'asc', 'show', 'fixed', 'sum', 'avg', 'min', 'max', 'count', 'measure', 'having', 'breakdown', 'total', 'top'];
+const SINCE_ONLY = ['until', 'tz', 'who', 'wallet', 'value', 'once'];
+
+/** `query events`: the events themselves over a recent window (--last), their whole history (--since), or, with no --each, which events fired. */
+async function queryEvents(flags: ParsedFlags): Promise<unknown> {
+  const positional = flags._ as string[];
+  if (positional.length > 1) throw new Error('query events takes no name: say which contracts with --on and which events with --each (contract-dev query help).');
+  const scope = onScope(flag(flags, 'on'));
+  const chainId = chainFlag(flags);
+  const address = flag(flags, 'address');
+  if (address === 'true') throw new Error('--address needs a 0x address (and --chain).');
+  if (address && (scope.group || scope.contract)) throw new Error('Give --address (a contract nobody watches), or --on, not both.');
+  const each = flagAll(flags, 'each').flatMap((e) => e.split(',')).map((e) => e.trim()).filter((e) => e && e !== 'true');
+  const since = flag(flags, 'since');
+  const last = lastFlag(flags);
+  if (since !== undefined && last !== undefined) throw new Error('Give --last (a recent window) or --since (the whole history from launch or a date), not both.');
+  if (each.length === 0) {
+    if (since !== undefined || address || scope.group) throw new Error('Name the events: --each <Event> (query events --on <contract> lists the ones it fired).');
+    return eventsSummary(flags, scope.contract ?? null);
+  }
+  if (since !== undefined) {
+    for (const k of RECENT_ONLY)
+      if (flag(flags, k) !== undefined) throw new Error(`--${k} goes with a recent window (--last). With --since the answer is counts by period (--by day|week|month), sizes (--value), top and repeat wallets (--who), the first and the largest.`);
+    const kind = scope.contract ? 'contract' : scope.group ? 'group' : 'workspace';
+    const hscope = address ? null : kind === 'workspace' && chainId == null ? null : { kind, ...scope, ...(chainId != null ? { chainId } : {}) } as { kind: 'contract' | 'group' | 'workspace'; contract?: string; group?: string; chainId?: number };
+    return runHistory(flags, historyInputFrom(flags, each, hscope, address, chainId));
+  }
+  for (const k of SINCE_ONLY) if (flag(flags, k) !== undefined) throw new Error(`--${k} goes with the whole history: add --since launch (or a date).`);
+  const where: EventScope = { ...(address ? { address } : scope), ...(chainId !== undefined ? { chainId } : {}) };
+  const r = await runTool<Record<string, unknown>>(requireAuth(), 'query_events', eventsQueryInput(flags, each, where));
+  for (const line of queryLines(r)) console.log(line);
+  return r;
+}
+
+/** `live`: the question kept as a table under Tables with this name (`table create "<name>" --rows <data> …` or `--on table:"<name>" …`), asked again while it is open; `description`: what it shows. */
 export async function queryCommand(args: string[], opts: { live?: string; description?: string; hidden?: boolean } = {}): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0]) || args.includes('--help') || args.includes('-h')) return void console.log(HELP);
   const flags = parseFlags(args);
@@ -288,16 +385,28 @@ export async function queryCommand(args: string[], opts: { live?: string; descri
   // `query metric help`: help after the dataset is help, never a table or metric called "help"
   if (positional.length === 2 && positional[1] === 'help') return void console.log(HELP);
   const noun = positional[0] as Dataset | undefined;
-  if (!noun || !(DATASETS as readonly string[]).includes(noun)) throw new Error(`Say which dataset: ${DATASETS.filter((d) => d !== 'data').join(', ')} (try: contract-dev query help).`);
+  if (!noun || !(DATASETS as readonly string[]).includes(noun)) throw new Error(`Say which rows: ${DATASETS.filter((d) => d !== 'data').join(', ')} (try: contract-dev query help).`);
+  // the words of 5.0.0: --on for which contracts, --each for which events, --last or --since for how far back.
+  // table create --rows hands its own --on over already read (rewriteTableArgs), so the old words come from it alone
+  if (!opts.live) refuseGone(flags);
+  else refuseDays(flags, 'table');
+  if (noun === 'events') {
+    if (opts.live) throw new Error('A table of events is table create "<name>" --on <what> --each <Event> (contract-dev table help).');
+    if (['save', 'title', 'draw', 'keep'].some((k) => flag(flags, k) !== undefined)) throw new Error('--save is gone: a table of events kept under Tables is contract-dev table create "<name>" --on <what> --each <Event> … (contract-dev table help).');
+    return queryEvents(flags);
+  }
+  const on = opts.live ? {} : onScope(flag(flags, 'on'));
+  if ((on.group || on.contract) && noun !== 'contracts' && !ACTIVITY.includes(noun)) throw new Error(`query ${noun} takes no --on: it asks ${noun === 'table' || noun === 'metric' || noun === 'data' ? `the ${noun} it names` : `the workspace's ${noun}`}.`);
   const input = clausesFromFlags(flags);
   const name = positional.slice(1).join(' ').trim();
   if (noun === 'table' || noun === 'metric' || noun === 'data') {
     if (!name) throw new Error(`Name the ${noun}: contract-dev query ${noun} "<name>"${noun === 'table' ? ' (contract-dev table list names them)' : ''}.`);
-    // `query table` asks any table (query_data resolves a live table, an item table or a metric's records); `data` stays as its quiet alias
+    // `query table` asks any table (query_data resolves either kind of table or a metric's records); `data` stays as its quiet alias
     input[noun === 'table' ? 'data' : noun] = name;
   } else if (name) throw new Error(`query ${noun} takes no name; scope it with the flags (try: contract-dev query help).`);
   if (noun === 'contracts') {
-    const group = wordFlag(flags, 'group');
+    if (on.contract) throw new Error('query contracts --on takes tag:<group> or workspace: it lists contracts; to read one, contract-dev contracts show <contract>.');
+    const group = on.group ?? (opts.live ? wordFlag(flags, 'group') : undefined);
     if (group) input.group = group;
     const chainId = chainFlag(flags);
     if (chainId !== undefined) input.chainId = chainId;
@@ -344,13 +453,13 @@ export async function queryCommand(args: string[], opts: { live?: string; descri
     if (split) input.split = split;
   }
   if (ACTIVITY.includes(noun)) {
-    const group = wordFlag(flags, 'group');
+    const group = on.group ?? (opts.live ? wordFlag(flags, 'group') : undefined);
     if (group) input.group = group;
-    const contract = wordFlag(flags, 'contract');
+    const contract = on.contract ?? (opts.live ? wordFlag(flags, 'contract') : undefined);
     if (contract) input.contract = contract;
     const chainId = chainFlag(flags);
     if (chainId !== undefined) input.chainId = chainId;
-    if (flag(flags, 'wallet') !== undefined) throw new Error('--wallet is now --signer (one address\'s own transactions); a watched wallet is --contract <name|address>.');
+    if (flag(flags, 'wallet') !== undefined) throw new Error('--wallet is now --signer (one address\'s own transactions); a watched wallet is --on <name|address>.');
     const signer = wordFlag(flags, 'signer');
     if (signer) input.signer = signer;
     const before = wordFlag(flags, 'before');
@@ -374,15 +483,12 @@ export async function queryCommand(args: string[], opts: { live?: string; descri
     }
   }
   if (noun === 'metric' || noun === 'metrics' || noun === 'data' || noun === 'table' || noun === 'alerts' || ACTIVITY.includes(noun)) {
-    const days = wordFlag(flags, 'days');
-    if (days !== undefined) {
-      const n = Number(days);
-      if (!Number.isInteger(n) || n < 1) throw new Error('--days takes a whole number of days');
-      input.days = n;
-    }
+    // every set of rows but events counts in whole days: --last 1d and up, 2w is 14
+    const last = lastFlag(flags);
+    if (last !== undefined) input.days = lastDays(last, ROWS_WORD[noun] ?? `The ${noun}`);
   }
   // a question is answered where asked; a table kept under Tables is `table create` (--save, the snapshot under Queries, went 2026-10-28)
-  if (['save', 'title', 'draw', 'keep'].some((k) => flag(flags, k) !== undefined)) throw new Error('--save is gone: a table kept under Tables is contract-dev table create "<name>" --from <rows> with the same flags (contract-dev table help).');
+  if (['save', 'title', 'draw', 'keep'].some((k) => flag(flags, k) !== undefined)) throw new Error('--save is gone: a table kept under Tables is contract-dev table create "<name>" --rows <data> (or --on table:"<name>") with the same flags (contract-dev table help).');
   if (opts.live) input.save = { title: opts.live, ...(opts.description ? { description: opts.description } : {}), ...(opts.hidden ? { listed: false } : {}) };
   const r = (await runTool(requireAuth(), noun === 'table' ? 'query_data' : `query_${noun}`, input)) as Record<string, unknown>;
   const matched = Number(r.matched ?? 0);
@@ -429,10 +535,10 @@ export async function queryCommand(args: string[], opts: { live?: string; descri
   return r;
 }
 
-/** The line under an answer kept as a live table (table create prints it too). */
+/** The line under an answer kept as a table (table create prints it too). */
 export function savedLine(result: Record<string, unknown> | null | undefined): string | null {
   const saved = result?.saved as { url?: string; title?: string } | undefined;
-  return saved?.url ? `Live table under Tables${saved.title ? ` · ${saved.title}` : ''}: ${saved.url}` : null;
+  return saved?.url ? `Table under Tables${saved.title ? ` · ${saved.title}` : ''}: ${saved.url}` : null;
 }
 
 export default queryCommand;

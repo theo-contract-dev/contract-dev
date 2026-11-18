@@ -1,67 +1,41 @@
-// Every firing of some events over the plan's history of a contract (90 days on Team), through the platform's
-// event_history tool: how many and when (by day, week or month), how big (a formula's value), who (top wallets, repeat
-// wallets), the weekday and hour shape, and examples. A read too long for one answer comes back
-// with `resume`; the command asks again (up to two more times) so the terminal gets the whole story.
-import { parseFlags, flag, flagAll, type ParsedFlags } from './_args';
+// `query events --since launch|<date>` (5.0.0; the `history` command before): every firing of some events over a
+// contract's whole life, through the platform's event_history tool: how many and when (by day, week or month), how big
+// (a formula's value), who (top wallets, repeat wallets), the weekday and hour shape, and examples. A read too long for
+// one answer comes back with `resume`; it is asked again (up to two more times) so the terminal gets the whole story.
+import { flag, flagAll, type ParsedFlags } from './_args';
 import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
-import { chainFlag, limitFlag } from '../data';
+import { limitFlag } from '../data';
 import { printResult } from './_print';
 import { parseRead } from './eventMetric';
 
-const HELP = `contract-dev history — every firing of some events since launch: when, how big, who
+/** The periods a history counts by. */
+const PERIODS = ['auto', 'day', 'week', 'month'];
 
-Usage:
-  contract-dev history [<contract> | --address 0x… --chain <id>] --event <Name> [--event <Name>]… [--group <group>] [--chain <id|name>]
-                              [--window all|24h|7d|30d|90d|1y | --since <date>] [--until <date>]
-                              [--by auto|day|week|month] [--tz <zone>] [--who <field>|signer]
-                              [--read "<name>=<call>"]… [--value "<formula>"]
-                              [--wallet 0x…] [--limit <n>] [--once]
-
-Counts by event and contract, a timeline (zero-filled), top and repeat wallets, the weekday and hour shape, the first,
-last, newest and largest firings; with --value, what each firing is worth: a formula in the language of
-\`contract-dev events\` over the event's fields and --read views read once per contract (an answer that never
-changes, like asset() or token0()), the token named in it (\`contract-dev describe <contract>\` shows each field's
-token as checked against the contract's transactions). Then the spread of those values (total, quartiles, dollar
-buckets when the formula prices them, each firing at its own day's price), and each contract's and wallet's total.
---who counts by an address field of the event (account, owner); by default the transaction's signer. A long history is read over up to three calls (--once stops after one).
---address reads a contract nobody watches (a position manager, a factory) straight from the chain's log history,
-narrowed: --wallet with --who naming an indexed address field (--who to --wallet 0x…) is applied by the log index
-itself, or --window is 30d at most. With no verified ABI, write the event as its full signature.
-A Free workspace reads the last 7 days, a Team one the last year; a longer window is served from where the history starts.
-
-Examples:
-  contract-dev history --group "Wildcat markets" --event WithdrawalQueued --read "a=asset()" --value "usd(normalizedAmount, a)" --who account --by week
-  contract-dev history 0x5ab22e9c360807f16dfa34ad5c589055d2871a5b --event WithdrawalQueued --event WithdrawalExecuted --tz Australia/Sydney
-  contract-dev history --group pools --event Swap --window 30d --who signer
-  contract-dev history --address 0xC36442b4a4522E871399CD717aBDD847Ab11FE88 --chain 1 --event Transfer --who to --wallet 0xMYWALLET
-`;
-
-const HELP_WORDS = ['help', '-h', '--help'];
-
-/** The tool's input from the command line. */
-export function historyInput(flags: ParsedFlags): Record<string, unknown> {
-  const events = flagAll(flags, 'event').flatMap((e) => e.split(',')).map((e) => e.trim()).filter(Boolean);
-  if (events.length === 0) throw new Error('Name the events: --event WithdrawalQueued (contract-dev events <contract> lists them).');
-  const contract = (flags._ as string[]).join(' ').trim();
-  const group = flag(flags, 'group');
-  const address = flag(flags, 'address');
-  const chainId = chainFlag(flags);
-  if (address === 'true') throw new Error('--address needs a 0x address (and --chain).');
-  if (address && (contract || group)) throw new Error('Give --address, or a contract or --group, not both.');
-  const scope = address ? null : contract ? { kind: 'contract', contract, ...(chainId != null ? { chainId } : {}) } : group ? { kind: 'group', group, ...(chainId != null ? { chainId } : {}) } : chainId != null ? { kind: 'workspace', chainId } : null;
+/**
+ * `query events --each <Event> --since launch|<date>`: the event_history input. `--by` is the period (day, week, month)
+ * or wallet, whose top and repeat wallets every history answer carries anyway; `--who` counts by an address field.
+ */
+export function historyInputFrom(flags: ParsedFlags, events: string[], scope: { kind: 'contract' | 'group' | 'workspace'; contract?: string; group?: string; chainId?: number } | null, address?: string, chainId?: number): Record<string, unknown> {
   const input: Record<string, unknown> = { events, ...(scope ? { scope } : {}), ...(address ? { address, ...(chainId != null ? { chainId } : {}) } : {}) };
+  const since = String(flag(flags, 'since') ?? '').trim();
+  if (since === 'launch' || since === 'all') input.window = 'all';
+  else if (/^\d{4}-\d{2}-\d{2}/.test(since)) input.since = since;
+  else throw new Error(`--since takes launch or a UTC date (2026-10-01) (got: ${since || 'nothing'}).`);
+  const by = flagAll(flags, 'by').flatMap((b) => b.split(',')).map((b) => b.trim()).filter((b) => b && b !== 'true');
+  if (by.length > 1) throw new Error('With --since, --by takes one of day, week, month or wallet.');
+  if (by[0] && by[0] !== 'wallet') {
+    if (!PERIODS.includes(by[0])) throw new Error(`With --since, --by takes day, week, month or wallet (got: ${by[0]}); to group by anything else, use a --last window.`);
+    input.by = by[0];
+  }
   for (const [from, to] of [
-    ['window', 'window'],
-    ['since', 'since'],
     ['until', 'until'],
-    ['by', 'by'],
     ['tz', 'timezone'],
     ['who', 'who'],
     ['wallet', 'wallet'],
   ] as const) {
     const v = flag(flags, from);
-    if (v !== undefined) input[to] = v;
+    if (v !== undefined && v !== 'true') input[to] = v;
   }
   // every read here is read once per contract: the server takes them as fixed
   const reads = flagAll(flags, 'read').map((r) => {
@@ -75,14 +49,10 @@ export function historyInput(flags: ParsedFlags): Record<string, unknown> {
   return input;
 }
 
-export async function historyCommand(args: string[]): Promise<unknown> {
-  if (!args.length || HELP_WORDS.includes(args[0])) return void console.log(HELP);
-  const flags = parseFlags(args);
-  const input = historyInput(flags);
-  if (['save', 'title', 'of'].some((k) => flag(flags, k) !== undefined)) throw new Error('--save is gone: a history is read where asked; a table of events kept under Tables is contract-dev table create "<name>" --from events ….');
+/** The history read through: a read too long for one answer comes back with `resume`, asked again up to twice unless --once. */
+export async function runHistory(flags: ParsedFlags, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const auth = requireAuth();
   let result = await runTool<Record<string, unknown>>(auth, 'event_history', input);
-  // a read that stopped short and can go further: ask again, it continues where it stopped
   for (let i = 0; i < 2 && flag(flags, 'once') === undefined && result.complete === false && result.resume === true; i++) {
     console.error(`Read back to ${String(result.from)}; reading further…`);
     result = await runTool<Record<string, unknown>>(auth, 'event_history', input);

@@ -640,9 +640,9 @@ export function buildIntent(flags: ParsedFlags, command = 'notify add alert'): M
   const on = flag(flags, 'on');
   const group = flag(flags, 'group');
   if (on === 'true') throw new Error('--on needs a contract: the watched contract, by address or name.');
-  if (group === 'true') throw new Error('--group needs a group name.');
-  if (on !== undefined && group !== undefined) throw new Error('Pick --on <contract> or --group <group>, not both.');
-  if (on === undefined && group === undefined) throw new Error('Say where: --on <contract> (a watched contract, by address or name) or --group <group> (each contract of a group).');
+  if (group === 'true') throw new Error('--on tag:<group> needs a group name.');
+  if (on !== undefined && group !== undefined) throw new Error('Pick --on <contract> or --on tag:<group>, not both.');
+  if (on === undefined && group === undefined) throw new Error('Say where: --on <contract> (a watched contract, by address or name) or --on tag:<group> (each contract of a group).');
   const bare = (k: string, hint: string): boolean => {
     const v = flag(flags, k);
     if (v !== undefined && v !== 'true') throw new Error(`--${k} takes no value; ${hint}.`);
@@ -650,33 +650,33 @@ export function buildIntent(flags: ParsedFlags, command = 'notify add alert'): M
   };
   const silence = bare('silence', 'name the method with --method <name>');
   const failures = bare('failures', 'say which transactions count with --rows "<where>"');
-  const overdue = bare('overdue', 'name the open with --event <Name> and the answer with --answer <Name>');
+  const overdue = bare('overdue', 'name the open with --each <Event> and the answer with --answer <Name>');
   if ([silence, failures, overdue].filter(Boolean).length > 1) throw new Error('Pick one of --silence, --failures or --overdue.');
   const event = flag(flags, 'event');
   const method = flag(flags, 'method');
   const forRaw = flag(flags, 'for');
   const name = flag(flags, 'name');
-  if (event === 'true') throw new Error('--event needs the event\'s name');
+  if (event === 'true') throw new Error('--each needs the event\'s name');
   if (method === 'true') throw new Error('--method needs the method\'s name');
   if (name === 'true') throw new Error('--name needs a value');
   if (!silence && !failures && !overdue)
     throw new Error(
       event !== undefined
-        ? 'An event each time it is emitted is an alert on something happening: `contract-dev notify add alert … --on <contract> --event <Name> --message "…"`. On a condition: --silence (it stops), --failures (its calls fail) or --overdue --answer <Name> (it is not answered in time).'
-        : 'Say what to watch: --silence (the contract goes quiet), --failures (its transactions start failing) or --overdue --event <Open> --answer <Close> (something opened is not answered in time).',
+        ? 'An event each time it is emitted is an alert on something happening: `contract-dev notify add alert … --on <contract> --each <Event> --message "…"`. On a condition: --silence (it stops), --failures (its calls fail) or --overdue --answer <Name> (it is not answered in time).'
+        : 'Say what to watch: --silence (the contract goes quiet), --failures (its transactions start failing) or --overdue --each <Open> --answer <Close> (something opened is not answered in time).',
     );
   // calls are not collected (2026-11-08): a silence is of an event, and there is no alert on a function call
-  if (method !== undefined) throw new Error('A silence on a method is not available: calls are not collected. Watch an event the method emits: --silence --event <Name>.');
-  if (silence && event === undefined) throw new Error('--silence needs the event whose absence matters: --silence --event <Name> (calls are not collected, so "no calls at all" cannot be watched).');
-  if (failures && (event !== undefined || method !== undefined)) throw new Error('A failures alert takes --rows and --by, not --event or --method.');
+  if (method !== undefined) throw new Error('A silence on a method is not available: calls are not collected. Watch an event the method emits: --silence --each <Event>.');
+  if (silence && event === undefined) throw new Error('--silence needs the event whose absence matters: --silence --each <Event> (calls are not collected, so "no calls at all" cannot be watched).');
+  if (failures && (event !== undefined || method !== undefined)) throw new Error('A failures alert takes --rows and --by, not --each or --method.');
   const answers = flagAll(flags, 'answer').filter((v) => v !== 'true').flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean);
   const matches = flagAll(flags, 'match').filter((v) => v !== 'true').flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean);
   if (!overdue && (answers.length > 0 || matches.length > 0 || flag(flags, 'answer') !== undefined || flag(flags, 'match') !== undefined)) throw new Error('--answer and --match are for an overdue alert: add --overdue.');
   if (overdue) {
-    if (event === undefined) throw new Error('--overdue needs the event that opens something: --event WithdrawalRequested.');
+    if (event === undefined) throw new Error('--overdue needs the event that opens something: --each WithdrawalRequested.');
     if (answers.length === 0) throw new Error('--overdue needs the event that answers it: --answer WithdrawalClaimed (repeat for several).');
     if (forRaw === undefined) throw new Error('--overdue needs how long an answer may take: --for 3d.');
-    if (method !== undefined) throw new Error('An overdue alert pairs two events: --event and --answer, not --method.');
+    if (method !== undefined) throw new Error('An overdue alert pairs two events: --each and --answer, not --method.');
   }
   const rows = flag(flags, 'rows');
   const by = flag(flags, 'by');

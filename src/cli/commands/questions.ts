@@ -1,5 +1,5 @@
 // Questions the platform's tools answer that have no dashboard command of their own: who an
-// address is and a read of any function (a contract's whole history is `history`). Each is one tool, called with its input built from
+// address is and a read of any function (a contract's whole history is `query events --since launch`). Each is one tool, called with its input built from
 // flags; the answer prints as tables (./_print), and --json hands back the tool's own result.
 import { parseFlags, flag, flagAll, type ParsedFlags } from './_args';
 import { requireAuth } from '../credentials';
@@ -15,10 +15,10 @@ Usage:
   contract-dev read <contract> <function> [<arg>…] [--chain <id>] [--decimals <n>] [--at <date|time> | --block <n>]
                                        Call a view function, now or at a past block: getUtilization, balanceOf 0x…
 
-The biggest single events (deposits, swaps, liquidations) and who made them: \`contract-dev events <contract>
---event <Name> --sort "<formula>"\` (try: contract-dev events help). A lending market's rates or utilisation:
+The biggest single events (deposits, swaps, liquidations) and who made them: \`contract-dev query events --on <contract>
+--each <Name> --sort "<formula>"\` (try: contract-dev query help). A lending market's rates or utilisation:
 \`contract-dev source <contract>\` for how it computes them, then \`contract-dev read\`.
-A contract's whole history (every firing since launch) is \`contract-dev history\`.
+A contract's whole history (every firing since launch) is \`contract-dev query events --on <contract> --each <Name> --since launch\`.
 
 Examples:
   contract-dev who Wintermute

@@ -163,7 +163,7 @@ export async function showContract(args: string[]): Promise<unknown> {
   console.log(c.name ?? c.address);
   const width = Math.max(...rows.map(([k]) => k.length));
   for (const [k, v] of rows) console.log(`  ${k.padEnd(width)}  ${v}`);
-  console.log(`\nMore: contract-dev events ${c.address} · contract-dev query transactions|transfers|wallets --contract ${c.address}`);
+  console.log(`\nMore: contract-dev query events --on ${c.address} · contract-dev query transactions|transfers|wallets --on ${c.address}`);
   return { contract: c, facts, identity, activity: feed, users, tokenVolume: volume, abi: settings, health, metrics };
 }
 

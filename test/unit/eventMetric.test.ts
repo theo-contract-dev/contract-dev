@@ -19,7 +19,7 @@ describe('event metric flags', () => {
   });
 
   it('turns the define flags into the tool input, in order', () => {
-    const flags = parseFlags(['Swap fees', '--event', 'Swap', '--read', 'fee=fee()', '--read', 't0=token0()', '--field', 'in0=if(amount0 > 0, amount0, 0)', '--value', 'usd(in0 * fee / 1000000, t0)', '--history', '7d', '--fixed', 't0']);
+    const flags = parseFlags(['Swap fees', '--each', 'Swap', '--read', 'fee=fee()', '--read', 't0=token0()', '--field', 'in0=if(amount0 > 0, amount0, 0)', '--value', 'usd(in0 * fee / 1000000, t0)', '--last', '7d', '--fixed', 't0']);
     expect(definitionFrom(flags)).toEqual({
       events: ['Swap'],
       reads: [{ name: 'fee', call: 'fee()' }, { name: 't0', call: 'token0()', fixed: true }],
@@ -27,7 +27,10 @@ describe('event metric flags', () => {
       value: 'usd(in0 * fee / 1000000, t0)',
       history: 7,
     });
-    expect(() => definitionFrom(parseFlags(['x', '--history', '400']))).toThrow(/1 to 365/);
+    expect(() => definitionFrom(parseFlags(['x', '--last', '400d']))).toThrow(/a year at most/);
+    expect(() => definitionFrom(parseFlags(['x', '--last', '6h']))).toThrow(/whole days/);
+    // --last 2w is 14 days
+    expect(definitionFrom(parseFlags(['x', '--last', '2w'])).history).toBe(14);
   });
 
   it('a field "on <Event>" is for that event alone; a trailing "on" that names no counted event stays in the expression', () => {

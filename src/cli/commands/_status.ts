@@ -1,8 +1,8 @@
 import { flagAll, type ParsedFlags } from './_args';
 
 // `--status "Label: Option=rule; Option=rule; Option"`: a category column, its options in order with the rule that
-// makes each, the last without one the rest. An item table's (table create --opens) and a live table's (a pill on
-// each row, 2026-10-27) read the same way.
+// makes each, the last without one the rest. A table of things' (table create --each <Event> --id <field>) and a
+// table of events' (a pill on each row, 2026-10-27) read the same way.
 
 export const STATUS_HELP = '--status takes "Label: Option=rule; Option=rule; Option" (the last without a rule is Otherwise): --status "Stage: Closed=latest(WithdrawalBatchClosed); Open".';
 

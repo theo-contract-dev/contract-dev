@@ -2,7 +2,7 @@
 // address with no code — a treasury, a deployer, a market maker — watched on one chain like a
 // contract, through the same watchlist API (accountType 'wallet'). Its page is /wallets/<chain>/<address>;
 // its activity (the transactions it sent and received, its transfers in and out) answers to
-// `query transactions|transfers|wallets --contract <name>` like a contract's. A group holds contracts
+// `query transactions|transfers|wallets --on <name>` like a contract's. A group holds contracts
 // or wallets, never both.
 import { parseFlags, flag, requirePositional } from './_args';
 import { requireChain } from '../data';
@@ -24,8 +24,8 @@ Usage:
   contract-dev wallets remove <address> [--chain <id>] Stop watching it (its monitors and tracked values go with it)
 
 A wallet is watched per (chain, address): watch it on another chain with a second call. Its dashboard is
-/wallets/<chain>/<address>. Its activity reads like a contract's: \`contract-dev query transactions --contract <name>\`
-(sent and received), \`query transfers --contract <name> --out\` (what left it). A balance alert is a tracked
+/wallets/<chain>/<address>. Its activity reads like a contract's: \`contract-dev query transactions --on <name>\`
+(sent and received), \`query transfers --on <name> --out\` (what left it). A balance alert is a tracked
 balance(self) with \`contract-dev notify add alert\`. A group holds contracts or wallets, never both.
 A contract (an address with code) is refused here: watch it with \`contract-dev watch <address>\`.
 `;

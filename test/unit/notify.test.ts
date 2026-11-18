@@ -156,7 +156,9 @@ describe('notify against the API', () => {
             ...base,
             'POST /api/mainnet/reports': (c: any) => ({ status: 201, payload: { report: report({ id: 'rep9', name: c.body.name, cadence: 'each', channels: [], each: { kind: 'event', subject: 'Swap', metricId: null, metricName: null, when: 'true', message: c.body.message, digestMinutes: null } }) } }),
         });
-        await run(['notify', 'add', 'update', 'Swaps', '--group', 'pools', '--event', 'Swap', '--message', '{value}']);
+        await expect(run(['notify', 'add', 'alert', 'Swaps', '--group', 'pools', '--each', 'Swap', '--message', '{value}'])).rejects.toThrow('--group is gone: say --on tag:<group> (contract-dev notify help).');
+        await expect(run(['notify', 'add', 'alert', 'Swaps', '--on', 'tag:pools', '--event', 'Swap', '--message', '{value}'])).rejects.toThrow('--event is gone: say --each <Event> (contract-dev notify help).');
+        await run(['notify', 'add', 'update', 'Swaps', '--on', 'tag:pools', '--each', 'Swap', '--message', '{value}']);
         const post = calls.find((c) => c.method === 'POST' && c.path === '/api/mainnet/reports');
         expect(post?.body).toMatchObject({ name: 'Swaps', cadence: 'each', trigger: { kind: 'event', event: 'Swap' }, scope: { kind: 'tag', tag: 'pools' }, message: '{value}' });
         expect(printed()[0]).toBe('Created alert "Swaps" (rep9).');

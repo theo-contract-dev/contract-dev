@@ -114,7 +114,7 @@ describe('data commands', () => {
                 },
             }),
         });
-        await run(['events', 'steth']);
+        await run(['query', 'events', '--on', 'steth']);
         expect(query(calls[1])).toEqual({ range: '24h', chainId: '1', address: STETH });
         const out = printed();
         expect(out[0]).toBe('Lido: stETH · Ethereum · events · last 24h');

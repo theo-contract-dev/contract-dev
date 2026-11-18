@@ -1,6 +1,7 @@
 // Shared by the data commands (activity, methods, flows, users, …): the window flag,
 // naming a watched contract by address or by name, and the app's address book. Each command
 // reads the same routes the dashboard pages do, so the CLI and the app always agree.
+import { lastFlag, lastWindow, parseLast } from './last';
 import { apiRequest, ResolvedAuth } from './credentials';
 import { flag, ParsedFlags } from './commands/_args';
 import { parseChainId, WatchedAccount } from './commands/watch';
@@ -10,14 +11,14 @@ import { chainLabel } from './view';
 export const RANGES = ['24h', '7d', '30d', '90d'] as const;
 export type Range = (typeof RANGES)[number];
 
-export function parseRange<T extends string>(flags: ParsedFlags, allowed: readonly T[], fallback: T): T {
-  const raw = flag(flags, 'range');
+export function parseRange<T extends string>(flags: ParsedFlags, allowed: readonly T[], fallback: T, help = 'notify'): T {
+  // --last <window> (5.0.0), one of the windows the route serves, never rounded; --range is refused with it
+  if (flag(flags, 'range') !== undefined) throw new Error(`--range is gone: say --last <window>, one of ${allowed.join(', ')} (contract-dev ${help} help).`);
+  const raw = lastFlag(flags);
   if (raw === undefined) return fallback;
-  const v = raw.trim().toLowerCase();
-  if (!(allowed as readonly string[]).includes(v)) {
-    throw new Error(`--range must be one of ${allowed.join(', ')} (got: ${raw})`);
-  }
-  return v as T;
+  const windows: Record<number, string> = {};
+  for (const w of allowed) windows[parseLast(w)] = w;
+  return lastWindow(raw, windows, 'this window') as T;
 }
 
 /** A line saying the server answered for a shorter window than asked — the plan's limit — or nothing. */

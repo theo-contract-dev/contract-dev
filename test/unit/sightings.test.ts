@@ -95,7 +95,7 @@ describe('monitor show / sightings on a silence monitor', () => {
     it('show reads the sightings and prints the count, how long quiet, the longest gap, the strip and the quiet stretches', async () => {
         const p = sightings();
         const calls = mockApi({ ...base, 'GET /api/mainnet/invariants/inv9/sightings': () => ({ payload: p }) });
-        await monitorCommand(['show', 'sAVAX rewards stopped accruing', '--range', '7d']);
+        await monitorCommand(['show', 'sAVAX rewards stopped accruing', '--last', '7d']);
         expect(query(calls.find((c) => c.path.includes('/sightings'))!)).toEqual({ range: '7d' });
         const out = printed();
         expect(out[0]).toBe('sAVAX rewards stopped accruing  (inv9)');
@@ -142,5 +142,16 @@ describe('monitor show / sightings on a silence monitor', () => {
 
         mockApi(base);
         await expect(monitorCommand(['sightings', 'inv1'])).rejects.toThrow('"Treasury · Native balance" is not a silence monitor — sightings are what a silence monitor counts.');
+    });
+});
+
+describe('monitor windows (5.0.0)', () => {
+    const { parseRange } = require('../../src/cli/data');
+    const { parseFlags } = require('../../src/cli/commands/_args');
+    it('reads --last as one of the windows, and refuses --range with it', () => {
+        expect(parseRange(parseFlags(['x', '--last', '1w']), ['24h', '7d', '30d'], '24h')).toBe('7d');
+        expect(parseRange(parseFlags(['x']), ['24h', '7d', '30d'], '24h')).toBe('24h');
+        expect(() => parseRange(parseFlags(['x', '--last', '2d']), ['24h', '7d', '30d'], '24h')).toThrow(/takes 24h \(1d\), 7d \(1w\), 30d/);
+        expect(() => parseRange(parseFlags(['x', '--range', '7d']), ['24h', '7d', '30d'], '24h')).toThrow('--range is gone: say --last <window>, one of 24h, 7d, 30d (contract-dev notify help).');
     });
 });

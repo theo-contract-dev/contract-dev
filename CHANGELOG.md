@@ -1,5 +1,102 @@
 # Changelog
 
+## 5.0.0 — 2026-11-17
+
+`table create` and `table update` take `--row-name "<template>"`: what a row is called, over the table's own columns in
+braces (`--row-name "{Token 0} / {Token 1}"` names a pool by its pair). The name shows first with the id under it; a
+column holding a token prints its symbol. `--row-name ""` on update goes back to the id.
+
+`metric define --on table:"<table>"` on a table over events adds up the rows the table keeps when `--value` names one
+of its columns (or none: a count): `metric define "Swap fees" --on table:"Swaps" --value feeusd --split id`. No event
+is read, priced or stored again, and the metric's records are the table's rows. A formula or a `--where` of its own
+still reads the events.
+
+`table update` takes `--count` and `--sum`, adding event columns to a table that has rows already (they read its
+history again). `by` may join fields with commas (`by tickLower,tickUpper`): one part per set of values, a price range.
+A formula reads a split column's parts with `each({Column}, <formula>)`, `amount` the part's total and the split's
+fields by name, and `sum()` adds them: `sum(each({Holdings}, usd(amount, token)))` is what is held, in dollars now. A
+`from` may name a contract the workspace keeps in the background for its definitions (Uniswap's PoolManager), and a
+formula's `last(Swap.sqrtPriceX96)` reads an event stated `--event "Swap.id from <contract>"`.
+
+Breaking: `metric`, `notify add alert` and `alerts` speak the same words as `table` and `query`. `metric define` and
+`metric update` take `--on` and `--each`; `metric group` is `--on tag:<group>`, `metric table` `--on table:"<table>"`; a
+metric's history is `--last <n>d` (`--last 2w` is 14 days, an hour refused), `metric show` and `metric export` read
+`--last` (a state metric 24h, 7d, 30d or 90d; an activity metric whole days) or `--since launch`, `alerts --last <n>d`,
+`monitor`'s sightings `--last 24h|7d|30d`, and `notify add alert` takes `--on tag:<group>` and `--each <Event>`
+(`--silence --each`, `--overdue --each`). Refused with the word to use: `--group`, `--contract`, `--event`, `--table`,
+`--history`, `--days`, `--range` (`--group is gone: say --on tag:<group> (contract-dev metric help).`), the inline clauses
+too (`event`, `history`). `watch --group`, `factory --watch --group` and `group rule add --factory --event --field` keep
+their words: they put contracts into a group and name the factory's event, not a scope.
+
+Breaking: how far back is `--last <duration>` on every question and table, a number and h, d or w (`--last 1h`,
+`--last 7d`, `--last 30d`, `--last 2w`). `--days` is refused: `--days is gone: say --last <n>d`. Events read the events
+tool's windows exactly (1h, 24h, 7d, 30d, 90d, 365d; the which-fired summary 24h, 7d, 30d, 90d), and a length they lack
+is refused with the ones they have, never rounded. Transactions, transfers, wallets, a table's rows, a metric's records and
+alerts count in whole days: `--last 2w` is 14 days, an hour is refused. `--last` and `--since` together are refused.
+`table create … --last 30d` reaches back 30 days over the rows it keeps. The `--last "<expr>"` measure shorthand is gone
+with it: a group's last value is `--measure <name>="last(<expr>)"`.
+
+Breaking: `table` speaks one grammar, and the flags of the two older ways to make a table are refused, each with the
+word that replaced it. There is "a table"; the words "item table" and "live table" are gone from the help and the
+output.
+
+| Gone | Say instead |
+|---|---|
+| `--opens <Event>` | `--each <Event> --id <field>` (the event that announces a row, and its field that names it) |
+| `--from events --event <Event>` | `--each <Event>` |
+| `--from "<table>"` | `--on table:"<table>"` |
+| `--from transactions\|transfers\|wallets\|contracts\|…` | `--rows <data>` |
+| `--group <group>` | `--on tag:<group>` |
+| `--contract <ref>` | `--on <contract>` |
+
+`table list` and `table show` take `--on` the same way (`table list --on tag:<group>`, `table show <table> --on
+<contract>`). What the words ask for decides how the table is kept: with `--id` (or a read column, a formula, a finish
+rule, a `--count` or `--sum` per row) one row per thing, read live over its life; alone, one row per event, asked again
+while it is open. `--rows` takes only what the workspace keeps, and `--each` is refused beside `--rows` or
+`--on table:`.
+
+New on `--count` and `--sum`, after `Event[.field][:Label]`, each once, in any order:
+- `from <contract>`: the event is emitted by another watched contract (its name or 0x address) and matched to the row
+  with the same id: `--count "Bribed:Incentives on poolId from Voter incentives"`. A name that holds a clause word
+  goes in quotes (`from "Fee on transfer"`). `--event "<Event>.<field> from <contract>"` does the same for an event a
+  rule names.
+- `by <field>`: the column is split by one of the event's fields; the row opens onto its parts.
+- `token <field>`: the token may be one of the event's own fields (`token token`); the column is then split by that
+  token, each part in its own token, and totals in dollars.
+
+Also: `whoami` says "tables" where it said "item tables"; a kept table's line reads "Table under Tables …".
+
+`query` is the one question command, in the same words as `table create`: what it answers once, `table create` with
+the same words keeps. `events` and `history` are folded into `query events`, and both are refused with the `query
+events` line built from what was typed (`contract-dev events steth --event Swap --window 7d` → `contract-dev query
+events --on steth --each Swap --days 7`).
+
+| Gone | Say instead |
+|---|---|
+| `contract-dev events <contract>` | `query events --on <contract>` (which events fired) |
+| `contract-dev events <contract> --event <E> …` | `query events --on <contract> --each <E> --days <n> …` (the events tool) |
+| `contract-dev history <contract> --event <E> …` | `query events --on <contract> --each <E> --since launch\|<date> …` (the history tool) |
+| `--group <group>` on `query` | `--on tag:<group>` |
+| `--contract <ref>` on `query` | `--on <contract or wallet>` |
+| `--event <E>` | `--each <E>` |
+| `--window` / `--range` on events | `--days 1\|7\|30\|90\|365`; `all` or `1y` → `--since launch` |
+
+With `--days`, `query events` takes the old `events` words (`--read`, `--fixed`, `--where`, `--show`, `--sort`,
+`--asc`, `--by`, one `--sum|--avg|--min|--max|--count`, `--limit`, `--address 0x… --chain <id>` for a contract
+nobody watches). With `--since`, it takes the old `history` words (`--until`, `--by day|week|month|wallet`, `--who`,
+`--value`, `--read`, `--tz`, `--wallet`, `--limit`, `--once`) and refuses the window's (`--where`, `--sort`, `--show`,
+a measure). Not carried: the `1h` window (`--days 1` is the shortest) and named `--measure` on events (the events
+tool adds up one measure). `query --on table:"<t>"` is refused with `query table "<t>"`; `query --save` stays
+refused (`table create`).
+
+New: `users`, who uses the protocol. One definition per workspace in the table's words plus two: `--who
+"<Event>.<field>"` (the event's field that is the user; at least one, and a workspace has no users until it is defined) and `--segment
+"<Name>=<rule>"` (a named rule a user is in while it holds). `users define` saves it whole with `--count`, `--sum`,
+`--column "<Label>=<view>(user())…"` (a position read now), `--formula`, `--status` and `--value`; `users update`
+changes one clause; `users` lists the rows with the query's clauses (`--segment`, `--where`, `--sort`, `--by`);
+`users show` prints the definition, `users show <0x…>` one user; `users import <file> --segment "<name>"` puts a
+list in by hand. The rows are on the Users page.
+
 ## 4.4.0 — 2026-11-08
 
 One command for everything the workspace sends. `report …` and `monitor …` (and `reports`, `monitors`) are retired:

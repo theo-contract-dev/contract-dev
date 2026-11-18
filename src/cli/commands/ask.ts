@@ -4,7 +4,7 @@
 import { parseFlags, flag, type ParsedFlags } from './_args';
 import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
-import { chainFlag, limitFlag, lookupNames, nameKey, RANGES, servedRangeNote, type Range } from '../data';
+import { chainFlag, limitFlag, lookupNames, nameKey, servedRangeNote } from '../data';
 import { DASH, chainLabel, fmtAge, fmtInt, fmtPct, fmtUsd, nameOr, plural, shortAddr, table, type Column } from '../view';
 import { oracleLines, type ConsoleOracles } from './oracles';
 import { STANDARD_LABEL } from './inspect';
@@ -27,34 +27,6 @@ Examples:
 const HELP_WORDS = ['help', '-h', '--help'];
 
 const scopeWords = (label: string | null | undefined): string => (!label || label === 'workspace' ? 'Workspace' : label);
-
-/** --group / --contract / --chain → the tools' scope argument; nothing → the whole workspace. */
-export function scopeFromFlags(flags: ParsedFlags): Record<string, unknown> | undefined {
-  const group = flag(flags, 'group');
-  const contract = flag(flags, 'contract');
-  const chainId = chainFlag(flags);
-  if (group !== undefined && contract !== undefined) throw new Error('Pick one of --group or --contract.');
-  if (group === 'true') throw new Error('--group needs a name');
-  if (contract === 'true') throw new Error('--contract needs an address or a watched name');
-  const chain = chainId !== undefined ? { chainId } : {};
-  if (group !== undefined) return { kind: 'group', group, ...chain };
-  if (contract !== undefined) return { kind: 'contract', contract, ...chain };
-  if (chainId !== undefined) return { kind: 'workspace', ...chain };
-  return undefined;
-}
-
-/** --window (or --range), one of the dashboard's windows. */
-/** The windows the question tools read: the dashboard's, plus the past hour. */
-export const ASK_WINDOWS = ['1h', ...RANGES] as const;
-export type AskWindow = (typeof ASK_WINDOWS)[number];
-
-export function windowFlag(flags: ParsedFlags, fallback: Range = '7d'): Range {
-  const raw = flag(flags, 'window') ?? flag(flags, 'range');
-  if (raw === undefined) return fallback;
-  const v = raw.trim().toLowerCase();
-  if (!(ASK_WINDOWS as readonly string[]).includes(v)) throw new Error(`--window must be one of ${ASK_WINDOWS.join(', ')} (got: ${raw})`);
-  return v as Range;
-}
 
 // ── find ──
 

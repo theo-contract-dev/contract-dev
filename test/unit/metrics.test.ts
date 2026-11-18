@@ -60,7 +60,7 @@ describe('track', () => {
                 payload: { trackedMetric: metric, points: [{ at: '2026-09-27T09:00:00Z', value: 1.5, blockNumber: 10, txHash: '0xabc' }, { at: '2026-09-27T10:00:00Z', value: 2 }], prev: null },
             }),
         });
-        await metricsCommand(['export', 'Bal', '--range', '7d']);
+        await metricsCommand(['export', 'Bal', '--last', '7d']);
         expect(printed()).toEqual(['at,value,block,tx', '2026-09-27T09:00:00Z,1.5,10,0xabc', '2026-09-27T10:00:00Z,2,,']);
         await expect(metricsCommand(['export', 'Bal', '--format', 'xml'])).rejects.toThrow(/--format/);
     });
@@ -243,10 +243,11 @@ describe('metrics / untrack', () => {
                 payload: { trackedMetric: metrics[0], points: [{ at: '2026-09-15T00:00:00Z', value: 12.5, blockNumber: 100 }], prev: null },
             }),
         });
-        await metricsCommand(['show', 'treasury · native balance', '--range', '7d']);
+        await metricsCommand(['show', 'treasury · native balance', '--last', '7d']);
         expect(calls.map((c) => c.path)).toEqual(['/api/mainnet/tools/list_metrics', '/api/mainnet/tracked-metrics?include=unlisted', '/api/mainnet/tracked-metrics/m1/series?range=7d']);
         expect(printed().join('\n')).toMatch(/2026-09-15T00:00:00Z {2}.*12\.5 {2}block 100/);
-        await expect(metricsCommand(['show', 'm1', '--range', '2d'])).rejects.toThrow(/--range/);
+        await expect(metricsCommand(['show', 'm1', '--last', '2d'])).rejects.toThrow(/takes 24h \(1d\), 7d \(1w\), 30d, 90d/);
+        await expect(metricsCommand(['show', 'm1', '--range', '7d'])).rejects.toThrow('--range is gone: say --last <n>d, or --since launch for all of it (contract-dev metric help).');
     });
 
     it('an ambiguous label demands an id', async () => {

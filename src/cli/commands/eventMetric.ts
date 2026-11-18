@@ -4,6 +4,8 @@
 // series, and the records behind it), update (rename, or replace parts of the definition: the
 // history is read again) and delete. They live under `contract-dev metric`, beside tracked values.
 // --json hands back the tool's own result.
+import { refuseGoneFlags, METRIC_GONE } from './gone';
+import { lastDays, lastFlag } from '../last';
 import { parseFlags, flag, flagAll, onlyFlags, requirePositional, type ParsedFlags } from './_args';
 import { requireAuth } from '../credentials';
 import { runTool } from '../tools';
@@ -20,20 +22,20 @@ export function checkUnit(unit: unknown): void {
 
 export const EVENT_METRIC_HELP = `Event metrics — a number added up from events, each read exactly at its own transaction:
   contract-dev metric define "<name>" --on <what> --each <Event>… [--value …] [--where …] [--read …]… [--field …]…
-                              [--aggregate …] [--split …] [--unit …] [--keep …] [--pair …] [--history <days>] [--hidden]
+                              [--aggregate …] [--split …] [--unit …] [--keep …] [--pair …] [--last <n>d] [--hidden]
                                                       An ACTIVITY metric: what happened, added up from events. The
                                                       full grammar, and a STATE metric (--call): metric define help
   contract-dev metric events                          The event metrics: scope, events, unit, status, records
-  contract-dev metric show <name> [--days <n>] [--by hour|day] [--split <contract|key>] [--records <n>] [--newest]
+  contract-dev metric show <name> [--last <n>d | --since launch] [--by hour|day] [--split <contract|key>] [--records <n>] [--newest]
                                                       Its total, the largest contracts, a series, and the records behind
                                                       it with their parameters, reads and fields
   contract-dev metric update <name> [--name "<new>"] [any define flag]   Replace those parts; the history is read again
   contract-dev metric delete <name>                   Remove an event metric, or a tracked value by label or id (as untrack)
-  contract-dev metric table "<name>" --table "<table>" [--column "<label>"] [--among active|done|all]
+  contract-dev metric table "<name>" --on table:"<table>" [--column "<label>"] [--among active|done|all]
                               [--aggregate sum|count|avg|min|max] [--split contract|none] [--unit usd|count|number]
                                                       A number over a table's rows, recorded each minute from now
                                                       (in dollars only when its column states a token)
-  contract-dev metric group "<name>" --group "<group>" --column <key|label> [--aggregate sum|avg|min|max|count]
+  contract-dev metric group "<name>" --on tag:<group> --column <key|label> [--aggregate sum|avg|min|max|count]
                               [--split contract|none] [--unit usd|number] [--token <token>]
                                                       A group's column rolled up into one number across its contracts,
                                                       recorded each minute from now: the plain sum, or in dollars when
@@ -68,11 +70,11 @@ event and the splits add up, so the figure is the value now, never a sum over th
 the per-Garden value every rebalance round emits). Use it when the event carries a balance or a total.
 
 Example (Uniswap v3 swap fees in dollars, per pool):
-  contract-dev metric define "Swap fees" --group "Uniswap v3" --event Swap \\
+  contract-dev metric define "Swap fees" --on tag:"Uniswap v3" --each Swap \\
     --read "fee=fee()" --read "t0=token0()" --read "t1=token1()" \\
     --field "in0=if(amount0 > 0, amount0, 0)" --field "in1=if(amount1 > 0, amount1, 0)" \\
     --value "usd(in0 * fee / 1000000, t0) + usd(in1 * fee / 1000000, t1)"
-  contract-dev metric show "Swap fees" --days 7
+  contract-dev metric show "Swap fees" --last 7d
 `;
 
 /** Split on commas outside brackets and quotes: `a, if(b, c), "x,y"` is three. */
@@ -134,7 +136,8 @@ export function parseRead(raw: string, fixed: Set<string>): Record<string, unkno
 /** The definition flags as the tool's input; only the parts given. */
 export function definitionFrom(flags: ParsedFlags): Record<string, unknown> {
   const input: Record<string, unknown> = {};
-  const events = flagAll(flags, 'event');
+  // --each names the events; --event is the table command's own rewrite of it (a person's --event is refused first)
+  const events = [...flagAll(flags, 'each'), ...flagAll(flags, 'event')];
   if (events.length > 0) input.events = events;
   const fixed = new Set(flagAll(flags, 'fixed').map((f) => f.trim()));
   const reads = flagAll(flags, 'read').map((r) => parseRead(r, fixed));
@@ -157,10 +160,11 @@ export function definitionFrom(flags: ParsedFlags): Record<string, unknown> {
     if (v !== undefined) input[key] = v;
   }
   checkUnit(input.unit);
-  const history = flag(flags, 'history');
-  if (history !== undefined) {
-    const n = Number(String(history).replace(/d$/, ''));
-    if (!Number.isInteger(n) || n < 1 || n > 365) throw new Error('--history takes a number of days from 1 to 365.');
+  // how far back its history is read: --last <n>d, whole days, 1 to 365
+  const last = lastFlag(flags);
+  if (last !== undefined) {
+    const n = lastDays(last, "A metric's history");
+    if (n > 365) throw new Error(`--last on a metric reaches back a year at most: --last 365d (got: ${last.trim()}).`);
     input.history = n;
   }
   // parameters kept on every record beyond what the formulas read: --keep recipient --keep swapInfo.dex, or --keep all
@@ -176,44 +180,36 @@ export function definitionFrom(flags: ParsedFlags): Record<string, unknown> {
   return input;
 }
 
-export const scopeInput = (flags: ParsedFlags): Record<string, unknown> => {
-  const group = flag(flags, 'group');
-  const contract = flag(flags, 'contract');
-  const chainId = chainFlag(flags);
-  return { ...(group ? { group } : {}), ...(contract ? { contract } : {}), ...(chainId != null && contract ? { chainId } : {}) };
-};
-
 async function print(tool: string, input: Record<string, unknown>): Promise<unknown> {
   const result = await runTool<Record<string, unknown>>(requireAuth(), tool, input);
   for (const line of printResult(result)) console.log(line);
   return result;
 }
 
-export async function defineEventMetric(args: string[]): Promise<unknown> {
-  if (!args.length || ['help', '-h', '--help'].includes(args[0])) return void console.log(EVENT_METRIC_HELP);
-  const flags = parseFlags(args);
-  const name = requirePositional(flags._ as string[], 0, 'name');
-  const definition = definitionFrom(flags);
-  if (!definition.events) throw new Error('--event names what is counted: --event Swap.');
-  const description = flag(flags, 'description');
-  // --hidden: off the Metrics page, a metric made only for a report (2026-11-06)
-  return print('define_metric', { name, ...scopeInput(flags), ...(description ? { description } : {}), ...definition, ...(flag(flags, 'hidden') !== undefined ? { listed: false } : {}) });
+/** How far back `metric show` reads an activity metric, in days: --last <n>d, or --since launch (90 days, what the server keeps). */
+export function showDays(flags: ParsedFlags): number | undefined {
+  const last = lastFlag(flags);
+  const since = flag(flags, 'since');
+  if (last !== undefined && since !== undefined) throw new Error('Say one of --last <n>d or --since launch.');
+  if (since !== undefined) {
+    if (since.trim().toLowerCase() !== 'launch') throw new Error(`metric show takes --since launch, for all of it (got: ${since}); a window is --last <n>d.`);
+    return 90;
+  }
+  if (last === undefined) return undefined;
+  const n = lastDays(last, "A metric's records");
+  if (n > 365) throw new Error(`--last reaches back a year at most: --last 365d (got: ${last.trim()}).`);
+  return n;
 }
 
 /** `metric show <name>` for an event metric; null when no event metric has that name. */
 export async function showEventMetric(args: string[]): Promise<unknown> {
+  refuseGoneFlags(args, METRIC_GONE, 'metric');
   const flags = parseFlags(args);
   const metric = (flags._ as string[]).join(' ').trim();
   const input: Record<string, unknown> = { metric };
-  // --range takes the state metric words too (24h, 7d, 30d, 90d, all), so a group or table total reads
-  // like a metric on one contract; all is the longest the server keeps for these (90 days), 2026-11-09
-  const range = flag(flags, 'range');
-  const days = flag(flags, 'days') ?? (range === '24h' ? '1' : range === 'all' ? '90' : range);
-  if (days !== undefined) {
-    const n = Number(String(days).replace(/d$/, ''));
-    if (!Number.isInteger(n) || n < 1 || n > 365) throw new Error('--days takes a number of days from 1 to 365.');
-    input.days = n;
-  }
+  // --last <n>d, whole days 1 to 365; --since launch is all of it, the longest the server keeps for these (90 days)
+  const days = showDays(flags);
+  if (days !== undefined) input.days = days;
   for (const key of ['by', 'split'] as const) {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;
@@ -247,12 +243,13 @@ export async function listEventMetrics(): Promise<{ id: string; name: string }[]
 
 export async function updateEventMetric(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) return void console.log(EVENT_METRIC_HELP);
+  refuseGoneFlags(args, METRIC_GONE, 'metric');
   const flags = parseFlags(args);
   const metric = requirePositional(flags._ as string[], 0, 'metric');
   const name = flag(flags, 'name');
   const description = flag(flags, 'description');
   const definition = definitionFrom(flags);
-  if (!name && description === undefined && Object.keys(definition).length === 0) throw new Error('Nothing to change: pass --name "<name>", --description "<sentence>" or the parts of the definition to replace (--event, --read, --field, --value, --where, …).');
+  if (!name && description === undefined && Object.keys(definition).length === 0) throw new Error('Nothing to change: pass --name "<name>", --description "<sentence>" or the parts of the definition to replace (--each, --read, --field, --value, --where, --last, …).');
   return print('update_metric', { metric, ...(name ? { name } : {}), ...(description !== undefined ? { description } : {}), ...definition });
 }
 
@@ -380,13 +377,16 @@ export function formulaPreviewLines(r: FormulaPreview): string[] {
   ];
 }
 
-/** `metric group "<name>" --group … --column …`: a group's column rolled up into one metric, recorded forward. */
+/** `metric group "<name>" --on tag:<group> --column …`: a group's column rolled up into one metric, recorded forward. */
 export async function defineGroupMetric(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) return void console.log(EVENT_METRIC_HELP);
+  refuseGoneFlags(args, METRIC_GONE, 'metric');
   const flags = parseFlags(args);
   const name = requirePositional(flags._ as string[], 0, 'name');
-  const group = flag(flags, 'group');
-  if (!group) throw new Error('--group names the group (contract-dev group show lists its columns).');
+  const on = flag(flags, 'on');
+  const tagged = on === undefined ? null : /^(tag|group):\s*(.+)$/i.exec(on.trim());
+  if (!tagged) throw new Error('--on tag:<group> names the group (contract-dev group show lists its columns).');
+  const group = tagged[2].trim().replace(/^"(.*)"$/, '$1');
   const column = flag(flags, 'column');
   if (!column) throw new Error('--column names the column to roll up, by key or label.');
   const input: Record<string, unknown> = { name, group, column };
@@ -401,10 +401,13 @@ export async function defineGroupMetric(args: string[]): Promise<unknown> {
 /** `metric table "<name>" --table …`: a number over a table's rows, recorded forward. */
 export async function defineItemMetric(args: string[]): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0])) return void console.log(EVENT_METRIC_HELP);
+  refuseGoneFlags(args, METRIC_GONE, 'metric');
   const flags = parseFlags(args);
   const name = requirePositional(flags._ as string[], 0, 'name');
-  const table = flag(flags, 'table');
-  if (!table) throw new Error('--table names the item table (contract-dev table list shows them).');
+  const on = flag(flags, 'on');
+  const named = on === undefined ? null : /^table:\s*(.+)$/i.exec(on.trim());
+  if (!named) throw new Error('--on table:"<table>" names the table (contract-dev table list shows them).');
+  const table = named[1].trim().replace(/^"(.*)"$/, '$1');
   const input: Record<string, unknown> = { name, table };
   for (const key of ['column', 'among', 'aggregate', 'split', 'unit', 'description'] as const) {
     const v = flag(flags, key);

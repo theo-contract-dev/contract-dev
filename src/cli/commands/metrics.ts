@@ -1,11 +1,13 @@
+import { refuseGoneFlags, METRIC_GONE } from './gone';
+import { lastFlag, lastWindow } from '../last';
 import { Interface, isAddress } from 'ethers';
-import { parseFlags, flag, requirePositional, requireFlag } from './_args';
+import { parseFlags, flag, requirePositional, requireFlag, type ParsedFlags } from './_args';
 import { apiRequest, requireAuth, ResolvedAuth } from '../credentials';
 import { parseChainId, WatchedAccount } from './watch';
 import { chainFlag, chainOf, resolveContract } from '../data';
 import { runTool } from '../tools';
 import { defineMetricCommand, listMetricsCommand, resolveAnyMetric } from './_define';
-import { EVENT_METRIC_HELP, defineEventMetric, defineGroupMetric, defineItemMetric, deleteEventMetric, isEventMetric, listEventMetrics, monitorEventMetric, showEventMetric, trackFormula, updateEventMetric } from './eventMetric';
+import { EVENT_METRIC_HELP, defineGroupMetric, defineItemMetric, deleteEventMetric, isEventMetric, listEventMetrics, monitorEventMetric, showEventMetric, trackFormula, updateEventMetric } from './eventMetric';
 
 const TRACK_HELP = `contract-dev track — track an on-chain value as a metric (charted on /metrics, usable by monitors)
 
@@ -38,12 +40,13 @@ up from events, drawn as bars. One command defines either, on a contract, a wall
 
   contract-dev metrics [--kind state|activity] [--hidden] [--on <what>]   Every metric: kind, name, on, reads, unit, id
   contract-dev metric define "<name>" --on <what> --call "<read>"… | --each <Event>…   (try: metric define help)
-  contract-dev metric show <id|name> [--range 24h|7d|30d|90d|all] [--days <n>] [--limit <n>]
+  contract-dev metric show <id|name> [--last 24h|7d|30d|90d | --since launch] [--limit <n>]
+                            (a state metric reads those windows; an activity metric any whole days, 1d to 365d)
   contract-dev metric delete <id|name>…
   contract-dev metric rename <id|name> "<new name>"
   contract-dev metric pause <id|name> / resume <id|name>     A state metric on one contract or wallet: stop reading (history kept) / go on
   contract-dev metric decimals <id|name> <n|clear>          Its display scale (one contract or wallet)
-  contract-dev metric export <id|name> [--range …] [--format csv|json]
+  contract-dev metric export <id|name> [--last 24h|7d|30d|90d | --since launch] [--format csv|json]
   contract-dev metric monitor <metric> --name "…" --when "<formula>"   An alert on it (or: notify add alert)
 
 A metric is named by its id or, when one has it, its name. The older spellings still work and say so:
@@ -360,6 +363,7 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
       return await listMetricsCommand(['--kind', 'activity']);
     case 'show': {
       // by id or name, whichever kind: a state metric's readings, an activity metric's records
+      refuseGoneFlags(rest, METRIC_GONE, 'metric');
       const flags = parseFlags(rest);
       const ref = (flags._ as string[]).join(' ').trim();
       if (!ref) throw new Error('Missing required metric: contract-dev metric show <id|name>');
@@ -389,6 +393,7 @@ export async function metricsCommand(args: string[]): Promise<unknown> {
     case 'decimals':
       return await patchMetric(rest, 'decimals');
     case 'export':
+      refuseGoneFlags(rest, METRIC_GONE, 'metric');
       return await exportMetric(rest);
     case 'track':
       return await trackCommand(rest);
@@ -482,11 +487,25 @@ interface SeriesPayload {
   range?: string;
 }
 
+/** The windows a state metric's readings are served over (the series route's range), by their length in hours. */
+const SERIES_WINDOWS: Record<number, string> = { 24: '24h', 168: '7d', 720: '30d', 2160: '90d' };
+
+/** A state metric's window from --last (one the series serves, never rounded) or --since launch (all of it). */
+function seriesRange(flags: ParsedFlags, fallback: string): string {
+  const last = lastFlag(flags);
+  const since = flag(flags, 'since');
+  if (last !== undefined && since !== undefined) throw new Error('Say one of --last <window> or --since launch.');
+  if (since !== undefined) {
+    if (since.trim().toLowerCase() !== 'launch') throw new Error(`A state metric takes --since launch, for all of it (got: ${since}); a window is --last 24h, 7d, 30d or 90d.`);
+    return 'all';
+  }
+  return last === undefined ? fallback : lastWindow(last, SERIES_WINDOWS, "a state metric's readings", { since: true });
+}
+
 async function showMetric(args: string[]): Promise<SeriesPayload> {
   const flags = parseFlags(args);
   const ref = requirePositional(flags._ as string[], 0, 'metric id or label');
-  const range = flag(flags, 'range') ?? '30d';
-  if (!['24h', '7d', '30d', '90d', 'all'].includes(range)) throw new Error('--range must be one of 24h, 7d, 30d, 90d, all');
+  const range = seriesRange(flags, '30d');
   const limitRaw = flag(flags, 'limit');
   const limit = limitRaw === undefined ? 50 : Number(limitRaw);
   if (!Number.isInteger(limit) || limit <= 0) throw new Error('--limit must be a positive integer');
@@ -514,8 +533,7 @@ async function showMetric(args: string[]): Promise<SeriesPayload> {
 async function exportMetric(args: string[]): Promise<SeriesPayload> {
   const flags = parseFlags(args);
   const ref = requirePositional(flags._ as string[], 0, 'metric id or label');
-  const range = flag(flags, 'range') ?? 'all';
-  if (!['24h', '7d', '30d', '90d', 'all'].includes(range)) throw new Error('--range must be one of 24h, 7d, 30d, 90d, all');
+  const range = seriesRange(flags, 'all');
   const format = flag(flags, 'format') ?? 'csv';
   if (format !== 'csv' && format !== 'json') throw new Error('--format must be csv or json');
 

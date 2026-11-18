@@ -19,7 +19,7 @@ describe('one grammar for a metric', () => {
       value: 'pooled / shares',
       listed: false,
     });
-    expect(defineInputFromFlags('Swap fees', parseFlags(['x', '--on', 'tag:pools', '--each', 'Swap', '--read', 'fee=fee()', '--value', 'usd(amount0 * fee, token0())', '--history', '7']))).toEqual({
+    expect(defineInputFromFlags('Swap fees', parseFlags(['x', '--on', 'tag:pools', '--each', 'Swap', '--read', 'fee=fee()', '--value', 'usd(amount0 * fee, token0())', '--last', '7d']))).toEqual({
       name: 'Swap fees',
       on: 'tag:pools',
       each: ['Swap'],
@@ -27,9 +27,7 @@ describe('one grammar for a metric', () => {
       value: 'usd(amount0 * fee, token0())',
       history: 7,
     });
-    // the older words are the same input
-    expect(defineInputFromFlags('x', parseFlags(['x', '--group', 'pools', '--event', 'Swap']))).toEqual({ name: 'x', on: 'tag:pools', each: ['Swap'] });
-    expect(defineInputFromFlags('x', parseFlags(['x', '--contract', 'steth', '--chain', '1', '--event', 'Swap']))).toEqual({ name: 'x', on: 'steth', chainId: 1, each: ['Swap'] });
+    expect(defineInputFromFlags('x', parseFlags(['x', '--on', 'steth', '--chain', '1', '--each', 'Swap']))).toEqual({ name: 'x', on: 'steth', chainId: 1, each: ['Swap'] });
     expect(defineInputFromFlags('x', parseFlags(['x', '--on', 'table:Positions', '--column', 'Value', '--among', 'active', '--token', '0xabc', '--show', 'usd', '--decimals', '18']))).toEqual({ name: 'x', on: 'table:Positions', column: 'Value', among: 'active', token: '0xabc', show: 'usd', decimals: 18 });
     expect(() => defineInputFromFlags('x', parseFlags(['x', '--show', 'eur']))).toThrow(/--show takes usd/);
     expect(() => defineInputFromFlags('x', parseFlags(['x', '--decimals', '40']))).toThrow(/0 to 36/);
@@ -47,7 +45,7 @@ describe('one grammar for a metric', () => {
     expect(inlineDefinition('balanceOf(a=b)')).toBeNull();
   });
 
-  it('turns the table grammar into the older flags: --on, --each, --rows', () => {
+  it('hands the table grammar on in the shapes the tools take: --on, --each, --rows', () => {
     expect(rewriteTableArgs(['Loans', '--on', 'tag:markets', '--each', 'LoanOpened', '--id', 'loanId', '--column', 'Owed=accountDebt(id())'])).toEqual(['Loans', '--group', 'markets', '--opens', 'LoanOpened', '--id', 'loanId', '--column', 'Owed=accountDebt(id())']);
     expect(rewriteTableArgs(['Big swaps', '--on', 'tag:pools', '--each', 'Swap', '--where', 'x > 1'])).toEqual(['Big swaps', '--group', 'pools', '--event', 'Swap', '--where', 'x > 1', '--from', 'events']);
     expect(rewriteTableArgs(['Out', '--on', 'treasury', '--rows', 'transfers'])).toEqual(['Out', '--contract', 'treasury', '--from', 'transfers']);
@@ -129,5 +127,52 @@ describe('metrics and reports over the wire', () => {
     await run(['alert', 'list']);
     await run(['alerts']);
     expect(calls.map((c) => c.path.split('?')[0])).toEqual(['/api/mainnet/invariants', '/api/mainnet/reports', '/api/cli/alert-channels', '/api/mainnet/incidents']);
+  });
+});
+
+describe('the table grammar handed on (5.0.0)', () => {
+  it('takes --on=, --each= and --rows= as it takes the spaced forms', () => {
+    expect(rewriteTableArgs(['Loans', '--on=tag:markets', '--each=LoanOpened', '--id', 'loanId'])).toEqual(['Loans', '--group', 'markets', '--opens', 'LoanOpened', '--id', 'loanId']);
+    expect(rewriteTableArgs(['Out', '--on=treasury', '--rows=Transfers'])).toEqual(['Out', '--contract', 'treasury', '--from', 'transfers']);
+  });
+
+  it('several --each: the first opens the rows of a state table and the rest are events a rule may name; every one is a row of an activity table', () => {
+    expect(rewriteTableArgs(['Rounds', '--on', 'tag:markets', '--each', 'Opened', '--each', 'Closed', '--id', 'id'])).toEqual(['Rounds', '--group', 'markets', '--opens', 'Opened', '--event', 'Closed', '--id', 'id']);
+    expect(rewriteTableArgs(['Flow', '--on', 'tag:pools', '--each', 'Swap', '--each', 'Mint'])).toEqual(['Flow', '--group', 'pools', '--event', 'Swap', '--event', 'Mint', '--from', 'events']);
+  });
+
+  it('--found-label and --id-shown make a state table as --id does', () => {
+    expect(rewriteTableArgs(['Pools', '--on', 'registry', '--each', 'PoolRegistered', '--found-label', 'Listed'])).toEqual(['Pools', '--contract', 'registry', '--opens', 'PoolRegistered', '--found-label', 'Listed']);
+  });
+});
+
+describe('metric words (5.0.0)', () => {
+  const { refuseGoneFlags, METRIC_GONE } = require('../../src/cli/commands/gone');
+  const { showDays, definitionFrom } = require('../../src/cli/commands/eventMetric');
+  it('refuses the older scope, event and window words, each with the word that replaced it', async () => {
+    for (const [args, said] of [
+      [['metric', 'define', 'x', '--group', 'pools', '--each', 'Swap'], '--group is gone: say --on tag:<group> (contract-dev metric define help).'],
+      [['metric', 'define', 'x', '--contract', 'steth', '--each', 'Swap'], '--contract is gone: say --on <contract> (contract-dev metric define help).'],
+      [['metric', 'define', 'x', '--on', 'steth', '--event', 'Swap'], '--event is gone: say --each <Event> (contract-dev metric define help).'],
+      [['metric', 'define', 'x', '--on', 'steth', '--each', 'Swap', '--history', '30'], '--history is gone: say --last <n>d (contract-dev metric define help).'],
+      [['metric', 'show', 'Swap fees', '--days', '7'], '--days is gone: say --last <n>d (contract-dev metric help).'],
+      [['metric', 'update', 'Swap fees', '--event', 'Swap'], '--event is gone: say --each <Event> (contract-dev metric help).'],
+      [['metric', 'table', 'x', '--table', 'Positions'], '--table is gone: say --on table:"<table>" (contract-dev metric help).'],
+      [['metric', 'group', 'x', '--group', 'pools', '--column', 'tvl'], '--group is gone: say --on tag:<group> (contract-dev metric help).'],
+    ] as [string[], string][])
+      await expect(run(args)).rejects.toThrow(said);
+    expect(() => refuseGoneFlags(['--range=7d'], METRIC_GONE, 'metric')).toThrow(/--range is gone/);
+  });
+  it('an inline definition refuses the older words too', () => {
+    expect(() => clausesToArgs('on steth; event Swap')).toThrow('"event" is gone: say each <Event>');
+    expect(() => clausesToArgs('on steth; each Swap; history 30')).toThrow('"history" is gone: say last <n>d');
+    expect(clausesToArgs('on steth; each Swap; last 30d')).toEqual(['--on', 'steth', '--each', 'Swap', '--last', '30d']);
+  });
+  it('metric show reads --last in whole days, or --since launch', () => {
+    expect(showDays(parseFlags(['x', '--last', '2w']))).toBe(14);
+    expect(showDays(parseFlags(['x', '--since', 'launch']))).toBe(90);
+    expect(() => showDays(parseFlags(['x', '--last', '3h']))).toThrow(/whole days/);
+    expect(() => showDays(parseFlags(['x', '--last', '7d', '--since', 'launch']))).toThrow(/one of/);
+    expect(definitionFrom(parseFlags(['x', '--each', 'Swap', '--each', 'Mint'])).events).toEqual(['Swap', 'Mint']);
   });
 });

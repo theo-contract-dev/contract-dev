@@ -1,4 +1,4 @@
-import { findCommand, describeCommand, fmtByUnit, fmtChangePct, scopeFromFlags } from '../../src/cli/commands/ask';
+import { findCommand, describeCommand, fmtByUnit, fmtChangePct } from '../../src/cli/commands/ask';
 import { parseFlags } from '../../src/cli/commands/_args';
 import { run } from '../../src/cli/index';
 import { mockApi, useEnvAuth, printed } from './_mockApi';
@@ -167,7 +167,7 @@ describe('compare', () => {
 
 
 
-    it('fmtByUnit / fmtChangePct / scopeFromFlags', () => {
+    it('fmtByUnit / fmtChangePct', () => {
         expect(fmtByUnit(1500, 'usd')).toBe('$1.5K');
         expect(fmtByUnit(0.125, 'share')).toBe('12.5%');
         expect(fmtByUnit(12345, 'count')).toBe('12,345');
@@ -176,9 +176,6 @@ describe('compare', () => {
         expect(fmtChangePct(-12.4)).toBe('-12%');
         expect(fmtChangePct(0)).toBe('0%');
         expect(fmtChangePct(null)).toBe('—');
-        expect(scopeFromFlags(parseFlags([]))).toBeUndefined();
-        expect(scopeFromFlags(parseFlags(['--contract', STETH, '--chain', '1']))).toEqual({ kind: 'contract', contract: STETH, chainId: 1 });
-        expect(scopeFromFlags(parseFlags(['--group', 'pools']))).toEqual({ kind: 'group', group: 'pools' });
     });
 });
 
