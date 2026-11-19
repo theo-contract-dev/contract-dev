@@ -86,7 +86,7 @@ firing of some events since launch, with no table.
 contract-dev table list                                             # every table, hidden ones too
 contract-dev table create "Withdrawal rounds" --on tag:"Wildcat markets" --each WithdrawalBatchCreated --closes WithdrawalBatchClosed --count WithdrawalQueued:Queued --hidden
 contract-dev table create "Big swaps" --on tag:pools --each Swap --where "usd(abs(amount0), token0()) > 10000"   # a row per event
-contract-dev table create "Top wallets" --rows transfers --on tag:pools --by wallet --sum "{USD}"               # rows the workspace keeps
+contract-dev table create "Top traders" --on table:"Big swaps" --by wallet --count                             # built on another table
 contract-dev table show "Withdrawal rounds" --by week --among done   # openings and closings, how long rows stay open, the biggest
 contract-dev query table "Withdrawal rounds" --where '{Stage} == "Paying"' --sort "{Outstanding}"   # its rows, filtered and ranked
 contract-dev query events --on tag:"Wildcat markets" --each WithdrawalQueued --since launch --by week   # since launch: by week, sizes, top wallets, when

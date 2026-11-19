@@ -40,7 +40,7 @@ up from events, drawn as bars. One command defines either, on a contract, a wall
 
   contract-dev metrics [--kind state|activity] [--hidden] [--on <what>]   Every metric: kind, name, on, reads, unit, id
   contract-dev metric define "<name>" --on <what> --call "<read>"… | --each <Event>…   (try: metric define help)
-  contract-dev metric show <id|name> [--last 24h|7d|30d|90d | --since launch] [--limit <n>]
+  contract-dev metric show <id|name> [--last 24h|7d|30d|90d | --since launch | --since <date> [--until <date>]] [--limit <n>]
                             (a state metric reads those windows; an activity metric any whole days, 1d to 365d)
   contract-dev metric delete <id|name>…
   contract-dev metric rename <id|name> "<new name>"

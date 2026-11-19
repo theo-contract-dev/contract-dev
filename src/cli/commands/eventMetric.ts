@@ -186,13 +186,13 @@ async function print(tool: string, input: Record<string, unknown>): Promise<unkn
   return result;
 }
 
-/** How far back `metric show` reads an activity metric, in days: --last <n>d, or --since launch (90 days, what the server keeps). */
+/** How far back `metric show` reads an activity metric, in days: --last <n>d, or --since launch (90 days, what the server keeps). A date is showWindow's. */
 export function showDays(flags: ParsedFlags): number | undefined {
   const last = lastFlag(flags);
   const since = flag(flags, 'since');
-  if (last !== undefined && since !== undefined) throw new Error('Say one of --last <n>d or --since launch.');
+  if (last !== undefined && since !== undefined) throw new Error('Say one of --last <n>d, --since launch or --since <date> [--until <date>].');
   if (since !== undefined) {
-    if (since.trim().toLowerCase() !== 'launch') throw new Error(`metric show takes --since launch, for all of it (got: ${since}); a window is --last <n>d.`);
+    if (since.trim().toLowerCase() !== 'launch') return undefined;
     return 90;
   }
   if (last === undefined) return undefined;
@@ -210,6 +210,12 @@ export async function showEventMetric(args: string[]): Promise<unknown> {
   // --last <n>d, whole days 1 to 365; --since launch is all of it, the longest the server keeps for these (90 days)
   const days = showDays(flags);
   if (days !== undefined) input.days = days;
+  // a window in the past (2026-11-18): --since <date> [--until <date>], a date alone as --until running through that day
+  const since = flag(flags, 'since');
+  const until = flag(flags, 'until');
+  if (since === 'true' || until === 'true') throw new Error('--since and --until take a UTC date or time: --since 2026-11-16 --until 2026-11-16.');
+  if (since !== undefined && since.trim().toLowerCase() !== 'launch') input.from = since.trim();
+  if (until !== undefined) input.to = until.trim();
   for (const key of ['by', 'split'] as const) {
     const v = flag(flags, key);
     if (v !== undefined) input[key] = v;

@@ -260,7 +260,7 @@ describe('one grammar (5.0.0): the older flags are refused with the word that re
     it('table create refuses --opens, --from, --group and --contract, each with its pointer, before anything is sent', async () => {
         const calls = mockApi({});
         await expect(run(['table', 'create', 'X', '--opens', 'LoanOpened'])).rejects.toThrow(/--opens is gone: say --each <Event> --id <field>/);
-        await expect(run(['table', 'create', 'X', '--from', 'transfers'])).rejects.toThrow(/--from is gone: say --on table:"<name>" for another table's rows, --rows <data>/);
+        await expect(run(['table', 'create', 'X', '--from', 'transfers'])).rejects.toThrow(/--from is gone: say --on table:"<name>" for another table's rows, or --each <Event>/);
         await expect(run(['table', 'create', 'X', '--from=events', '--each', 'Swap'])).rejects.toThrow(/--from is gone/);
         await expect(run(['table', 'create', 'X', '--group', 'Pools', '--each', 'Swap'])).rejects.toThrow(/--group is gone: say --on tag:<group>/);
         await expect(run(['table', 'create', 'X', '--contract', 'Router', '--each', 'Swap'])).rejects.toThrow(/--contract is gone: say --on <contract>/);
@@ -293,10 +293,11 @@ describe('one grammar (5.0.0): the older flags are refused with the word that re
         expect(out).not.toMatch(/live table|item table/i);
     });
 
-    it('--rows takes what the workspace keeps and nothing else; --each and --rows, or --each on another table, are refused', async () => {
-        mockApi({});
-        await expect(run(['table', 'create', 'X', '--rows', 'Big swaps'])).rejects.toThrow(/--rows takes contracts, metrics.*Another table's rows are --on table:"Big swaps"/);
-        await expect(run(['table', 'create', 'X', '--rows', 'transfers', '--each', 'Swap'])).rejects.toThrow(/one of them says what a row is/);
+    it('--rows is gone (a table is made from events, 2026-11-18), and --each on another table is refused', async () => {
+        const calls = mockApi({});
+        await expect(run(['table', 'create', 'X', '--rows', 'transfers'])).rejects.toThrow(/--rows is gone: a table is made from events \(--each <Event>\), or built on a table that is/);
+        await expect(run(['table', 'create', 'X', '--rows=wallets', '--on', 'tag:pools', '--by', 'wallet', '--count'])).rejects.toThrow(/asked with contract-dev query/);
+        expect(calls).toHaveLength(0);
         await expect(run(['table', 'create', 'X', '--on', 'table:Big swaps', '--each', 'Swap'])).rejects.toThrow(/takes its rows from it/);
     });
 });
@@ -372,5 +373,66 @@ describe('by over several fields', () => {
     it('refuses a space after the comma, and more than four fields', () => {
         expect(() => columnsFrom(parseFlags(['--sum', 'ModifyLiquidity.liquidityDelta:Liquidity by tickLower, tickUpper']))).toThrow(/one word/);
         expect(() => columnsFrom(parseFlags(['--sum', 'E.v:L by a,b,c,d,e']))).toThrow(/up to four/);
+    });
+});
+
+// A table's row opens its own page (2026-11-18): --detail names the columns shown there and not in the table.
+describe('--detail: the columns kept for a row\'s page', () => {
+    useEnvAuth();
+
+    it('create sends the names as a list, from one comma list or several flags', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/create_table': () => ok({ created: true, table: { id: 't1', name: 'Pools' } }) });
+        await run(['table', 'create', 'Pools', '--on', 'PoolRegistry', '--each', 'PoolRegistered', '--id', 'id', '--count', 'Bribed:Posts', '--detail', 'Hook, Token 0', '--detail', 'Registered']);
+        expect(calls[0].body.input).toMatchObject({ name: 'Pools', opens: 'PoolRegistered', detail: ['Hook', 'Token 0', 'Registered'] });
+    });
+
+    it('update replaces the list, and an empty one puts every column back in the table', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/update_table': () => ok({ table: { id: 't1', name: 'Pools' } }) });
+        await run(['table', 'update', 'Pools', '--detail', 'Hook, Emission share %']);
+        expect(calls[0].body.input).toEqual({ table: 'Pools', detail: ['Hook', 'Emission share %'] });
+        await run(['table', 'update', 'Pools', '--detail', '']);
+        expect(calls[1].body.input).toEqual({ table: 'Pools', detail: [] });
+    });
+
+    it('a bare --detail is refused with what it takes', async () => {
+        const calls = mockApi({});
+        await expect(run(['table', 'update', 'Pools', '--detail'])).rejects.toThrow(/--detail names columns by label/);
+        expect(calls).toHaveLength(0);
+    });
+});
+
+// A count or a sum over a window (last 7d), over a contract's events or a table of events' rows, and a read that goes
+// to an address the row holds (2026-11-19).
+describe('windowed columns and reads on the row\'s own address', () => {
+    useEnvAuth();
+
+    it('last <window> rides on a --count or --sum as the tool\'s last', () => {
+        expect(columnsFrom(parseFlags(['--sum', 'Bribed.amount:Incentives 30d on poolId from Voter incentives token token last 30d']))).toEqual([
+            { label: 'Incentives 30d', event: 'Bribed', field: 'amount', fold: 'sum', on: 'poolId', from: 'Voter incentives', last: '30d', token: 'token' },
+        ]);
+        expect(columnsFrom(parseFlags(['--count', 'Swap:Swaps 24h last 24h']))).toEqual([{ label: 'Swaps 24h', event: 'Swap', fold: 'count', last: '24h' }]);
+        expect(() => columnsFrom(parseFlags(['--count', 'Swap:Swaps last week']))).toThrow(/after "last" comes one word|last takes a window like 24h, 7d or 2w/);
+        expect(() => columnsFrom(parseFlags(['--count', 'Bribed:Posts by from last 7d']))).toThrow(/takes no by or where/);
+    });
+
+    it('from table: adds up a table of events\' rows: one of its columns for a sum, the label alone for a count', () => {
+        expect(columnsFrom(parseFlags(['--sum', 'feeusd:Fees 7d from table:"Swaps" last 7d']))).toEqual([{ label: 'Fees 7d', field: 'feeusd', fold: 'sum', from: 'table:"Swaps"', last: '7d' }]);
+        expect(columnsFrom(parseFlags(['--count', 'Swaps 7d from table:"Big swaps" on id last 7d']))).toEqual([{ label: 'Swaps 7d', fold: 'count', from: 'table:"Big swaps"', last: '7d', on: 'id' }]);
+        expect(() => columnsFrom(parseFlags(['--sum', 'feeusd:Fees from table:"Swaps"']))).toThrow(/say last 7d/);
+        expect(() => columnsFrom(parseFlags(['--sum', 'Swap.feeusd:Fees from table:"Swaps" last 7d']))).toThrow(/takes one of its columns/);
+    });
+
+    it('--column reads on a fixed address, on a column of the row, or on the row\'s id', () => {
+        expect(readColumnsFrom(parseFlags(['--column', 'Fee=currentFee(id(), true); on {Hook}']))).toEqual([{ label: 'Fee', read: 'currentFee', args: [':id', 'true'], target: '{Hook}' }]);
+        expect(readColumnsFrom(parseFlags(['--column', 'Reserve=balanceOf(self); on {Token 0}']))).toEqual([{ label: 'Reserve', read: 'balanceOf', args: ['self'], target: '{Token 0}' }]);
+        expect(readColumnsFrom(parseFlags(['--column', 'Liquidity=liquidity(); on id()']))).toEqual([{ label: 'Liquidity', read: 'liquidity', target: 'id()' }]);
+        expect(readColumnsFrom(parseFlags(['--column', 'Share=emissionShareOf(id()); on 0x71570B34D9200FFE5C3066f5A204f91229E7338E']))).toEqual([{ label: 'Share', read: 'emissionShareOf', args: [':id'], target: '0x71570b34d9200ffe5c3066f5a204f91229e7338e' }]);
+        expect(() => readColumnsFrom(parseFlags(['--column', 'Fee=currentFee(); on hook']))).toThrow(/on takes a contract's 0x address, a column of the row in braces/);
+    });
+
+    it('table update adds a read column', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/update_table': () => ok({ table: { id: 't1', name: 'Pools' } }) });
+        await run(['table', 'update', 'Pools', '--column', 'Fee=currentFee(id(), true); on {Hook}']);
+        expect(calls[0].body.input).toEqual({ table: 'Pools', columns: [{ label: 'Fee', read: 'currentFee', args: [':id', 'true'], target: '{Hook}' }] });
     });
 });

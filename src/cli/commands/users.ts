@@ -28,14 +28,18 @@ Usage:
   contract-dev users [list] [--segment <name>] [--kind wallet|contract|exchange] [the query's flags]
                                           The users, ranked by the value column (else most recently seen); --where,
                                           --sort, --by with --measure, --total and --limit as in contract-dev query
+  contract-dev users --holdings [--segment <name>]
+                                          What the segment's users hold everywhere, over the ones whose wallets were
+                                          read (the top of each ranked segment): tokens, protocols, chains, apps
   contract-dev users show                 The definition, the segments with their counts, how many users
-  contract-dev users show <0x address>    One user: its columns, each by contract, and what it did here
+  contract-dev users show <0x address>    One user: its columns, each by contract, what it did here, and what it
+                                          holds everywhere (its wallet on every chain, its positions in protocols)
   contract-dev users define [--who "<Event>.<field> [on <contract|tag:<group>>]"]…
                             [--count "<Event>[:<Label>] [on <field>]"]…
                             [--sum "<Event>.<field>[:<Label>] [on <field>] [token <token>] [show usd] [decimals <n>]"]…
                             [--column "<Label>=<view>(<args>)[.<output>][; on <contract|tag:<group>>][; token <token>][; show usd][; decimals <n>]"]…
                             [--formula "<Label>=<expr>[; show usd|pct|count]"]…
-                            [--status "<Label>: <Opt>=<rule>; <Opt>"]… [--segment "<Name>=<rule>[; show <Column>, …]"]… [--value <Label>]
+                            [--status "<Label>: <Opt>=<rule>; <Opt>"]… [--segment "<Name>=<rule>[; show <Column>, …][; rank <Column>]"]… [--value <Label>]
                                           The workspace's definition, whole: what it does not name is gone
   contract-dev users update [the same flags] [--remove <label|segment|Event>]…
                                           Add to the definition or change it: a clause with a label already there
@@ -51,7 +55,9 @@ Usage:
           name.
 --count   how many of an event name the user. --sum adds one of its number fields up; token says what the amount
           counts in (a 0x address, self, or a view each contract answers with it, like asset()), show usd prices it.
-          "on <field>" says which address field holds the user when no --who line covers the event.
+          "on <field>" says which address field holds the user when no --who line covers the event. A signed field
+          (what a swap took and gave) nets out when added up: wrap it as abs(<Event>.<field>) to add each event by
+          its size, which is a volume: --sum "abs(Swap.amount0):Volume token 0x… show usd".
 --column  a view read with the user as an argument (user()), on each contract in its scope the user has used, added
           up. An argument may be another view on the same contract: convertToAssets(balanceOf(user())). "on" one
           named contract (a pool with getUserAccountData, a lens) reads every user there.
@@ -61,7 +67,9 @@ Usage:
 --segment a named rule; a user is in every segment whose rule holds. New, Active and Dormant exist already
           (first or last activity within 30 days). On the Users page a segment shows the columns its rule reads, or
           the ones "; show <Column>, <Column>" names (Transactions, In and Out too), its users most recently active
-          in those columns' events first.
+          in those columns' events first. "; rank <Column>" ranks its users by one figure instead, largest first
+          (a column, or Transactions, In, Out, Contracts): --segment "Traders={Swaps} > 0; rank Volume". The users
+          at the top of each ranked segment have their holdings everywhere read once a day (users --holdings).
 --value   the column that is the user's value here, in dollars: users rank by it and the page adds it up.
 
 Event counts and sums reach as far back as the workspace's history; a --column is the chain now. Add --json for
@@ -127,6 +135,56 @@ async function define(args: string[], mode: 'replace' | 'update'): Promise<unkno
   return r;
 }
 
+const usd = (v: unknown): string => cell(byUnit(v, 'usd'));
+
+/** One user's holdings everywhere: the totals, the largest positions, the latest transactions on any chain. */
+function sayHolding(raw: unknown): void {
+  if (typeof raw === 'string') {
+    console.log(`\nHoldings: ${raw}`);
+    return;
+  }
+  const h = raw as { readAt?: number; walletOnly?: string; totalUsd?: number; walletUsd?: number; inProtocolsUsd?: number | null; debtUsd?: number | null; positions?: { chain: string; token: string | null; amount: number; usd: number | null; where: string }[]; morePositions?: number; recent?: { time: number; chain: string; type: string; app?: string; usd: number | null; moved: string[] }[] } | undefined;
+  if (!h) return;
+  console.log(`\nHoldings everywhere · ${h.walletOnly ? `Wallet ${usd(h.walletUsd)}` : `${usd(h.totalUsd)} · Wallet ${usd(h.walletUsd)} · In protocols ${usd(h.inProtocolsUsd)} · Debt ${usd(h.debtUsd)}`} · Read ${cell(byUnit(h.readAt, 'time'))}`);
+  if (h.walletOnly) console.log(h.walletOnly);
+  const positions = h.positions ?? [];
+  if (positions.length > 0) for (const line of columnsTable(['Token', 'Where', 'Chain', 'Amount', 'Value'], positions.map((p) => [p.token ?? DASH, p.where, p.chain, cell(byUnit(p.amount, undefined)), usd(p.usd)]), '  ')) console.log(line);
+  if (h.morePositions) console.log(`  … ${h.morePositions} more`);
+  const recent = h.recent ?? [];
+  if (recent.length > 0) {
+    console.log('\nWallet activity');
+    for (const line of columnsTable(['When', 'Action', 'App', 'Chain', 'Moved', 'Value'], recent.map((m) => [cell(byUnit(m.time, 'time')), m.type, m.app ?? DASH, m.chain, m.moved.join(' · ') || DASH, usd(m.usd)]), '  ')) console.log(line);
+  }
+}
+
+/** What a segment's read users hold between them: tokens, protocols, chains and the apps they use. */
+function sayHoldings(r: Record<string, unknown>, segment: string | undefined): void {
+  const read = Number(r.usersRead ?? 0);
+  console.log(`Holdings${segment ? ` · ${segment}` : ''} · ${read.toLocaleString('en-US')} users read${r.usersInGroup != null ? ` of ${Number(r.usersInGroup).toLocaleString('en-US')}` : ''}${read > 0 ? ` · ${usd(r.totalUsd)} · Wallets ${usd(r.walletUsd)} · In protocols ${usd(r.inProtocolsUsd)} · Debt ${usd(r.debtUsd)}` : ''}`);
+  if (typeof r.note === 'string') console.log(r.note);
+  const tokens = (r.tokens ?? []) as { token: string | null; chain: string; holders: number; usd: number | null }[];
+  if (tokens.length > 0) {
+    console.log('\nTokens');
+    for (const line of columnsTable(['Token', 'Chain', 'Holders', 'Held'], tokens.map((t) => [t.token ?? DASH, t.chain, t.holders.toLocaleString('en-US'), usd(t.usd)]), '  ')) console.log(line);
+  }
+  const protocols = (r.protocols ?? []) as { protocol: string; users: number; usd: number; positions: string[] }[];
+  if (protocols.length > 0) {
+    console.log('\nProtocols');
+    for (const line of columnsTable(['Protocol', 'Positions', 'Users', 'Held'], protocols.map((p) => [p.protocol, p.positions.join(', '), p.users.toLocaleString('en-US'), usd(p.usd)]), '  ')) console.log(line);
+  }
+  const chains = (r.chains ?? []) as { chain: string; users: number; usd: number }[];
+  if (chains.length > 0) {
+    console.log('\nChains');
+    for (const line of columnsTable(['Chain', 'Users', 'Held'], chains.map((c) => [c.chain, c.users.toLocaleString('en-US'), usd(c.usd)]), '  ')) console.log(line);
+  }
+  const apps = (r.apps ?? []) as { app: string; users: number; transactions: number }[];
+  if (apps.length > 0) {
+    console.log('\nApps used');
+    for (const line of columnsTable(['App', 'Users', 'Transactions'], apps.map((a) => [a.app, a.users.toLocaleString('en-US'), a.transactions.toLocaleString('en-US')]), '  ')) console.log(line);
+  }
+  if (typeof r.url === 'string') console.log(`\n${r.url}`);
+}
+
 async function show(args: string[]): Promise<unknown> {
   const flags = parseFlags(args);
   const address = (flags._ as string[])[0];
@@ -160,6 +218,7 @@ async function show(args: string[]): Promise<unknown> {
       const rows = actions.map((a) => [cell(byUnit(a.time, 'time')), a.action, a.contract, a.amountOf ? `${figure(a.amountOf, a.amount)} ${a.amountOf}` : DASH, a.tx]);
       for (const line of columnsTable(['When', 'Action', 'Contract', 'Amount', 'Transaction'], rows, '  ')) console.log(line);
     }
+    sayHolding(r.holdings);
     if (typeof r.url === 'string') console.log(`\n${r.url}`);
     return r;
   }
@@ -185,6 +244,11 @@ async function list(args: string[]): Promise<unknown> {
   if (kind !== undefined) {
     if (!['wallet', 'contract', 'exchange'].includes(kind)) throw new Error('--kind takes wallet, contract or exchange.');
     input.kind = kind;
+  }
+  if (flag(flags, 'holdings') === 'true') {
+    const h = await runTool<Record<string, unknown>>(requireAuth(), 'query_users', { ...(segment ? { segment } : {}), holdings: true });
+    sayHoldings(h, segment);
+    return h;
   }
   const r = await runTool<Record<string, unknown>>(requireAuth(), 'query_users', input);
   const matched = Number(r.matched ?? 0);

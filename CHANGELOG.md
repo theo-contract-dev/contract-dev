@@ -2,9 +2,36 @@
 
 ## 5.0.0 — 2026-11-17
 
+`query metric`, `query metrics`, `query table`, `query transactions`, `query transfers`, `query alerts` and `metric show`
+take `--since <date> [--until <date>]`: a window in the past, in UTC dates or times, a date alone as `--until` running
+through that whole day (`--since 2026-11-16 --until 2026-11-16` is 16 Nov). A `--where` over records reads `time()`
+and the other record words, and `date("2026-11-16T12:00Z")` is that time in seconds.
+
 `table create` and `table update` take `--row-name "<template>"`: what a row is called, over the table's own columns in
-braces (`--row-name "{Token 0} / {Token 1}"` names a pool by its pair). The name shows first with the id under it; a
-column holding a token prints its symbol. `--row-name ""` on update goes back to the id.
+braces (`--row-name "{Token 0} / {Token 1}"` names a pool by its pair). The name stands in the table in place of the
+id; a column holding a token prints its symbol. `--row-name ""` on update goes back to the id.
+
+A row of a table of things opens its own page (`/tables/<table>/<row>`): the table's columns, what each column split
+with `by` breaks into, the latest firing of each watched event, and its id. `table create` and `table update` take
+`--detail "<Column>, <Column>…"`: the columns shown on that page and not in the table (`--detail "Hook, Token 0, Token
+1, Registered"`). Every column is made the same way; this only says where it shows. On update it replaces the list,
+and `--detail ""` puts every column back in the table. (On a table of events `--detail` keeps its meaning: the columns
+a row opens onto.)
+
+Reads, windows and history on a table of things:
+- `--column "<Label>=<view>(<args>); on {Column}"` reads on an address the row itself holds (each pool's own hook), and
+  `; on id()` on the row's id where that is an address (a factory's pools, each its own contract); `; on 0x…` still
+  reads one contract for every row. `table update` takes `--column` too.
+- `--count` and `--sum` take `last <window>` (`24h`, `7d`, `30d`): a window back from now in place of the whole
+  history. `from table:"<table>"` adds up a table of events' rows per row of this one:
+  `--sum 'feeusd:Fees 7d from table:"Swaps" last 7d'`, `--count 'Swaps 7d from table:"Swaps" last 7d'`. The link is
+  the field the events table says holds this table's rows (`where "id in Pools"`), or `on <field>`. Each keeps a
+  metric of the table's own, off the Metrics page, deleted with the column.
+- Every number column keeps its value per row and day. A row's page charts them; `ago({Deposits}, 7d)` in a formula
+  reads an earlier one; `table show <table> --row <id|name> --last 30d [--series]` reads them back (where each column
+  stood at the start and end, the change, its low and high). A windowed column has its whole past; a read, an event
+  total and a formula have days from when the table started keeping them.
+- A row's page lists the row's own rows from each table of events that points at its table (a pool's swaps).
 
 `metric define --on table:"<table>"` on a table over events adds up the rows the table keeps when `--value` names one
 of its columns (or none: a count): `metric define "Swap fees" --on table:"Swaps" --value feeusd --split id`. No event
@@ -45,15 +72,20 @@ output.
 | `--opens <Event>` | `--each <Event> --id <field>` (the event that announces a row, and its field that names it) |
 | `--from events --event <Event>` | `--each <Event>` |
 | `--from "<table>"` | `--on table:"<table>"` |
-| `--from transactions\|transfers\|wallets\|contracts\|…` | `--rows <data>` |
+| `--from transactions\|transfers\|wallets\|contracts\|…` | gone: asked with `contract-dev query`, not kept as a table |
 | `--group <group>` | `--on tag:<group>` |
 | `--contract <ref>` | `--on <contract>` |
 
 `table list` and `table show` take `--on` the same way (`table list --on tag:<group>`, `table show <table> --on
 <contract>`). What the words ask for decides how the table is kept: with `--id` (or a read column, a formula, a finish
 rule, a `--count` or `--sum` per row) one row per thing, read live over its life; alone, one row per event, asked again
-while it is open. `--rows` takes only what the workspace keeps, and `--each` is refused beside `--rows` or
-`--on table:`.
+while it is open. `--each` is refused beside `--on table:`.
+
+Breaking: a table is made from events, or built on a table that is. The lists the platform keeps by itself
+(transactions, transfers, wallets, contracts, metrics, monitors, alerts, reports) are no longer a way to make one:
+`--rows` (4.x's `--from transfers`) is refused, and the server refuses a kept answer over them. They are still asked
+with `contract-dev query transactions|transfers|wallets|…`. Tables made from them before still open. A transaction
+row's method is the router's on a routed call, which a table presented as the contract's own.
 
 New on `--count` and `--sum`, after `Event[.field][:Label]`, each once, in any order:
 - `from <contract>`: the event is emitted by another watched contract (its name or 0x address) and matched to the row

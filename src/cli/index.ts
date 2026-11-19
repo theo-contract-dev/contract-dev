@@ -58,9 +58,9 @@ Tables (rows kept current, and the things inside contracts: withdrawal rounds, l
   contract-dev table create "<name>" --on <contract|tag:<g>> --each <Event> [--field "vol=usd(…)"] [--by … --measure …]
                                           A row per event, one step: the events kept underneath, the question asked of
                                           them and asked again while the table is open
-  contract-dev table create "<name>" --on table:"<table>" | --rows transactions|transfers|wallets|contracts [the query's flags]
-                                          Rows the workspace already keeps: another table's rows (its
-                                          own --where carried in), a metric's records, the ledger
+  contract-dev table create "<name>" --on table:"<table>" [the query's flags]
+                                          Built on another table's rows (its own --where carried in) or
+                                          a metric's records
   contract-dev table show <table>         Its rows now; for a table of things, openings and closings, how long rows stay open
   contract-dev table create "<name>" --on <contract|tag:<g>> --each <Event> --id <field> [--closes <Event>] [--count <Event>] [--hidden]
                                           A row per thing the event announces, read live, its whole history read

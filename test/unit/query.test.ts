@@ -355,14 +355,12 @@ describe('tables kept from a question, and snapshots', () => {
     const saved = (kept: boolean) =>
         ok({ dataset: 'data', columns: [], rows: [{ wallet: '0xa', volume: 5 }], matched: 1, returned: 1, more: 0, saved: { id: 'q1', url: `http://app/${kept ? 'tables' : 'queries'}/q1`, as: 'table', title: 'Top wallets', asOf: '2026-10-26T00:00:00Z', ...(kept ? { kept } : {}) } });
 
-    it('table create on another table or on kept rows asks the question through query and keeps it as a table named by the table', async () => {
-        const calls = mockApi({ 'POST /api/mainnet/tools/query_data': () => saved(true), 'POST /api/mainnet/tools/query_transfers': () => saved(true) });
+    it('table create on another table asks the question through query and keeps it as a table named by the table', async () => {
+        const calls = mockApi({ 'POST /api/mainnet/tools/query_data': () => saved(true) });
         await run(['table', 'create', 'Top wallets', '--on', 'table:DZap activity', '--last', '24h', '--by', 'wallet', '--measure', 'volume=sum(vol)']);
-        await run(['table', 'create', 'Top wallets', '--rows=transfers', '--on', 'tag:DZap Routers', '--by', 'wallet', '--sum', '{USD}']);
         expect(calls.map((c) => [c.path, c.body.input])).toEqual([
             // one kind of kept answer since 2026-10-28: a table; `as` and `keep` went with the snapshots
             ['/api/mainnet/tools/query_data', { by: ['wallet'], measures: [{ name: 'volume', fn: 'sum', expr: 'vol' }], data: 'DZap activity', days: 1, save: { title: 'Top wallets' } }],
-            ['/api/mainnet/tools/query_transfers', { by: ['wallet'], measure: { fn: 'sum', expr: '{USD}' }, group: 'DZap Routers', save: { title: 'Top wallets' } }],
         ]);
         expect(printed().join('\n')).toMatch(/Table under Tables · Top wallets: http:\/\/app\/tables\/q1/);
     });
@@ -370,14 +368,14 @@ describe('tables kept from a question, and snapshots', () => {
     it('--save, --keep, --title and --draw are gone (the snapshots under Queries went 2026-10-28) and say what to use', async () => {
         const calls = mockApi({});
         for (const flag of ['--save', '--keep', '--title', '--draw'])
-            await expect(run(['query', 'table', 'DZap activity', '--by', 'wallet', '--count', flag, ...(flag === '--title' || flag === '--draw' ? ['x'] : [])])).rejects.toThrow(/--save is gone: a table kept under Tables is contract-dev table create "<name>" --rows <data>/);
+            await expect(run(['query', 'table', 'DZap activity', '--by', 'wallet', '--count', flag, ...(flag === '--title' || flag === '--draw' ? ['x'] : [])])).rejects.toThrow(/--save is gone: a table kept under Tables is made from events: contract-dev table create "<name>" --on <what> --each <Event>/);
         expect(calls).toHaveLength(0);
     });
 
-    it('a table over kept rows refuses the words of a table of things and a snapshot\'s, and table create says what it needs', async () => {
+    it('a table built on another refuses the words of a table of things and a snapshot\'s, and table create says what it needs', async () => {
         mockApi({});
-        await expect(run(['table', 'create', 'X', '--rows', 'transfers', '--formula', 'A={B}'])).rejects.toThrow(/--formula is for a table whose rows are things an event announces/);
-        await expect(run(['table', 'create', 'X', '--rows', 'transfers', '--by', 'wallet', '--count', '--save'])).rejects.toThrow(/--save is gone/);
+        await expect(run(['table', 'create', 'X', '--on', 'table:Swaps', '--formula', 'A={B}'])).rejects.toThrow(/--formula is for a table whose rows are things an event announces/);
+        await expect(run(['table', 'create', 'X', '--on', 'table:Swaps', '--by', 'wallet', '--count', '--save'])).rejects.toThrow(/--save is gone/);
         await expect(run(['table', 'create', 'X', '--on', 'tag:G'])).rejects.toThrow(/Say what a row is: --each <Event>/);
     });
 

@@ -45,12 +45,13 @@ describe('one grammar for a metric', () => {
     expect(inlineDefinition('balanceOf(a=b)')).toBeNull();
   });
 
-  it('hands the table grammar on in the shapes the tools take: --on, --each, --rows', () => {
+  it('hands the table grammar on in the shapes the tools take: --on, --each; --rows is gone', () => {
     expect(rewriteTableArgs(['Loans', '--on', 'tag:markets', '--each', 'LoanOpened', '--id', 'loanId', '--column', 'Owed=accountDebt(id())'])).toEqual(['Loans', '--group', 'markets', '--opens', 'LoanOpened', '--id', 'loanId', '--column', 'Owed=accountDebt(id())']);
     expect(rewriteTableArgs(['Big swaps', '--on', 'tag:pools', '--each', 'Swap', '--where', 'x > 1'])).toEqual(['Big swaps', '--group', 'pools', '--event', 'Swap', '--where', 'x > 1', '--from', 'events']);
-    expect(rewriteTableArgs(['Out', '--on', 'treasury', '--rows', 'transfers'])).toEqual(['Out', '--contract', 'treasury', '--from', 'transfers']);
+    // a table is made from events (2026-11-18): the lists the platform keeps are asked, never kept as a table
+    expect(() => rewriteTableArgs(['Out', '--on', 'treasury', '--rows', 'transfers'])).toThrow(/--rows is gone: a table is made from events/);
     expect(rewriteTableArgs(['Whales', '--on', 'table:Big swaps', '--by', 'signer'])).toEqual(['Whales', '--from', 'Big swaps', '--by', 'signer']);
-    expect(rewriteTableArgs(['All', '--on', 'workspace', '--rows', 'wallets'])).toEqual(['All', '--from', 'wallets']);
+    expect(() => rewriteTableArgs(['All', '--on', 'workspace', '--rows=wallets'])).toThrow(/--rows is gone/);
   });
 
   it('keeps --each an activity table when --status, a plain --column or a --by measure come with it', () => {
@@ -108,11 +109,13 @@ describe('metrics and reports over the wire', () => {
 
   it('a report --table defines a live table for the report, off /tables, and keeps the report\'s own clauses', async () => {
     expect(tableClausesToArgs('on tag:pools; each Swap, Mint; where usd(a, t) > 1')).toEqual(['--on', 'tag:pools', '--each', 'Swap', '--each', 'Mint', '--where', 'usd(a, t) > 1']);
-    const calls = mockApi({ 'POST /api/mainnet/tools/query_transfers': () => ({ payload: { ok: true, result: { columns: [], rows: [], matched: 0, returned: 0, more: false, saved: { id: 't1', url: 'https://app/tables/t1', title: 'Out' } }, ms: 1 } }) });
-    const spec = await tableSpecFromFlag('Out=on treasury; rows transfers; where direction == out | top 5');
-    expect(spec).toEqual({ table: 't1', name: 'Out', limit: 5 });
-    expect(calls[0].body.input.save).toEqual({ title: 'Out', listed: false });
-    expect(calls[0].body.input.contract).toBe('treasury');
+    const calls = mockApi({ 'POST /api/mainnet/tools/query_data': () => ({ payload: { ok: true, result: { columns: [], rows: [], matched: 0, returned: 0, more: false, saved: { id: 't1', url: 'https://app/tables/t1', title: 'Big' } }, ms: 1 } }) });
+    const spec = await tableSpecFromFlag('Big=on table:Swaps; where dollars > 10000 | top 5');
+    expect(spec).toEqual({ table: 't1', name: 'Big', limit: 5 });
+    expect(calls[0].body.input.save).toEqual({ title: 'Big', listed: false });
+    expect(calls[0].body.input.data).toBe('Swaps');
+    // a table is made from events: the lists the platform keeps are not a report table's rows either
+    await expect(tableSpecFromFlag('Out=on treasury; rows transfers; where direction == out | top 5')).rejects.toThrow(/--rows is gone/);
     // a table named stays a reference
     expect(await tableSpecFromFlag('Swaps | top 3')).toEqual({ table: 'Swaps', limit: 3 });
   });
@@ -131,9 +134,9 @@ describe('metrics and reports over the wire', () => {
 });
 
 describe('the table grammar handed on (5.0.0)', () => {
-  it('takes --on=, --each= and --rows= as it takes the spaced forms', () => {
+  it('takes --on= and --each= as it takes the spaced forms', () => {
     expect(rewriteTableArgs(['Loans', '--on=tag:markets', '--each=LoanOpened', '--id', 'loanId'])).toEqual(['Loans', '--group', 'markets', '--opens', 'LoanOpened', '--id', 'loanId']);
-    expect(rewriteTableArgs(['Out', '--on=treasury', '--rows=Transfers'])).toEqual(['Out', '--contract', 'treasury', '--from', 'transfers']);
+    expect(rewriteTableArgs(['Whales', '--on=table:Big swaps', '--by', 'signer'])).toEqual(['Whales', '--from', 'Big swaps', '--by', 'signer']);
   });
 
   it('several --each: the first opens the rows of a state table and the rest are events a rule may name; every one is a row of an activity table', () => {

@@ -1,6 +1,8 @@
 // Everything on the Tables page, through the platform's tools. One command, one grammar (5.0.0, 2026-11-17):
-// `create "<name>" --on <what>` says what the table is on, `--each <Event>` what a row is, `--rows <data>` rows the
-// workspace already keeps. What the words ask for decides how it is kept: with `--id` (and a read column, a formula, a
+// `create "<name>" --on <what>` says what the table is on, `--each <Event>` what a row is. A table is made from
+// events, or built on a table that is (--on table:"<name>"); the lists the platform keeps by itself (transactions,
+// transfers, wallets…) are asked with `query`, never kept as a table (--rows removed, 2026-11-18). What the words ask
+// for decides how it is kept: with `--id` (and a read column, a formula, a
 // finish rule, a fold of events per row) one row per thing an event announces, over its whole life, its columns read
 // live; alone, one row per event, asked again while the table is open. The flags of the two older ways (`--opens`,
 // `--from`, `--group`, `--contract`) are refused with the word that replaced them; underneath, rewriteTableArgs still
@@ -22,8 +24,8 @@ import { clausesFromFlags, printRows, queryCommand, savedLine } from './query';
 const HELP = `contract-dev table — everything on the Tables page
 
 One grammar, the same words as a metric: --on says what the table is on (a contract or wallet, tag:<group>,
-workspace, or table:"<other>" to build on it); --each <Event> says what a row is; --rows <data> takes rows the
-workspace already keeps. What you ask for decides how it is kept. With --id (and a read --column, --formula,
+workspace, or table:"<other>" to build on it); --each <Event> says what a row is. A table is made from events, or
+built on a table that is. What you ask for decides how it is kept. With --id (and a read --column, --formula,
 --finished, --count or --sum per row) it is a STATE table: one row per thing that event announces, alive while the
 thing is, its columns read live and its events added up, over its whole life. Alone it is an ACTIVITY table: one
 row per event, asked again each time it is opened. You never pick a kind.
@@ -31,18 +33,19 @@ row per event, asked again each time it is opened. You never pick a kind.
   contract-dev table create "Loans" --on tag:markets --each LoanOpened --id loanId --column "Owed=accountDebt(id())" --finished "seen(LoanClosed)"
   contract-dev table create "Big swaps" --on tag:pools --each Swap --where "usd(abs(amount0), token0()) > 10000"
   contract-dev table create "Swaps" --on 0x8366a39CC670B4001A1121B8F6A443A643e40951 --chain 4663 --each Swap --where "id in Pools"
-  contract-dev table create "Treasury out" --on treasury --rows transfers --where "direction == out"
   contract-dev table create "Whales" --on table:"Big swaps" --by wallet --top 10
 
 Usage:
   contract-dev table create "<name>" --on <contract|tag:<group>> --each <Event> [--id <field>]
-                              [--column "<Label>=<view>(<args>)[.<output>][; on 0x…][; token <token>][; show usd][; decimals <n>]"]…
-                              [--count "<Event>[:<Label>] [on <field>] [from <contract>] [by <field>] [where <field> == {Column}]"]…
-                              [--sum "<Event>.<field>[:<Label>] [on <field>] [from <contract>] [by <field>] [where <field> == {Column}] [token <token> [show usd] | decimals <n>]"]…
+                              [--column "<Label>=<view>(<args>)[.<output>][; on 0x… | {Column} | id()][; token <token>][; show usd][; decimals <n>]"]…
+                              [--count "<Event>[:<Label>] [on <field>] [from <contract>] [by <field>] [where <field> == {Column}] [last <window>]"]…
+                              [--sum "<Event>.<field>[:<Label>] [on <field>] [from <contract>] [by <field>] [where <field> == {Column}] [token <token> [show usd] | decimals <n>] [last <window>]"]…
+                              [--sum '<column>:<Label> from table:"<table of events>" [on <field>] last <window>']… [--count '<Label> from table:"<table>" last <window>']…
                               [--formula "<Label>=<expr>[; call <name>=<call>]…[; token <token>][; show usd]"]…
                               [--status "<Label>: <Opt>=<rule>; <Opt>=<rule>; <Opt>"]… [--finished "<rule>"] [--closes <Event>|list]
                               [--event "<Event>.<field> [from <contract>]"]… [--closes-on <field>] [--id-shown date|number]
-                              [--found-label "<word>"] [--row-name "<template>"] [--hidden] [--description "<sentence>"]
+                              [--found-label "<word>"] [--row-name "<template>"] [--detail "<Column>, <Column>…"]
+                              [--hidden] [--description "<sentence>"]
                                                       One row per thing the event announces (withdrawal rounds, loans,
                                                       requests, pools a registry lists), over its whole life: its history
                                                       is read now and kept up to date. --id names the event's field that is
@@ -68,16 +71,13 @@ Usage:
                                                       batch swap's swaps; a single swap is one line); --breakdown <column>
                                                       opens each group onto its parts. --status sets a category drawn as a
                                                       pill on each row (Type: Batch=…; Single), only when wanted
-  contract-dev table create "<name>" --rows <data> [--on <contract|tag:<group>>] [--description "<sentence>"] [the query's flags]
-                                                      Rows the workspace already keeps: transactions, transfers, wallets,
-                                                      contracts, metrics, monitors, alerts or reports. The flags are
-                                                      contract-dev query's (--where, --by, --measure, --having, --breakdown,
-                                                      --sort, --last…)
   contract-dev table create "<name>" --on table:"<table>" [--description "<sentence>"] [the query's flags]
                                                       Built on another table's rows (its own --where carried in: an
                                                       Integrators table built on the swaps-and-bridges table; a table that
                                                       folds its rows cannot be built on) or on a metric's records
-                                                      (contract-dev table list names them)
+                                                      (contract-dev table list names them). The flags are contract-dev
+                                                      query's (--where, --by, --measure, --having, --breakdown, --sort,
+                                                      --last…)
   contract-dev table list [--on tag:<group> | --on <contract>]
                                                       Every table, hidden ones too: the tables over rows the workspace
                                                       keeps, then each table of things with its rule for a row, the events
@@ -88,20 +88,27 @@ Usage:
                                                       A table of things: findings and endings per period, rows per status,
                                                       how long rows take, column totals, the biggest and newest rows, the
                                                       busiest contracts
+  contract-dev table show <table> --row <id|name> --last 30d [--series]
+                                                      One row over time: where each number column stood at the start and
+                                                      the end of the window, the change, its low and high; --series adds
+                                                      every day's value. A column over a window (Fees 7d) has its whole
+                                                      past; the rest have days from when the table started keeping them
   contract-dev table show <table> --row <id>          One row: its values, its statuses, its watched events and its own
                                                       events since it was found
   contract-dev table update <table> [--name "<name>"] [--description "<sentence>"] [--status "<Label>: …"]… [--formula "<Label>=<expr>"]…
+                              [--column "<Label>=<view>(<args>)…"]… [--count "…"]… [--sum "…"]…
                               [--token "<Label>=<token> [show usd]"]… [--event "<Event>.<field> [from <contract>]"]…
                               [--finished "<rule>" | --never-finishes] [--found-label "<word>"] [--row-name "<template>"]
-                              [--show | --hide]
+                              [--detail "<Column>, <Column>…"] [--show | --hide]
                                                       Rename or describe it (--description "" removes it), add status or
                                                       formula columns or replace their rules (by label), set when its rows
                                                       finish, put a hidden table on the Tables page, or take one off. A
                                                       table of events or of kept rows takes --name and --description
   contract-dev table delete <table>                   Remove it (its rows, their tracked values and its monitors go with it)
 
---opens, --from, --group and --contract are gone (5.0.0): --each <Event> --id <field>, --on table:"<name>" or --rows
-<data>, --on tag:<group> and --on <contract> say the same.
+--opens, --from, --group and --contract are gone (5.0.0): --each <Event> --id <field>, --on table:"<name>",
+--on tag:<group> and --on <contract> say the same. --rows is gone too: transactions, transfers, wallets and the other
+lists the platform keeps are asked with contract-dev query, and a table is made from events.
 
 --description "<sentence>" on any table: a sentence or two saying what it shows, beside it on the Tables page and at the
 top of its page.
@@ -113,8 +120,21 @@ column tries its options in order and the first whose rule holds wins; an option
 --closes is the shorthand for a pinned Stage column with one option Closed on that event, finished once it is.
 --id-shown date shows a number id as a date (an expiry, a deadline); it is a number unless you say so.
 --row-name says what a row is called, as a template over the table's own columns in braces: --row-name "{Token 0} /
-{Token 1}" names a pool by its pair, with its id under the name. Give one whenever the id says nothing to a reader (a
-hash, a number). A column holding a token prints its symbol; on update, --row-name "" goes back to the id.
+{Token 1}" names a pool by its pair; its id is on the row's own page. Give one whenever the id says nothing to a reader
+(a hash, a number). A column holding a token prints its symbol; on update, --row-name "" goes back to the id.
+--column reads a view on each row: on the row's own contract, on one contract for every row ("; on 0x…": a registry
+asked about each pool by its id), on an address the row itself holds ("; on {Hook}": each pool's own hook), or on the
+row's id where that is an address ("; on id()": a factory's pools). The view is found on whichever watched contract
+declares it.
+A count or a sum takes "last <window>" (24h, 7d, 30d) to cover a window back from now in place of the whole history;
+from table:"<table of events>" adds up that table's rows per row of this one, its column for a sum:
+--sum 'feeusd:Fees 7d from table:"Swaps" last 7d'. Each keeps a metric of the table's own, off the Metrics page.
+Every number column keeps its value per row and day: a row's page charts them, a formula reads an earlier one with
+ago({Deposits}, 7d), and table show <table> --row <id|name> --last 30d reads them back.
+--detail names the columns shown on a row's own page and not in the table, by label: --detail "Hook, Token 0, Token 1,
+Registered". Every column is made the same way; this only says where it shows. A row of the table opens its page: the
+table's columns, these, and what each column split with "by" breaks into. Keep the table to what is compared across
+rows. On update it replaces the list; --detail "" puts every column back in the table.
 --found-label names the column saying when each row was found: by itself it is the opening event's past tense
 (PoolRegistered: Registered, LoanOpened: Opened), else First seen. Give one only when that word is wrong.
 --hidden makes a table to answer a question: it stays off the Tables page and is removed 7 days after it was last
@@ -172,7 +192,6 @@ Examples:
     --column time --column chain --column tx --column Type --column dollars \\
     --detail fromToken --detail amountIn --detail toToken --detail amountOut --detail swapDollars --sort time
   contract-dev table create "Swaps over $10k" --on table:"Swaps, 30 days" --where "dollars > 10000"
-  contract-dev table create "Top wallets, 24h" --rows transfers --on tag:"DZap Routers" --last 1d --by wallet --sum "{USD}"
   contract-dev table update "Top integrators" --description "Volume, swaps, bridges and wallets per integrator over 90 days"
   contract-dev table list
   contract-dev table create "Withdrawal rounds" --on tag:"Wildcat markets" --each WithdrawalBatchCreated --closes WithdrawalBatchClosed --count "WithdrawalQueued:Queued on expiry" --hidden
@@ -231,7 +250,7 @@ export async function tableCommand(args: string[]): Promise<unknown> {
 /** The flags of the older ways to make a table, each with the word that replaced it (5.0.0): refused where a person types them. */
 const OLD_FLAGS: Record<string, string> = {
   opens: '--each <Event> --id <field> (the event that announces a row, and its field that names it)',
-  from: '--on table:"<name>" for another table\'s rows, --rows <data> for rows the workspace keeps (transfers, transactions, wallets, contracts…), or --each <Event> for a row per event',
+  from: '--on table:"<name>" for another table\'s rows, or --each <Event> for a row per event',
   group: '--on tag:<group>',
   contract: '--on <contract>',
   days: '--last <n>d',
@@ -309,17 +328,18 @@ async function findLive(auth: ReturnType<typeof requireAuth>, ref: string): Prom
   return byTitle[0] ?? null;
 }
 
-/** What --rows names: a dataset's own word. Anything else (--on table:"<name>") is a name query table resolves: another table's rows or a metric's records. */
-const FROM_DATASETS = ['contracts', 'metrics', 'monitors', 'alerts', 'reports', 'transactions', 'transfers', 'wallets'];
+/** What --rows said until 2026-11-18, and the sentence it is refused with now: a table is made from events. */
+const ROWS_GONE =
+  '--rows is gone: a table is made from events (--each <Event>), or built on a table that is (--on table:"<name>"). Transactions, transfers, wallets and the other lists the platform keeps are asked with contract-dev query.';
 
-/** `table create "<name>" --rows <data> …` or `--on table:"<name>" …` (rewritten to --from): the question asked through `query` and kept as a table, asked again while it is open. */
+/** `table create "<name>" --on table:"<name>" …` (rewritten to --from): the question asked of that table's rows (or a metric's records) through `query` and kept as a table, asked again while it is open. */
 async function createLiveTable(args: string[]): Promise<unknown> {
   const name = args[0];
-  if (!name || name.startsWith('--')) throw new Error('Name the table first: contract-dev table create "<name>" --on <what> --each <Event> | --rows <data> ….');
+  if (!name || name.startsWith('--')) throw new Error('Name the table first: contract-dev table create "<name>" --on <what> --each <Event> ….');
   const rest = args.slice(1);
   const at = rest.findIndex((a) => a === '--from' || a.startsWith('--from='));
   const from = (rest[at].startsWith('--from=') ? rest[at].slice('--from='.length) : rest[at + 1] ?? '').trim();
-  if (!from || from.startsWith('--')) throw new Error('Say what the rows are: --each <Event> (a row per event), --on table:"<name>" (another table\'s rows or a metric\'s records: contract-dev table list), or --rows transactions, transfers, wallets, contracts, metrics, monitors, alerts or reports.');
+  if (!from || from.startsWith('--')) throw new Error('Say what the rows are: --each <Event> (a row per event), or --on table:"<name>" (another table\'s rows or a metric\'s records: contract-dev table list).');
   const remaining = rest.filter((_, i) => i !== at && !(i === at + 1 && !rest[at].startsWith('--from=')));
   // the table's own words, not the question's: taken out before the rest is asked
   const description = descriptionFlag(parseFlags(remaining));
@@ -332,10 +352,9 @@ async function createLiveTable(args: string[]): Promise<unknown> {
   const kept = others.filter((a) => a !== '--hidden');
   for (const f of ['--opens', '--closes', '--formula', '--finished', ...(events ? [] : ['--keep'])])
     if (others.some((a) => a === f || a.startsWith(`${f}=`)))
-      throw new Error(`${f === '--opens' ? '--id' : f} is for a table whose rows are things an event announces (--each <Event> --id <field>); a table over rows the workspace keeps takes the query's flags (contract-dev query help).`);
+      throw new Error(`${f === '--opens' ? '--id' : f} is for a table whose rows are things an event announces (--each <Event> --id <field>); a table built on another takes the query's flags (contract-dev query help).`);
   if (events) return createEventsTable(name, kept, description, hidden);
-  const query = FROM_DATASETS.includes(from.toLowerCase()) ? [from.toLowerCase()] : ['data', from];
-  return queryCommand([...query, ...kept], { live: name, ...(description ? { description } : {}), ...(hidden ? { hidden: true } : {}) });
+  return queryCommand(['data', from, ...kept], { live: name, ...(description ? { description } : {}), ...(hidden ? { hidden: true } : {}) });
 }
 
 /** The flags that say what the rows are (the data kept underneath); every other flag is the question asked of them. */
@@ -473,6 +492,13 @@ async function showTable(args: string[]): Promise<unknown> {
   if (input.among === 'open') input.among = 'active';
   if (input.among === 'closed') input.among = 'done';
   if (flag(flags, 'limit') !== undefined) input.limit = limitFlag(flags, 5, 25);
+  // --row <id|name> --last 30d: how the row's number columns moved over those days; --series adds every day's value
+  const last = lastFlag(flags);
+  if (last !== undefined) {
+    if (input.row === undefined) throw new Error('--last reads one row over time: contract-dev table show <table> --row <id or name> --last 30d.');
+    input.days = lastDays(last, 'A row\'s history');
+    if (flag(flags, 'series') !== undefined) input.series = true;
+  } else if (flag(flags, 'series') !== undefined) throw new Error('--series goes with --row and --last: contract-dev table show <table> --row <id or name> --last 30d --series.');
   const result = await runTool<Record<string, unknown>>(auth, 'describe_table', input);
   for (const line of printResult(result)) console.log(line);
   return result;
@@ -564,9 +590,11 @@ export interface ColumnClauses {
   token?: string;
   show?: 'token' | 'usd';
   decimals?: number;
+  /** Over a window back from now in place of the whole history: `last 7d`, `last 24h`, `last 2w`. */
+  last?: string;
 }
 
-const CLAUSE_WORDS = ['on', 'from', 'by', 'token', 'show', 'decimals'] as const;
+const CLAUSE_WORDS = ['on', 'from', 'by', 'token', 'show', 'decimals', 'last'] as const;
 type ClauseWord = (typeof CLAUSE_WORDS)[number];
 
 /**
@@ -610,7 +638,10 @@ export function columnClauses(whole: string, what: string, allowed: readonly Cla
     } else if (word === 'from') out.from = value;
     else if (word === 'token') out.token = TOKEN_FIELD.test(value) && value !== 'self' ? value : tokenRef(value, what, true);
     else if (word === 'show') out.show = showOf(value, what);
-    else {
+    else if (word === 'last') {
+      if (!/^\d+[hdw]$/.test(value)) throw new Error(`${what}: last takes a window like 24h, 7d or 2w (got: ${value}).`);
+      out.last = value;
+    } else {
       const d = Number(value);
       if (!Number.isInteger(d) || d < 0 || d > 36) throw new Error(`${what}: decimals is 0 to 36 (got: ${value})`);
       out.decimals = d;
@@ -634,19 +665,40 @@ export function columnsFrom(flags: ParsedFlags): Record<string, unknown>[] {
     return at > 0 ? [raw.slice(0, at).trim(), raw.slice(at + 1).trim() || null] : [raw.trim(), null];
   };
   const out: Record<string, unknown>[] = [];
+  // from table:"Swaps": the rows of a table of events, added up per row over a window; nothing here names an event
+  const fromTable = (from: string | undefined): boolean => /^table:/i.test(from ?? '');
+  const windowOnly = (what: string, by: unknown, where: unknown, last: string | undefined, from: string | undefined) => {
+    if (last && (by || where)) throw new Error(`${what}: a column over a window (last ${last}) takes no by or where.`);
+    if (fromTable(from) && !last) throw new Error(`${what}: from table: adds up a table's rows over a window; say last 7d (or 24h, 30d).`);
+  };
   for (const whole of flagAll(flags, 'count')) {
-    const { rest: raw, on, from, by, where } = columnClauses(whole, '--count', ['on', 'from', 'by']);
+    const { rest: raw, on, from, by, where, last } = columnClauses(whole, '--count', ['on', 'from', 'by', 'last']);
+    windowOnly('--count', by, where, last, from);
+    if (fromTable(from)) {
+      // --count 'Swaps 7d from table:"Swaps" last 7d': what stands first is the column's label
+      const label = raw.replace(/^:/, '').trim();
+      if (!label) throw new Error('--count from a table takes the column\'s label first: --count \'Swaps 7d from table:"Swaps" last 7d\'.');
+      out.push({ label, fold: 'count', from, last, ...(on ? { on } : {}) });
+      continue;
+    }
     const [event, label] = split(raw);
     if (!event) throw new Error('--count takes an event name, like --count WithdrawalQueued.');
-    out.push({ label: label ?? `${event} count`, event, fold: 'count', ...(on ? { on } : {}), ...(from ? { from } : {}), ...(by ? { by } : {}), ...(where ? { where } : {}) });
+    out.push({ label: label ?? `${event} count`, event, fold: 'count', ...(on ? { on } : {}), ...(from ? { from } : {}), ...(by ? { by } : {}), ...(where ? { where } : {}), ...(last ? { last } : {}) });
   }
   for (const whole of flagAll(flags, 'sum')) {
     // `… token asset() show usd` or `… decimals 18`: what the amount is, only as stated; left out, the plain number
-    const { rest, on, from, by, where, ...amount } = columnClauses(whole, '--sum');
+    const { rest, on, from, by, where, last, ...amount } = columnClauses(whole, '--sum');
+    windowOnly('--sum', by, where, last, from);
     const [ref, label] = split(rest);
+    if (fromTable(from)) {
+      // --sum 'feeusd:Fees 7d from table:"Swaps" last 7d': one of that table's columns, added up per row
+      if (!ref || ref.includes('.')) throw new Error('--sum from a table takes one of its columns: --sum \'feeusd:Fees 7d from table:"Swaps" last 7d\'.');
+      out.push({ label: label ?? ref, field: ref, fold: 'sum', from, last, ...(on ? { on } : {}) });
+      continue;
+    }
     const dot = ref.lastIndexOf('.');
     if (dot <= 0 || dot === ref.length - 1) throw new Error('--sum takes Event.field, like --sum WithdrawalQueued.normalizedAmount.');
-    out.push({ label: label ?? `${ref.slice(dot + 1)}`, event: ref.slice(0, dot), field: ref.slice(dot + 1), fold: 'sum', ...(on ? { on } : {}), ...(from ? { from } : {}), ...(by ? { by } : {}), ...(where ? { where } : {}), ...amount });
+    out.push({ label: label ?? `${ref.slice(dot + 1)}`, event: ref.slice(0, dot), field: ref.slice(dot + 1), fold: 'sum', ...(on ? { on } : {}), ...(from ? { from } : {}), ...(by ? { by } : {}), ...(where ? { where } : {}), ...(last ? { last } : {}), ...amount });
   }
   return out;
 }
@@ -689,11 +741,14 @@ export function readColumnsFrom(flags: ParsedFlags): Record<string, unknown>[] {
     if (args.length > 0) col.args = args.map((a) => (a === 'id()' ? ':id' : a));
     if (m[3]) col.output = m[3];
     for (const part of more.filter(Boolean)) {
-      const w = /^(on|token|show|decimals|unit)\s+(\S+)$/.exec(part);
-      if (!w) throw new Error(`--column: after the call come "; on 0x…", "; token <token>", "; show usd", "; decimals <n>" or "; unit <unit>" (got: ${part})`);
+      // on {Token 0}: a column's label may hold spaces, so the braces are read whole
+      const w = /^(on)\s+(\{[^{}]+\})$/.exec(part) ?? /^(on|token|show|decimals|unit)\s+(\S+)$/.exec(part);
+      if (!w) throw new Error(`--column: after the call come "; on 0x… | {Column} | id()", "; token <token>", "; show usd", "; decimals <n>" or "; unit <unit>" (got: ${part})`);
       if (w[1] === 'on') {
-        if (!/^0x[0-9a-fA-F]{40}$/.test(w[2])) throw new Error(`--column: on takes the contract's 0x address (got: ${w[2]}).`);
-        col.target = w[2].toLowerCase();
+        // where the read goes: one contract for every row (0x…), the address a row holds ({Hook}), or the row's id itself
+        if (/^0x[0-9a-fA-F]{40}$/.test(w[2])) col.target = w[2].toLowerCase();
+        else if (w[2] === 'id()' || /^\{[^{}]+\}$/.test(w[2])) col.target = w[2];
+        else throw new Error(`--column: on takes a contract's 0x address, a column of the row in braces ({Hook}), or id() where the row id is an address (got: ${w[2]}).`);
       } else if (w[1] === 'token') col.token = tokenRef(w[2], '--column');
       else if (w[1] === 'show') col.show = showOf(w[2], '--column');
       else if (w[1] === 'decimals') {
@@ -725,7 +780,7 @@ async function createTable(args: string[]): Promise<unknown> {
   const flags = parseFlags(args);
   const name = requirePositional(flags._ as string[], 0, 'name');
   const opens = flag(flags, 'opens');
-  if (!opens) throw new Error('Say what a row is: --each <Event> for a row per event (swaps, deposits; with --id <field>, a row per thing the event announces, read live over its life), --rows <data> for rows the workspace keeps (transfers, transactions, wallets, contracts…), or --on table:"<name>" to build on another table (contract-dev table help).');
+  if (!opens) throw new Error('Say what a row is: --each <Event> for a row per event (swaps, deposits; with --id <field>, a row per thing the event announces, read live over its life), or --on table:"<name>" to build on another table (contract-dev table help).');
   const input: Record<string, unknown> = { name, opens, ...scopeInput(flags) };
   for (const key of ['closes', 'id', 'closesOn', 'finished'] as const) {
     const v = flag(flags, key);
@@ -754,6 +809,8 @@ async function createTable(args: string[]): Promise<unknown> {
   if (foundLabel) input.foundLabel = foundLabel;
   const rowName = rowNameFlag(flags);
   if (rowName) input.rowName = rowName;
+  const detail = detailFlag(flags);
+  if (detail?.length) input.detail = detail;
   const result = await runTool<Record<string, unknown>>(requireAuth(), 'create_table', input);
   for (const line of printResult(result)) console.log(line);
   return result;
@@ -790,11 +847,13 @@ async function updateTable(args: string[], renaming: boolean): Promise<unknown> 
   });
   const foundLabel = foundLabelFlag(flags, true);
   const rowName = rowNameFlag(flags, true);
+  const detail = detailFlag(flags, true);
   // --count and --sum add event columns to a table that has rows already (2026-11-17), as table create takes them
-  const columns = columnsFrom(flags);
+  // and --column adds a read on each row (2026-11-19), on the row's own contract, another, or an address the row holds
+  const columns = [...columnsFrom(flags), ...readColumnsFrom(flags)];
   if (show && hide) throw new Error('Pick one: --show or --hide.');
-  if (!name && description === undefined && !show && !hide && finished === undefined && !never && statuses.length === 0 && formulas.length === 0 && tokens.length === 0 && events.length === 0 && columns.length === 0 && foundLabel === undefined && rowName === undefined)
-    throw new Error('Nothing to change: pass --name "<name>", --description "<sentence>", --count …, --sum …, --status …, --formula …, --token …, --finished "<rule>", --never-finishes, --found-label "<word>", --row-name "<template>", --show or --hide.');
+  if (!name && description === undefined && !show && !hide && finished === undefined && !never && statuses.length === 0 && formulas.length === 0 && tokens.length === 0 && events.length === 0 && columns.length === 0 && foundLabel === undefined && rowName === undefined && detail === undefined)
+    throw new Error('Nothing to change: pass --name "<name>", --description "<sentence>", --column …, --count …, --sum …, --status …, --formula …, --token …, --finished "<rule>", --never-finishes, --found-label "<word>", --row-name "<template>", --detail "<columns>", --show or --hide.');
   const input: Record<string, unknown> = {
     table,
     ...(name ? { name } : {}),
@@ -808,6 +867,7 @@ async function updateTable(args: string[], renaming: boolean): Promise<unknown> 
     ...(show ? { listed: true } : hide ? { listed: false } : {}),
     ...(foundLabel !== undefined ? { foundLabel } : {}),
     ...(rowName !== undefined ? { rowName } : {}),
+    ...(detail !== undefined ? { detail } : {}),
   };
   const result = await runTool<Record<string, unknown>>(auth, 'update_table', input);
   for (const line of printResult(result)) console.log(line);
@@ -824,6 +884,23 @@ function descriptionFlag(flags: ParsedFlags, emptyClears = false): string | unde
   if (!text && !emptyClears) throw new Error('--description takes a sentence saying what the table shows.');
   if (text.length > 280) throw new Error(`--description holds 280 characters (got ${text.length}).`);
   return text;
+}
+
+/**
+ * --detail "<Column>, <Column>…" (repeatable): the columns shown on a row's own page and not in the table, by label;
+ * on update "" puts every column back in the table.
+ */
+function detailFlag(flags: ParsedFlags, emptyClears = false): string[] | undefined {
+  const all = flagAll(flags, 'detail');
+  if (all.length === 0) return undefined;
+  if (all.some((v) => v === 'true')) throw new Error('--detail names columns by label: --detail "Hook, Token 0, Token 1"' + (emptyClears ? ', or --detail "" to put every column back in the table.' : '.'));
+  const names = all.flatMap((v) => String(v).split(',')).map((v) => v.trim()).filter(Boolean);
+  if (names.length === 0) {
+    if (emptyClears) return [];
+    throw new Error('--detail names columns by label, like "Hook, Token 0, Token 1".');
+  }
+  if (names.length > 40) throw new Error(`--detail holds 40 columns (got ${names.length}).`);
+  return names;
 }
 
 /** --row-name "<template>": what a row is called, over the table's columns in braces ("{Token 0} / {Token 1}"); on update "" goes back to the id. */
@@ -868,7 +945,7 @@ async function updateLive(auth: ReturnType<typeof requireAuth>, live: LiveTable,
 }
 
 /**
- * The one grammar's words in the shapes the tools underneath take: --on, --each and --rows (2026-11-07). The words it
+ * The one grammar's words in the shapes the tools underneath take: --on and --each (2026-11-07; --rows until 2026-11-18). The words it
  * writes (--group, --contract, --opens, --event, --from) are internal since 5.0.0: typed, they are refused first
  * (refuseOldFlags).
  */
@@ -904,14 +981,10 @@ export function rewriteTableArgs(args: string[]): string[] {
         out.push('--opens', w);
       } else out.push('--event', w);
     } else if (name === 'rows') {
-      const w = v();
-      if (w === undefined || w.startsWith('--')) throw new Error(`--rows names what the workspace keeps: ${FROM_DATASETS.join(', ')}.`);
-      if (!FROM_DATASETS.includes(w.toLowerCase())) throw new Error(`--rows takes ${FROM_DATASETS.join(', ')} (got: ${w}). Another table's rows are --on table:"${w}".`);
-      out.push('--from', w.toLowerCase());
+      throw new Error(ROWS_GONE);
     } else out.push(a);
   }
   const built = out.includes('--from');
-  if (has('each') && has('rows')) throw new Error('--each (a row per event) or --rows (rows the workspace keeps): one of them says what a row is.');
   if (has('each') && built) throw new Error('A table built on another (--on table:"<name>") takes its rows from it: leave --each out and ask with --where, --by, --measure.');
   // a row per event: --each alone
   if (has('each') && !state) out.push('--from', 'events');

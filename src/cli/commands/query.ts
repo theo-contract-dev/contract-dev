@@ -39,13 +39,13 @@ Usage:
   contract-dev query events --address 0x… --chain <id> --each <Event> …   A contract nobody watches, read from the chain's log history,
                                                                narrowed: a --where equality on an indexed field (to == 0x…), or --last 7d at
                                                                most; with --since, --who naming an indexed field and --wallet, or a month
-  contract-dev query transactions [--on <ref>] [--last <n>d] [--signer <0x>] [--failed] [--direct | --routed] [--method <name>]
+  contract-dev query transactions [--on <ref>] [--last <n>d | --since <date> [--until <date>]] [--signer <0x>] [--failed] [--direct | --routed] [--method <name>]
                                                                The transactions that reached the contracts (or a watched wallet sent and
                                                                received), newest first. Columns: time, day, contract, chain, wallet, who,
                                                                via, method, status, value, events, revert (why a failed direct call failed,
                                                                in the failing contract's own words), revertBy, and a direct call's arguments
                                                                as {args.<path>}: {args.swapExecutionData[0].dex}
-  contract-dev query transfers [--on <ref>] [--last <n>d] [--in | --out] [--token <symbol|0x|native>] [--counterparty <0x>] [--signer <0x>]
+  contract-dev query transfers [--on <ref>] [--last <n>d | --since <date> [--until <date>]] [--in | --out] [--token <symbol|0x|native>] [--counterparty <0x>] [--signer <0x>]
                                                                What moved in and out of them, each leg priced on its day
   contract-dev query wallets [--on <ref>] [--last <n>d] [--signer <0x>]   The wallets behind them: new or returning, first and last seen, dollars
       [--before <time>]                                        transactions and transfers page further back from this time (the answer's "next")
@@ -54,14 +54,17 @@ Usage:
                                                                …or as it was then: --read bal7="balanceOf(0x…)(uint256) in asset() at 7d"
       [--read <name>=<expression>]…                            …or an expression over earlier reads and the group's columns
       [--series <from>[..<to>] [--every 1h|6h|1d|1w]]           Every read at each step over a window: one row per time per contract
-  contract-dev query table "<name>" [--last <n>d] [--among active|done|all]   A table's rows (contract-dev table list names them)
-  contract-dev query metric "<name>" [--last <n>d]              What is behind a metric: its records or readings
-  contract-dev query metrics --metric "<name>"… [--split contract|<param>] [--last <n>d]   Metrics split the same way, side by side
-  contract-dev query monitors · query alerts [--last <n>d] · query reports
+  contract-dev query table "<name>" [--last <n>d | --since <date> [--until <date>]] [--among active|done|all]   A table's rows (contract-dev table list names them)
+  contract-dev query metric "<name>" [--last <n>d | --since <date> [--until <date>]]   What is behind a metric: its records or readings
+  contract-dev query metrics --metric "<name>"… [--split contract|<param>] [--last <n>d | --since <date> [--until <date>]]   Metrics split the same way, side by side
+  contract-dev query monitors · query alerts [--last <n>d | --since <date> [--until <date>]] · query reports
 
 --last is how far back: a number and h, d or w (1h, 24h, 7d, 30d, 2w, 365d). Events read 1h, 24h, 7d, 30d, 90d or 365d
 exactly; every other set of rows counts in whole days (--last 1d and up). --since launch|<date> reads an event's whole
-history instead; give one of the two.
+history instead; give one of the two. Metrics, tables, transactions, transfers and alerts take --since <date> [--until
+<date>] for days in the past: UTC dates or times, a date alone as --until running through that whole day, so yesterday
+is --since 2026-11-17 --until 2026-11-17 and 1 to 15 Oct is --since 2026-10-01 --until 2026-10-15. Inside the window a
+--where cuts by the clock: --where 'time() >= date("2026-11-17T12:00Z")'.
 
 --on is what the question is about: a watched contract or wallet (its name or 0x address), tag:<group>, or workspace
 (everything, the default); --chain picks one chain. A watched wallet's transactions are the ones it sent and received,
@@ -110,10 +113,11 @@ Examples:
   contract-dev query contracts --on tag:Vaults --read sp="convertToAssets(1000000000000000000)" --series 30d --every 1d
   contract-dev query table "Withdrawal rounds" --where '{Stage} == "Paying" and age > 7d' --sort "{Outstanding}"
   contract-dev query metric Deposits --last 30d --by day --sum "{value}"
+  contract-dev query metric Swaps --since 2026-11-16 --until 2026-11-16 --by day --count
   contract-dev query alerts --last 30d --by monitor --count
 
-The same question kept as a table: contract-dev table create "Big deposits" --on tag:"Wildcat markets" --each Deposit …,
-contract-dev table create "Treasury out" --on Treasury --rows transfers --where 'direction == "out"'.
+A question kept as a table is made from events: contract-dev table create "Big deposits" --on tag:"Wildcat markets"
+--each Deposit …, or built on a table that is: contract-dev table create "Whales" --on table:"Big deposits" --by wallet.
 `;
 
 const DATASETS = ['contracts', 'events', 'table', 'metric', 'metrics', 'data', 'monitors', 'alerts', 'reports', 'transactions', 'transfers', 'wallets'] as const;
@@ -377,7 +381,7 @@ async function queryEvents(flags: ParsedFlags): Promise<unknown> {
   return r;
 }
 
-/** `live`: the question kept as a table under Tables with this name (`table create "<name>" --rows <data> …` or `--on table:"<name>" …`), asked again while it is open; `description`: what it shows. */
+/** `live`: the question kept as a table under Tables with this name (`table create "<name>" --on table:"<name>" …`), asked again while it is open; `description`: what it shows. */
 export async function queryCommand(args: string[], opts: { live?: string; description?: string; hidden?: boolean } = {}): Promise<unknown> {
   if (!args.length || ['help', '-h', '--help'].includes(args[0]) || args.includes('--help') || args.includes('-h')) return void console.log(HELP);
   const flags = parseFlags(args);
@@ -387,7 +391,7 @@ export async function queryCommand(args: string[], opts: { live?: string; descri
   const noun = positional[0] as Dataset | undefined;
   if (!noun || !(DATASETS as readonly string[]).includes(noun)) throw new Error(`Say which rows: ${DATASETS.filter((d) => d !== 'data').join(', ')} (try: contract-dev query help).`);
   // the words of 5.0.0: --on for which contracts, --each for which events, --last or --since for how far back.
-  // table create --rows hands its own --on over already read (rewriteTableArgs), so the old words come from it alone
+  // table create hands its own --on over already read (rewriteTableArgs), so the old words come from it alone
   if (!opts.live) refuseGone(flags);
   else refuseDays(flags, 'table');
   if (noun === 'events') {
@@ -486,9 +490,20 @@ export async function queryCommand(args: string[], opts: { live?: string; descri
     // every set of rows but events counts in whole days: --last 1d and up, 2w is 14
     const last = lastFlag(flags);
     if (last !== undefined) input.days = lastDays(last, ROWS_WORD[noun] ?? `The ${noun}`);
+    // a window in the past (2026-11-18): --since <date> [--until <date>], as query events --since takes it; a date alone
+    // as --until runs through that day, so --since 2026-10-01 --until 2026-10-15 is 1 to 15 Oct, both whole
+    const since = wordFlag(flags, 'since');
+    const until = wordFlag(flags, 'until');
+    if (since !== undefined || until !== undefined) {
+      if (noun === 'wallets') throw new Error('query wallets takes --last <n>d: a wallet is first and last seen, not counted between two dates. For who used them between dates, query transactions --since <date> --until <date> --by wallet --count.');
+      if (since !== undefined && last !== undefined) throw new Error('Give --last (back from now, or from --until) or --since (from a date), not both.');
+      if (since !== undefined && since.trim().toLowerCase() === 'launch') throw new Error(`--since launch is an event's whole history (query events --since launch); query ${noun} takes a date: --since 2026-10-01 [--until 2026-10-15].`);
+      if (since !== undefined) input.from = since;
+      if (until !== undefined) input.to = until;
+    }
   }
   // a question is answered where asked; a table kept under Tables is `table create` (--save, the snapshot under Queries, went 2026-10-28)
-  if (['save', 'title', 'draw', 'keep'].some((k) => flag(flags, k) !== undefined)) throw new Error('--save is gone: a table kept under Tables is contract-dev table create "<name>" --rows <data> (or --on table:"<name>") with the same flags (contract-dev table help).');
+  if (['save', 'title', 'draw', 'keep'].some((k) => flag(flags, k) !== undefined)) throw new Error('--save is gone: a table kept under Tables is made from events: contract-dev table create "<name>" --on <what> --each <Event>, or --on table:"<name>" with the same flags to build on one (contract-dev table help).');
   if (opts.live) input.save = { title: opts.live, ...(opts.description ? { description: opts.description } : {}), ...(opts.hidden ? { listed: false } : {}) };
   const r = (await runTool(requireAuth(), noun === 'table' ? 'query_data' : `query_${noun}`, input)) as Record<string, unknown>;
   const matched = Number(r.matched ?? 0);

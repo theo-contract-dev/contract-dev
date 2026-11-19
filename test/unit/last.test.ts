@@ -48,17 +48,17 @@ describe('--last <duration>: how far back, one word for every question and table
         await expect(run(['query', 'transfers', '--days', '7'])).rejects.toThrow('--days is gone: say --last <n>d (contract-dev query help).');
         await expect(run(['query', 'events', '--each', 'Swap', '--days', '7'])).rejects.toThrow('--days is gone: say --last <n>d (contract-dev query help).');
         await expect(run(['table', 'create', 'X', '--on', 'Router', '--each', 'Swap', '--days', '30'])).rejects.toThrow('--days is gone: say --last <n>d (contract-dev table help).');
-        await expect(run(['table', 'create', 'X', '--rows', 'transfers', '--days', '1'])).rejects.toThrow('--days is gone: say --last <n>d (contract-dev table help).');
+        await expect(run(['table', 'create', 'X', '--on', 'table:Swaps', '--days', '1'])).rejects.toThrow('--days is gone: say --last <n>d (contract-dev table help).');
     });
 
-    it('table create --last 30d reaches back 30 days over the rows it keeps, and over kept rows asks the last 30 days', async () => {
+    it('table create --last 30d reaches back 30 days over the rows it keeps, and built on a table asks its last days', async () => {
         const calls = mockApi({
             'POST /api/mainnet/tools/define_data': () => ok({ name: 'X' }),
-            'POST /api/mainnet/tools/query_transfers': () => ok({ rows: [], matched: 0, returned: 0, saved: { id: 'q1' } }),
+            'POST /api/mainnet/tools/query_data': () => ok({ rows: [], matched: 0, returned: 0, saved: { id: 'q1' } }),
         });
         await run(['table', 'create', 'X', '--on', 'Router', '--each', 'Swap', '--last', '30d']);
         expect(calls[0].body.input).toMatchObject({ name: 'X', contract: 'Router', events: ['Swap'], history: 30, table: { title: 'X', days: 30 } });
-        await run(['table', 'create', 'Top wallets', '--rows', 'transfers', '--on', 'tag:pools', '--last', '1w', '--by', 'wallet', '--sum', '{USD}']);
-        expect(calls[1].body.input).toMatchObject({ group: 'pools', days: 7, save: { title: 'Top wallets' } });
+        await run(['table', 'create', 'Top wallets', '--on', 'table:X', '--last', '1w', '--by', 'wallet', '--sum', '{USD}']);
+        expect(calls[1].body.input).toMatchObject({ data: 'X', days: 7, save: { title: 'Top wallets' } });
     });
 });

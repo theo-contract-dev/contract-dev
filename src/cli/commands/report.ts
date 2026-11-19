@@ -216,7 +216,7 @@ export function tableClausesToArgs(text: string): string[] {
     const m = /^([a-z-]+)(?:\s+(.*))?$/s.exec(clause);
     if (!m) throw new Error(`Unknown table clause "${clause}".`);
     const rest = (m[2] ?? '').trim();
-    if (!rest) throw new Error(`"${m[1]}" needs a value: on tag:pools; each Swap; rows transfers; where …; keep …; field …; days …; by …`);
+    if (!rest) throw new Error(`"${m[1]}" needs a value: on tag:pools; each Swap; where …; keep …; field …; days …; by …`);
     if (m[1] === 'each' || m[1] === 'event') for (const e of rest.split(',').map((x) => x.trim()).filter(Boolean)) args.push(`--${m[1]}`, e);
     else args.push(`--${m[1]}`, rest.replace(/^"(.*)"$/s, '$1'));
   }
@@ -226,7 +226,7 @@ export function tableClausesToArgs(text: string): string[] {
 /**
  * A --table: a table of the workspace by name or id with the report's clauses after a |, or
  * "<name>=<clauses>" (2026-11-07), a table made for this report (the clauses of `table create`:
- * on, each or rows, where, keep, field, days, by, measure), kept off /tables and deleted with it.
+ * on, each, where, keep, field, days, by, measure), kept off /tables and deleted with it.
  */
 export async function tableSpecFromFlag(raw: string): Promise<ReportTableSpec> {
   const bar = raw.indexOf('|');
